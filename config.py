@@ -1,5 +1,9 @@
 import os
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # 1. 数据库配置 (PostgreSQL)
@@ -31,7 +35,7 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID", "你的_CHAT_ID")
 # ---------------------------------------------------------------------------
 # 3. 扫描逻辑参数
 # ---------------------------------------------------------------------------
-CHAINS = ["sol", "bsc", "base"]
+CHAINS = ["sol"]
 SCAN_INTERVAL = 60  # 每 60 秒扫描一次
 
 # 市值检查点

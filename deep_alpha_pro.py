@@ -11,13 +11,34 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 # 配置
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 45 
-TREND_INTERVALS = ["1m", "5m"]
+TREND_INTERVALS = ["5m"]
+MIN_MCAP_USD = 10_000
+MIN_FEE_SOL = 1
+DUMP_PROGRESS_THRESHOLD = 20
+MIN_DUMP_ASSOCIATED_SUPPLY = 10
+MIN_DUMP_SOLD_SUPPLY = 2
+DEBUG_DEEP_LOG = False
+MIN_CANDIDATE_CONTROL_RATIO = 10
+MIN_CANDIDATE_CLUSTER_SIZE = 20
+MIN_CANDIDATE_SM_COUNT = 1
+MIN_CANDIDATE_HOLDER_COUNT = 500
+MIN_BUY_SCORE = 20
+MIN_INFLOW_STREAK = 2
+INFLOW_STATE = {}
 
 def run_command(cmd):
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding='utf-8')
-        return result.stdout if result.returncode == 0 else None
-    except: return None
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            print(f"Command failed ({result.returncode}): {cmd}")
+            if err:
+                print(err)
+            return None
+        return result.stdout
+    except Exception as e:
+        print(f"Command exception: {cmd} -> {e}")
+        return None
 
 def send_tg_alert(msg):
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
@@ -28,10 +49,178 @@ def send_tg_alert(msg):
         requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=15)
     except: pass
 
+def safe_float(value, default=0.0):
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def first_value(*sources, keys=()):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+def first_float(*sources, keys=(), default=0.0):
+    value = first_value(*sources, keys=keys)
+    return safe_float(value, default)
+
+def optional_float(*sources, keys=()):
+    value = first_value(*sources, keys=keys)
+    if value in (None, ""):
+        return None
+    return safe_float(value)
+
+def calc_mcap(*sources):
+    mcap = first_float(
+        *sources,
+        keys=("market_cap", "usd_market_cap", "mcap", "fdv", "fully_diluted_valuation"),
+    )
+    if mcap > 0:
+        return mcap
+    info = sources[0] if sources and isinstance(sources[0], dict) else {}
+    return safe_float(info.get("price")) * safe_float(
+        first_value(info, keys=("circulating_supply", "total_supply", "supply"))
+    )
+
+def extract_fee_sol(*sources):
+    return first_float(
+        *sources,
+        keys=(
+            "fee_sol",
+            "total_fee_sol",
+            "fees_sol",
+            "swap_fee_sol",
+            "trade_fee_sol",
+            "tx_fee_sol",
+            "fee",
+            "total_fee",
+        ),
+    )
+
+def extract_pool_label(*sources):
+    value = first_value(
+        *sources,
+        keys=(
+            "pool_address",
+            "pair_address",
+            "pool",
+            "pair",
+            "amm",
+            "exchange",
+            "dex",
+            "router",
+        ),
+    )
+    if not value:
+        return "未知", 0.0
+    if isinstance(value, dict):
+        address = value.get("pooladdress") or value.get("pool_address") or value.get("address") or "未知"
+        exchange = value.get("exchange") or value.get("dex") or value.get("amm") or "未知"
+        liquidity = safe_float(value.get("liquidity"))
+        if liquidity > 0:
+            return f"{exchange} | {address} | 流动性 ${liquidity:,.0f}", liquidity
+        return f"{exchange} | {address}", liquidity
+    return str(value), 0.0
+
+def format_age(ts):
+    ts = safe_float(ts)
+    if ts <= 0:
+        return "未知"
+    if ts > 10_000_000_000:
+        ts = ts / 1000
+    delta = max(0, int(time.time() - ts))
+    if delta < 3600:
+        return f"{delta // 60}分钟前"
+    if delta < 86400:
+        return f"{delta // 3600}小时前"
+    return f"{delta // 86400}天前"
+
+def format_created_time(ts):
+    raw_ts = safe_float(ts)
+    if raw_ts <= 0:
+        return "未知"
+    if raw_ts > 10_000_000_000:
+        raw_ts = raw_ts / 1000
+    return f"{datetime.fromtimestamp(raw_ts).strftime('%Y-%m-%d %H:%M:%S')} ({format_age(ts)})"
+
+def normalize_ratio(value):
+    ratio = safe_float(value)
+    if ratio > 1:
+        ratio = ratio / 100
+    return max(0.0, ratio)
+
+def analyze_5m_flow(address, trend_row):
+    buys = first_float(trend_row, keys=("buys", "buy_count", "buys_5m", "buy_count_5m"))
+    sells = first_float(trend_row, keys=("sells", "sell_count", "sells_5m", "sell_count_5m"))
+    buy_volume = optional_float(
+        trend_row,
+        keys=("buy_volume", "buy_volume_5m", "buy_volume_usd", "buy_volume_5m_usd", "volume_buy"),
+    )
+    sell_volume = optional_float(
+        trend_row,
+        keys=("sell_volume", "sell_volume_5m", "sell_volume_usd", "sell_volume_5m_usd", "volume_sell"),
+    )
+    net_buy = optional_float(
+        trend_row,
+        keys=("net_buy", "net_buy_5m", "net_buy_usd", "net_buy_volume", "net_buy_volume_5m"),
+    )
+
+    if net_buy is not None:
+        inflow = net_buy > 0
+        net_flow = net_buy
+    elif buy_volume is not None and sell_volume is not None:
+        net_flow = buy_volume - sell_volume
+        inflow = net_flow > 0
+    else:
+        net_flow = buys - sells
+        inflow = buys > sells
+
+    previous = INFLOW_STATE.get(address, 0)
+    streak = previous + 1 if inflow else 0
+    INFLOW_STATE[address] = streak
+
+    return {
+        "buys_5m": int(buys),
+        "sells_5m": int(sells),
+        "net_flow_5m": net_flow,
+        "inflow_5m": inflow,
+        "inflow_streak": streak,
+        "sustained_inflow": streak >= MIN_INFLOW_STREAK,
+    }
+
+def calc_buy_score(stats):
+    score = 0
+    reasons = []
+
+    if stats["control_ratio"] >= MIN_CANDIDATE_CONTROL_RATIO:
+        score += 20
+        reasons.append(f"关联控盘{stats['control_ratio']:.1f}%")
+    if stats["cluster_size"] >= MIN_CANDIDATE_CLUSTER_SIZE:
+        score += 20
+        reasons.append(f"同频集群{stats['cluster_size']}个")
+    if stats["sm_count"] >= MIN_CANDIDATE_SM_COUNT:
+        score += 25
+        reasons.append(f"Smart Money {stats['sm_count']}")
+    if stats["holder_count"] >= MIN_CANDIDATE_HOLDER_COUNT:
+        score += 20
+        reasons.append(f"持有人{stats['holder_count']}")
+    if stats["sustained_inflow"]:
+        score += 25
+        reasons.append(f"5m连续流入{stats['inflow_streak']}轮")
+
+    return score, reasons
+
 # ---------------------------------------------------------------------------
 # 关联性与控盘砸盘深度分析
 # ---------------------------------------------------------------------------
-def analyze_control_and_dump(holders_list):
+def analyze_control_and_dump(holders_list, debug=False):
     """
     通过前100钱包分析资金关联、控盘与砸盘
     """
@@ -44,11 +233,13 @@ def analyze_control_and_dump(holders_list):
     associated_supply = 0
     associated_count = 0
     sold_supply_from_clusters = 0
+    sold_supply_pct = 0
     
     for h in holders_list:
         addr = h.get("address")
-        supply_pct = float(h.get("amount_percentage", 0)) * 100
-        sell_pct = float(h.get("sell_amount_percentage", 0))
+        supply_pct = safe_float(h.get("amount_percentage")) * 100
+        raw_sell_pct = h.get("sell_amount_percentage", 0)
+        sell_ratio = normalize_ratio(raw_sell_pct)
         buy_ts = h.get("start_holding_at", 0)
         tags = h.get("maker_token_tags", [])
         
@@ -63,14 +254,24 @@ def analyze_control_and_dump(holders_list):
         if is_labeled_associated:
             associated_supply += supply_pct
             associated_count += 1
-            sold_supply_from_clusters += supply_pct * sell_pct
+            wallet_sold_supply = supply_pct * sell_ratio
+            sold_supply_from_clusters += wallet_sold_supply
+            sold_supply_pct += wallet_sold_supply
+            if debug:
+                print(
+                    "    关联钱包 "
+                    f"{str(addr)[:6]}...{str(addr)[-4:]} | "
+                    f"标签={','.join(tags)} | 持仓={supply_pct:.2f}% | "
+                    f"原始卖出={raw_sell_pct} | 归一化卖出={sell_ratio * 100:.2f}% | "
+                    f"估算已卖供应={wallet_sold_supply:.4f}%"
+                )
 
     # 找出最大的时间聚类 (疑似隐藏庄家)
     max_cluster_size = 0
     cluster_supply = 0
     for ts, hs in time_clusters.items():
         if len(hs) >= 3: # 超过或等于 3 个钱包在 5 秒内同步买入
-            c_supply = sum(float(x.get("amount_percentage", 0)) * 100 for x in hs)
+            c_supply = sum(safe_float(x.get("amount_percentage")) * 100 for x in hs)
             if c_supply > cluster_supply:
                 cluster_supply = c_supply
                 max_cluster_size = len(hs)
@@ -82,15 +283,36 @@ def analyze_control_and_dump(holders_list):
     # 砸盘进度 = 关联钱包已卖出的比例
     # 粗略估算：如果关联钱包卖出比例 > 10% 则视为开始砸盘
     dump_progress = (sold_supply_from_clusters / associated_supply * 100) if associated_supply > 0 else 0
+    is_dumping = (
+        associated_supply >= MIN_DUMP_ASSOCIATED_SUPPLY
+        and sold_supply_pct >= MIN_DUMP_SOLD_SUPPLY
+        and dump_progress > DUMP_PROGRESS_THRESHOLD
+    )
+    if debug:
+        print(
+            "    砸盘判定: "
+            f"关联标记钱包={associated_count}个 | "
+            f"标记关联持仓={associated_supply:.2f}% | "
+            f"估算已卖供应={sold_supply_pct:.4f}% | "
+            f"最大同频集群={max_cluster_size}个/{cluster_supply:.2f}% | "
+            f"加权卖出进度={dump_progress:.2f}% | "
+            f"阈值=关联持仓>={MIN_DUMP_ASSOCIATED_SUPPLY}% 且 已卖供应>={MIN_DUMP_SOLD_SUPPLY}% 且 卖出>{DUMP_PROGRESS_THRESHOLD}% | "
+            f"结果={'砸盘中' if is_dumping else '非砸盘'}"
+        )
 
     return {
         "control_ratio": control_ratio,
         "cluster_size": max_cluster_size,
         "dump_progress": dump_progress,
-        "verdict": "砸盘中" if dump_progress > 20 else ("高度控盘" if control_ratio > 40 else "筹码分散")
+        "sold_supply_pct": sold_supply_pct,
+        "associated_count": associated_count,
+        "associated_supply": associated_supply,
+        "is_dumping": is_dumping,
+        "verdict": "砸盘中" if is_dumping else ("高度控盘" if control_ratio > 40 else "筹码分散")
     }
 
-def perform_deep_analysis(chain, address):
+def perform_deep_analysis(chain, address, trend_row=None):
+    trend_row = trend_row or {}
     # 1. 获取基本信息
     info_raw = run_command(f"gmgn-cli token info --chain {chain} --address {address} --raw")
     if not info_raw: return None
@@ -106,22 +328,63 @@ def perform_deep_analysis(chain, address):
     holders_list = holders_data.get("list", [])
     
     # 执行筹码关联分析
-    ctrl = analyze_control_and_dump(holders_list)
+    ctrl = analyze_control_and_dump(holders_list, debug=DEBUG_DEEP_LOG)
+    mcap = calc_mcap(info, trend_row)
+    holder_count = first_float(
+        info,
+        sec,
+        trend_row,
+        keys=("holder_count", "holders_count", "holder_num", "holders", "holder"),
+        default=len(holders_list),
+    )
+    fee_sol = extract_fee_sol(info, sec, trend_row)
+    pool_label, pool_liquidity = extract_pool_label(info, trend_row, sec)
+    created_at = first_value(
+        info,
+        trend_row,
+        sec,
+        keys=(
+            "created_at",
+            "creation_timestamp",
+            "created_timestamp",
+            "create_timestamp",
+            "open_timestamp",
+            "launch_timestamp",
+            "pool_creation_timestamp",
+            "pair_created_at",
+        ),
+    )
+    flow = analyze_5m_flow(address, trend_row)
     
     # 组装数据
     stats = {
         "symbol": info.get("symbol"),
-        "mcap": float(info.get("price", 0)) * float(info.get("circulating_supply", 0)),
+        "mcap": mcap,
+        "holder_count": int(holder_count),
+        "fee_sol": fee_sol,
+        "pool_label": pool_label,
+        "pool_liquidity": pool_liquidity,
+        "created_at": created_at,
+        "created_age": format_age(created_at),
+        "created_time": format_created_time(created_at),
         "sm_count": info.get("wallet_tags_stat", {}).get("smart_wallets", 0),
         "kol_count": info.get("wallet_tags_stat", {}).get("renowned_wallets", 0),
-        "top10_rate": float(sec.get("top_10_holder_rate", 0)) * 100,
+        "top10_rate": safe_float(sec.get("top_10_holder_rate")) * 100,
         "snipers": sec.get("sniper_count", 0),
         "rug_ratio": sec.get("rug_ratio", "0"),
         "control_ratio": ctrl.get("control_ratio", 0),
         "dump_progress": ctrl.get("dump_progress", 0),
+        "sold_supply_pct": ctrl.get("sold_supply_pct", 0),
+        "associated_count": ctrl.get("associated_count", 0),
+        "associated_supply": ctrl.get("associated_supply", 0),
         "cluster_size": ctrl.get("cluster_size", 0),
+        "is_dumping": ctrl.get("is_dumping", False),
         "verdict": ctrl.get("verdict", "未知")
     }
+    stats.update(flow)
+    buy_score, buy_reasons = calc_buy_score(stats)
+    stats["buy_score"] = buy_score
+    stats["buy_reasons"] = buy_reasons
     return stats
 
 # ---------------------------------------------------------------------------
@@ -132,14 +395,18 @@ def scan_pro():
         for interval in TREND_INTERVALS:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
             output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 15 --raw")
-            if not output: continue
+            if not output:
+                print(f"  No trending output for {chain} {interval}")
+                continue
             
             try:
                 data = json.loads(output)
                 tokens = data.get("data", {}).get("rank", [])
-                
+                print(f"  共发现 {len(tokens)} 个代币")
                 for t in tokens:
                     addr = t.get("address")
+                    if not addr:
+                        continue
                     
                     def check_exists(conn):
                         cur = conn.cursor()
@@ -149,18 +416,39 @@ def scan_pro():
                     if db_op(check_exists):
                         continue
                         
-                    print(f"深度透视: {t.get('symbol')}...")
-                    s = perform_deep_analysis(chain, addr)
+                    s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
+
+                    if s["mcap"] < MIN_MCAP_USD:
+                        continue
+                    if s["fee_sol"] < MIN_FEE_SOL:
+                        continue
+                    if s["is_dumping"]:
+                        continue
                     
-                    # 警报逻辑：如果发现高度控盘或者是潜在砸盘，立即通知
-                    if s["control_ratio"] > 30 or s["sm_count"] >= 3:
-                        
-                        alert_icon = "🛑" if "砸盘" in s["verdict"] else ("🟡" if s["control_ratio"] > 50 else "🟢")
+                    # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
+                    is_candidate = s["buy_score"] >= MIN_BUY_SCORE
+                    if is_candidate:
+                        print(
+                            f"  [候选] ${s['symbol']} | CA={addr} | "
+                            f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
+                            f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
+                            f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
+                            f"卖出进度={s['dump_progress']:.2f}% | "
+                            f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | 连续流入={s['inflow_streak']} | "
+                            f"可买分={s['buy_score']} | 理由={', '.join(s['buy_reasons'])}"
+                        )
+
+                        alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         
                         msg = (
                             f"{alert_icon} *筹码关联性报警* | ${s['symbol']}\n"
-                            f"市值: ${s['mcap']/1000:.1f}K | 状态: {s['verdict']}\n\n"
+                            f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
+                            f"流动性池: {s['pool_label']}\n"
+                            f"创建时间: {s['created_time']} | 状态: {s['verdict']}\n\n"
+                            f"✅ *可买评分*: {s['buy_score']} 分\n"
+                            f"- 理由: {', '.join(s['buy_reasons'])}\n"
+                            f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 连续流入: {s['inflow_streak']}轮\n\n"
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 最大同频率进场集群: {s['cluster_size']} 个钱包\n"
@@ -171,7 +459,7 @@ def scan_pro():
                             f"- 风险分数: {s['rug_ratio']}\n\n"
                             f"👥 *共识强度*\n"
                             f"- Smart Money: {s['sm_count']} | KOL: {s['kol_count']}\n\n"
-                            f"地址: `{addr}`\n"
+                            f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
                         send_tg_alert(msg)
