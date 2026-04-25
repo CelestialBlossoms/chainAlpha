@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx skills *)",
+      "Bash(npm list *)",
+      "Bash(gmgn-cli market *)",
+      "Bash(python -c ' *)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe *)",
+      "Bash(gmgn-cli token *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Read(//tmp/**)"
+    ]
+  }
+}

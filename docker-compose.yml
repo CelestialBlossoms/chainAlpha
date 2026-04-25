@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  alpha-robot:
+    build: .
+    container_name: chain-alpha-robot
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://xf22610:1314zxcV1314@43.163.225.175:5432/chainAlpha
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - TG_CHAT_ID=${TG_CHAT_ID}
+      - GMGN_API_KEY=${GMGN_API_KEY}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
