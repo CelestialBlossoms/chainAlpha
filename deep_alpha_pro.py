@@ -4,6 +4,7 @@ import time
 import requests
 from datetime import datetime
 from collections import defaultdict
+from psycopg2.extras import Json
 from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 
@@ -26,6 +27,107 @@ MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
 INFLOW_STATE = {}
 
+def save_alpha_candidate(chain, interval, address, stats):
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO alpha_token_candidates (
+                address, chain, symbol, trend_interval, mcap_at_alert,
+                holder_count, fee_sol, pool_label, pool_liquidity,
+                token_created_ts, token_created_time, verdict,
+                control_ratio, associated_supply, associated_count,
+                cluster_size, dump_progress, sold_supply_pct, is_dumping,
+                buys_5m, sells_5m, net_flow_5m, inflow_5m, inflow_streak,
+                buy_score, buy_reasons, sm_count, kol_count, top10_rate,
+                snipers, rug_ratio, raw_stats
+            ) VALUES (
+                %(address)s, %(chain)s, %(symbol)s, %(trend_interval)s, %(mcap_at_alert)s,
+                %(holder_count)s, %(fee_sol)s, %(pool_label)s, %(pool_liquidity)s,
+                %(token_created_ts)s, %(token_created_time)s, %(verdict)s,
+                %(control_ratio)s, %(associated_supply)s, %(associated_count)s,
+                %(cluster_size)s, %(dump_progress)s, %(sold_supply_pct)s, %(is_dumping)s,
+                %(buys_5m)s, %(sells_5m)s, %(net_flow_5m)s, %(inflow_5m)s, %(inflow_streak)s,
+                %(buy_score)s, %(buy_reasons)s, %(sm_count)s, %(kol_count)s, %(top10_rate)s,
+                %(snipers)s, %(rug_ratio)s, %(raw_stats)s
+            )
+            ON CONFLICT (address) DO UPDATE SET
+                chain = EXCLUDED.chain,
+                symbol = EXCLUDED.symbol,
+                trend_interval = EXCLUDED.trend_interval,
+                mcap_at_alert = EXCLUDED.mcap_at_alert,
+                holder_count = EXCLUDED.holder_count,
+                fee_sol = EXCLUDED.fee_sol,
+                pool_label = EXCLUDED.pool_label,
+                pool_liquidity = EXCLUDED.pool_liquidity,
+                token_created_ts = EXCLUDED.token_created_ts,
+                token_created_time = EXCLUDED.token_created_time,
+                verdict = EXCLUDED.verdict,
+                control_ratio = EXCLUDED.control_ratio,
+                associated_supply = EXCLUDED.associated_supply,
+                associated_count = EXCLUDED.associated_count,
+                cluster_size = EXCLUDED.cluster_size,
+                dump_progress = EXCLUDED.dump_progress,
+                sold_supply_pct = EXCLUDED.sold_supply_pct,
+                is_dumping = EXCLUDED.is_dumping,
+                buys_5m = EXCLUDED.buys_5m,
+                sells_5m = EXCLUDED.sells_5m,
+                net_flow_5m = EXCLUDED.net_flow_5m,
+                inflow_5m = EXCLUDED.inflow_5m,
+                inflow_streak = EXCLUDED.inflow_streak,
+                buy_score = EXCLUDED.buy_score,
+                buy_reasons = EXCLUDED.buy_reasons,
+                sm_count = EXCLUDED.sm_count,
+                kol_count = EXCLUDED.kol_count,
+                top10_rate = EXCLUDED.top10_rate,
+                snipers = EXCLUDED.snipers,
+                rug_ratio = EXCLUDED.rug_ratio,
+                raw_stats = EXCLUDED.raw_stats,
+                last_seen_at = NOW(),
+                alert_count = alpha_token_candidates.alert_count + 1
+        """, {
+            "address": address,
+            "chain": chain,
+            "symbol": stats.get("symbol"),
+            "trend_interval": interval,
+            "mcap_at_alert": stats.get("mcap"),
+            "holder_count": stats.get("holder_count"),
+            "fee_sol": stats.get("fee_sol"),
+            "pool_label": stats.get("pool_label"),
+            "pool_liquidity": stats.get("pool_liquidity"),
+            "token_created_ts": int(safe_float(stats.get("created_at"))) if stats.get("created_at") else None,
+            "token_created_time": stats.get("created_time"),
+            "verdict": stats.get("verdict"),
+            "control_ratio": stats.get("control_ratio"),
+            "associated_supply": stats.get("associated_supply"),
+            "associated_count": stats.get("associated_count"),
+            "cluster_size": stats.get("cluster_size"),
+            "dump_progress": stats.get("dump_progress"),
+            "sold_supply_pct": stats.get("sold_supply_pct"),
+            "is_dumping": stats.get("is_dumping"),
+            "buys_5m": stats.get("buys_5m"),
+            "sells_5m": stats.get("sells_5m"),
+            "net_flow_5m": stats.get("net_flow_5m"),
+            "inflow_5m": stats.get("inflow_5m"),
+            "inflow_streak": stats.get("inflow_streak"),
+            "buy_score": stats.get("buy_score"),
+            "buy_reasons": stats.get("buy_reasons", []),
+            "sm_count": stats.get("sm_count"),
+            "kol_count": stats.get("kol_count"),
+            "top10_rate": stats.get("top10_rate"),
+            "snipers": stats.get("snipers"),
+            "rug_ratio": str(stats.get("rug_ratio", "")),
+            "raw_stats": Json(stats),
+        })
+        cur.execute("""
+            INSERT INTO alpha_signals (address, chain, symbol, mcap_at_alert, milestone)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (address) DO UPDATE SET
+                symbol = EXCLUDED.symbol,
+                mcap_at_alert = EXCLUDED.mcap_at_alert,
+                milestone = EXCLUDED.milestone
+        """, (address, chain, stats.get("symbol"), stats.get("mcap"), f"DeepControl_{interval}"))
+    db_op(_op)
+
 def run_command(cmd):
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding='utf-8')
@@ -47,7 +149,8 @@ def send_tg_alert(msg):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=15)
-    except: pass
+    except Exception as e:
+        print(f"TG send exception: {e}")
 
 def safe_float(value, default=0.0):
     try:
@@ -463,11 +566,7 @@ def scan_pro():
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
                         send_tg_alert(msg)
-                        
-                        db_op(lambda conn: conn.cursor().execute(
-                            "INSERT INTO alpha_signals (address, chain, symbol, mcap_at_alert, milestone) VALUES (%s, %s, %s, %s, %s)",
-                            (addr, chain, s['symbol'], s['mcap'], f"DeepControl_{interval}")
-                        ))
+                        save_alpha_candidate(chain, interval, addr, s)
                     
             except Exception as e:
                 print(f"Loop Error: {e}")
