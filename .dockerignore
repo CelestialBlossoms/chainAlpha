@@ -5,5 +5,8 @@ __pycache__
 .idea
 .venv
 venv
+.env
 *.db
+data
+sol_token_scanner_state.json
 tool-outputs

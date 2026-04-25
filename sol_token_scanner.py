@@ -36,7 +36,7 @@ from urllib.request import Request, urlopen
 
 
 CHAIN = "sol"
-DEFAULT_INTERVAL_SEC = 5
+DEFAULT_INTERVAL_SEC = 30
 DEFAULT_LIMIT = 100
 STATE_PATH = Path("sol_token_scanner_state.json")
 DISCOVERY_INTERVALS = ("1m", "5m")
@@ -746,7 +746,9 @@ def main() -> int:
 
         if not args.watch:
             return 0
-        time.sleep(max(5, args.interval))
+        sleep_seconds = max(30, args.interval)
+        print(f"Next scan in {sleep_seconds}s")
+        time.sleep(sleep_seconds)
 
 
 if __name__ == "__main__":
