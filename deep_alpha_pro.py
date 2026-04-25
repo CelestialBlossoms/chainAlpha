@@ -27,7 +27,7 @@ MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
 INFLOW_STATE = {}
 
-def save_alpha_candidate(chain, interval, address, stats):
+def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
         cur = conn.cursor()
         cur.execute("""
@@ -39,7 +39,7 @@ def save_alpha_candidate(chain, interval, address, stats):
                 cluster_size, dump_progress, sold_supply_pct, is_dumping,
                 buys_5m, sells_5m, net_flow_5m, inflow_5m, inflow_streak,
                 buy_score, buy_reasons, sm_count, kol_count, top10_rate,
-                snipers, rug_ratio, raw_stats
+                snipers, rug_ratio, raw_stats, tg_chat_id, tg_message_id
             ) VALUES (
                 %(address)s, %(chain)s, %(symbol)s, %(trend_interval)s, %(mcap_at_alert)s,
                 %(holder_count)s, %(fee_sol)s, %(pool_label)s, %(pool_liquidity)s,
@@ -48,7 +48,7 @@ def save_alpha_candidate(chain, interval, address, stats):
                 %(cluster_size)s, %(dump_progress)s, %(sold_supply_pct)s, %(is_dumping)s,
                 %(buys_5m)s, %(sells_5m)s, %(net_flow_5m)s, %(inflow_5m)s, %(inflow_streak)s,
                 %(buy_score)s, %(buy_reasons)s, %(sm_count)s, %(kol_count)s, %(top10_rate)s,
-                %(snipers)s, %(rug_ratio)s, %(raw_stats)s
+                %(snipers)s, %(rug_ratio)s, %(raw_stats)s, %(tg_chat_id)s, %(tg_message_id)s
             )
             ON CONFLICT (address) DO UPDATE SET
                 chain = EXCLUDED.chain,
@@ -82,6 +82,8 @@ def save_alpha_candidate(chain, interval, address, stats):
                 snipers = EXCLUDED.snipers,
                 rug_ratio = EXCLUDED.rug_ratio,
                 raw_stats = EXCLUDED.raw_stats,
+                tg_chat_id = COALESCE(EXCLUDED.tg_chat_id, alpha_token_candidates.tg_chat_id),
+                tg_message_id = COALESCE(EXCLUDED.tg_message_id, alpha_token_candidates.tg_message_id),
                 last_seen_at = NOW(),
                 alert_count = alpha_token_candidates.alert_count + 1
         """, {
@@ -117,6 +119,8 @@ def save_alpha_candidate(chain, interval, address, stats):
             "snipers": stats.get("snipers"),
             "rug_ratio": str(stats.get("rug_ratio", "")),
             "raw_stats": Json(stats),
+            "tg_chat_id": str(TG_CHAT_ID) if tg_message_id else None,
+            "tg_message_id": tg_message_id,
         })
         cur.execute("""
             INSERT INTO alpha_signals (address, chain, symbol, mcap_at_alert, milestone)
@@ -145,12 +149,71 @@ def run_command(cmd):
 def send_tg_alert(msg):
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
         print(f"--- TG ALERT ---\n{msg}\n----------------")
-        return
+        return None
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=15)
+        resp = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg}, timeout=15)
+        if not resp.ok:
+            print(f"TG send failed: http={resp.status_code} body={resp.text[:200]}")
+            return None
+        payload = resp.json()
+        if not payload.get("ok"):
+            print(f"TG send failed: {payload}")
+            return None
+        return payload.get("result", {}).get("message_id")
     except Exception as e:
         print(f"TG send exception: {e}")
+        return None
+
+def edit_tg_alert(chat_id, message_id, msg):
+    if not TG_BOT_TOKEN or "浣犵殑" in TG_BOT_TOKEN or not chat_id or not message_id:
+        return False
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/editMessageText"
+    try:
+        resp = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": msg,
+            },
+            timeout=15,
+        )
+        if resp.ok and resp.json().get("ok"):
+            return True
+        print(f"TG edit failed: http={resp.status_code} body={resp.text[:200]}")
+        return "message is not modified" in resp.text.lower()
+    except Exception as e:
+        print(f"TG edit exception: {e}")
+        return False
+
+def get_existing_tg_alert(address):
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT tg_chat_id, tg_message_id FROM alpha_token_candidates WHERE address=%s",
+            (address,),
+        )
+        return cur.fetchone()
+    row = db_op(_op)
+    if not row:
+        return None, None
+    return row[0], row[1]
+
+def candidate_exists(address):
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM alpha_token_candidates WHERE address=%s",
+            (address,),
+        )
+        return cur.fetchone() is not None
+    return db_op(_op)
+
+def upsert_tg_alert(address, msg):
+    if candidate_exists(address):
+        return None
+    return send_tg_alert(msg)
 
 def safe_float(value, default=0.0):
     try:
@@ -343,7 +406,7 @@ def analyze_control_and_dump(holders_list, debug=False):
         supply_pct = safe_float(h.get("amount_percentage")) * 100
         raw_sell_pct = h.get("sell_amount_percentage", 0)
         sell_ratio = normalize_ratio(raw_sell_pct)
-        buy_ts = h.get("start_holding_at", 0)
+        buy_ts = safe_float(h.get("start_holding_at"))
         tags = h.get("maker_token_tags", [])
         
         # 核心关联逻辑 A：官方标记的捆绑包或老鼠仓
@@ -351,8 +414,9 @@ def analyze_control_and_dump(holders_list, debug=False):
         
         # 核心关联逻辑 B：时间聚类 (5秒内进场视为疑似关联)
         # 将时间戳规整到 5 秒区间
-        time_key = buy_ts // 5 
-        time_clusters[time_key].append(h)
+        if buy_ts > 0:
+            time_key = int(buy_ts) // 5 
+            time_clusters[time_key].append(h)
         
         if is_labeled_associated:
             associated_supply += supply_pct
@@ -497,7 +561,7 @@ def scan_pro():
     for chain in CHAINS:
         for interval in TREND_INTERVALS:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
-            output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 15 --raw")
+            output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 50 --raw")
             if not output:
                 print(f"  No trending output for {chain} {interval}")
                 continue
@@ -511,14 +575,6 @@ def scan_pro():
                     if not addr:
                         continue
                     
-                    def check_exists(conn):
-                        cur = conn.cursor()
-                        cur.execute("SELECT 1 FROM alpha_signals WHERE address=%s", (addr,))
-                        return cur.fetchone() is not None
-                    
-                    if db_op(check_exists):
-                        continue
-                        
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
 
@@ -565,8 +621,8 @@ def scan_pro():
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
-                        send_tg_alert(msg)
-                        save_alpha_candidate(chain, interval, addr, s)
+                        tg_message_id = upsert_tg_alert(addr, msg)
+                        save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                     
             except Exception as e:
                 print(f"Loop Error: {e}")

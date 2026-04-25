@@ -51,10 +51,16 @@ def init_tables(conn):
             snipers INTEGER,
             rug_ratio TEXT,
             raw_stats JSONB,
+            tg_chat_id TEXT,
+            tg_message_id BIGINT,
             first_seen_at TIMESTAMPTZ DEFAULT NOW(),
             last_seen_at TIMESTAMPTZ DEFAULT NOW(),
             alert_count INTEGER DEFAULT 1
         );
+        ALTER TABLE alpha_token_candidates
+            ADD COLUMN IF NOT EXISTS tg_chat_id TEXT;
+        ALTER TABLE alpha_token_candidates
+            ADD COLUMN IF NOT EXISTS tg_message_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_alpha_candidates_score
             ON alpha_token_candidates(buy_score DESC);
         CREATE INDEX IF NOT EXISTS idx_alpha_candidates_last_seen
