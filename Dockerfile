@@ -19,10 +19,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+RUN mkdir -p /app/data
 
-RUN chmod +x entrypoint.sh \
-    && mkdir -p /app/data
-
-ENTRYPOINT ["./entrypoint.sh"]
-CMD ["python", "sol_token_scanner.py", "--watch", "--notify", "--state-file", "/app/data/sol_token_scanner_state.json"]
+ENTRYPOINT ["sh", "/app/entrypoint.sh"]
+CMD ["python", "deep_alpha_pro.py"]

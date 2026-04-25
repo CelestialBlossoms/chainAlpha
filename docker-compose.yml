@@ -1,17 +1,18 @@
 services:
   alpha-robot:
-    build: .
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: chain-alpha-robot
     restart: unless-stopped
+    working_dir: /app
     volumes:
+      - .:/app
       - ./data:/app/data
     command:
       - python
-      - sol_token_scanner.py
-      - --watch
-      - --notify
-      - --state-file
-      - /app/data/sol_token_scanner_state.json
+      - deep_alpha_pro.py
     logging:
       driver: json-file
       options:
