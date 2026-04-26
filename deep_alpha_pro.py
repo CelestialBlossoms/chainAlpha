@@ -539,13 +539,14 @@ def analyze_source_clusters(holders_list):
         }
     return best
 
-def analyze_wallet_creation_clusters(holders_list):
-    non_pool = [h for h in holders_list if not is_pool_holder(h)]
-    now = time.time()
-    new_wallets = [
-        h for h in non_pool
-        if h.get("is_new") or (holder_created_ts(h) > 0 and now - holder_created_ts(h) <= NEW_WALLET_WINDOW_SEC)
-    ]
+def is_recent_new_wallet(holder, now=None):
+    now = now or time.time()
+    return holder.get("is_new") or (
+        holder_created_ts(holder) > 0
+        and now - holder_created_ts(holder) <= NEW_WALLET_WINDOW_SEC
+    )
+
+def find_best_creation_cluster(non_pool):
     created_wallets = sorted(
         [(holder_created_ts(holder), holder) for holder in non_pool if holder_created_ts(holder) > 0],
         key=lambda item: item[0],
@@ -565,6 +566,13 @@ def analyze_wallet_creation_clusters(holders_list):
             best_supply = supply
             best_start_ts = start_ts
             best_end_ts = max(holder_created_ts(w) for w in wallets)
+    return best_wallets, best_supply, best_start_ts, best_end_ts
+
+def analyze_wallet_creation_clusters(holders_list):
+    non_pool = [h for h in holders_list if not is_pool_holder(h)]
+    now = time.time()
+    new_wallets = [h for h in non_pool if is_recent_new_wallet(h, now=now)]
+    best_wallets, best_supply, best_start_ts, best_end_ts = find_best_creation_cluster(non_pool)
 
     new_supply = sum(safe_float(w.get("amount_percentage")) * 100 for w in new_wallets)
     new_usd_value = sum(safe_float(w.get("usd_value")) for w in new_wallets)
@@ -989,7 +997,7 @@ def holder_tags(holder):
         tags.update(str(tag) for tag in raw_tags)
     if isinstance(maker_tags, list):
         tags.update(str(tag) for tag in maker_tags)
-    if holder.get("is_new"):
+    if is_recent_new_wallet(holder):
         tags.add("fresh_wallet")
     return tags
 
@@ -1054,6 +1062,34 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             tag_lines.append(
                 f"{label}{len(wallets)}个/{supply:.1f}% 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均${avg_cost:.10f} 中${mid_cost:.10f}"
             )
+
+    same_batch_wallets, _, same_batch_start_ts, same_batch_end_ts = find_best_creation_cluster(non_pool)
+    if same_batch_wallets:
+        label = "同批创建簇"
+        supply = sum(safe_float(h.get("amount_percentage")) * 100 for h in same_batch_wallets)
+        buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in same_batch_wallets)
+        sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in same_batch_wallets)
+        netflow = sum(holder_net_buy_usd(h) for h in same_batch_wallets)
+        avg_cost = weighted_avg_cost(same_batch_wallets)
+        mid_cost = median_cost(same_batch_wallets)
+        date_range = (
+            f"{datetime.fromtimestamp(same_batch_start_ts).strftime('%m-%d')}~"
+            f"{datetime.fromtimestamp(same_batch_end_ts).strftime('%m-%d')}"
+        )
+        tag_stats["same_creation_cluster"] = {
+            "label": label,
+            "count": len(same_batch_wallets),
+            "supply": supply,
+            "buy_volume": buy_volume,
+            "sell_volume": sell_volume,
+            "netflow": netflow,
+            "avg_cost": avg_cost,
+            "median_cost": mid_cost,
+            "date_range": date_range,
+        }
+        tag_lines.append(
+            f"{label}({date_range}) {len(same_batch_wallets)}个/{supply:.1f}% 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均${avg_cost:.10f} 中${mid_cost:.10f}"
+        )
 
     top20 = non_pool[:20]
     top50 = non_pool[:50]
