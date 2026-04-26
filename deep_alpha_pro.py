@@ -571,9 +571,13 @@ def analyze_wallet_creation_clusters(holders_list):
     new_buy_volume = sum(safe_float(w.get("buy_volume_cur")) for w in new_wallets)
     new_sell_volume = sum(safe_float(w.get("sell_volume_cur")) for w in new_wallets)
     new_netflow = sum(holder_net_buy_usd(w) for w in new_wallets)
+    new_avg_cost = weighted_avg_cost(new_wallets)
+    new_median_cost = median_cost(new_wallets)
     cluster_buy = sum(safe_float(w.get("buy_volume_cur")) for w in best_wallets)
     cluster_sell = sum(safe_float(w.get("sell_volume_cur")) for w in best_wallets)
     cluster_netflow = sum(holder_net_buy_usd(w) for w in best_wallets)
+    cluster_avg_cost = weighted_avg_cost(best_wallets)
+    cluster_median_cost = median_cost(best_wallets)
     cluster_desc = "未发现同批创建钱包"
     if best_wallets:
         cluster_desc = (
@@ -594,11 +598,15 @@ def analyze_wallet_creation_clusters(holders_list):
         "new_wallet_buy_volume": new_buy_volume,
         "new_wallet_sell_volume": new_sell_volume,
         "new_wallet_netflow": new_netflow,
+        "new_wallet_avg_cost": new_avg_cost,
+        "new_wallet_median_cost": new_median_cost,
         "wallet_creation_cluster_size": len(best_wallets),
         "wallet_creation_cluster_supply": best_supply,
         "wallet_creation_cluster_buy_volume": cluster_buy,
         "wallet_creation_cluster_sell_volume": cluster_sell,
         "wallet_creation_cluster_netflow": cluster_netflow,
+        "wallet_creation_cluster_avg_cost": cluster_avg_cost,
+        "wallet_creation_cluster_median_cost": cluster_median_cost,
         "wallet_creation_cluster_desc": cluster_desc,
         "conspiracy_wallet_score": min(conspiracy_score, 100),
     }
@@ -997,6 +1005,19 @@ def weighted_avg_cost(holders):
         total_cost += avg_cost * amount
     return total_cost / total_amount if total_amount > 0 else 0.0
 
+def median_cost(holders):
+    costs = sorted(
+        safe_float(holder.get("avg_cost"))
+        for holder in holders
+        if safe_float(holder.get("avg_cost")) > 0
+    )
+    if not costs:
+        return 0.0
+    mid = len(costs) // 2
+    if len(costs) % 2:
+        return costs[mid]
+    return (costs[mid - 1] + costs[mid]) / 2
+
 def analyze_holder_tags_and_costs(holders_list, current_price):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     tag_defs = [
@@ -1017,6 +1038,8 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
         netflow = sum(holder_net_buy_usd(h) for h in wallets)
+        avg_cost = weighted_avg_cost(wallets)
+        mid_cost = median_cost(wallets)
         tag_stats[tag_key] = {
             "label": label,
             "count": len(wallets),
@@ -1024,10 +1047,12 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "netflow": netflow,
+            "avg_cost": avg_cost,
+            "median_cost": mid_cost,
         }
         if wallets:
             tag_lines.append(
-                f"{label}{len(wallets)}个/{supply:.1f}% 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f}"
+                f"{label}{len(wallets)}个/{supply:.1f}% 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均${avg_cost:.10f} 中${mid_cost:.10f}"
             )
 
     top20 = non_pool[:20]
@@ -1056,6 +1081,16 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         supply = sum(safe_float(h.get("amount_percentage")) * 100 for h in wallets)
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
+        avg_cost = weighted_avg_cost(wallets)
+        mid_cost = median_cost(wallets)
+        price_low = current_price * low if current_price > 0 else 0
+        price_high = current_price * high if current_price > 0 and high != float("inf") else 0
+        if high == float("inf"):
+            price_range = f">${price_low:.10f}"
+        else:
+            price_range = f"${price_low:.10f}-${price_high:.10f}"
+        pnl_ratio = (current_price / avg_cost) if avg_cost > 0 else 0
+        pnl_text = "盈利" if pnl_ratio >= 1 else "亏损"
         band_stats.append({
             "label": label,
             "count": len(wallets),
@@ -1063,10 +1098,15 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "netflow": sum(holder_net_buy_usd(h) for h in wallets),
+            "avg_cost": avg_cost,
+            "median_cost": mid_cost,
+            "price_range": price_range,
+            "pnl_ratio": pnl_ratio,
+            "pnl_text": pnl_text,
         })
     dominant_band = max(band_stats, key=lambda item: item["supply"], default={"label": "未知", "supply": 0, "count": 0})
-    band_desc = " | ".join(
-        f"{item['label']}{item['count']}个/{item['supply']:.1f}%"
+    band_desc = "\n".join(
+        f"{item['label']}({item['price_range']}) {item['count']}个/{item['supply']:.1f}% {item['pnl_text']}{item['pnl_ratio']:.2f}x"
         for item in band_stats
         if item["count"] > 0
     ) or "无有效成本数据"
@@ -1488,7 +1528,9 @@ def scan_pro():
                             f"- 同源买卖: 买入 ${s['source_cluster_buy_volume']:,.0f} | 卖出 ${s['source_cluster_sell_volume']:,.0f} | 净流 ${s['source_cluster_netflow']:,.0f}\n"
                             f"- 新/同批钱包风险: {s['conspiracy_wallet_score']} | 新钱包 {s['new_wallet_count']}个/{s['new_wallet_supply']:.1f}% | 持仓 ${s['new_wallet_usd_value']:,.0f}\n"
                             f"- 新钱包买卖: 买入 ${s['new_wallet_buy_volume']:,.0f} | 卖出 ${s['new_wallet_sell_volume']:,.0f} | 净流 ${s['new_wallet_netflow']:,.0f}\n"
+                            f"- 新钱包成本: 均价 ${s['new_wallet_avg_cost']:.10f} | 中位 ${s['new_wallet_median_cost']:.10f}\n"
                             f"- 同批创建簇: {s['wallet_creation_cluster_desc']} | 净流 ${s['wallet_creation_cluster_netflow']:,.0f}\n"
+                            f"- 同批成本: 均价 ${s['wallet_creation_cluster_avg_cost']:.10f} | 中位 ${s['wallet_creation_cluster_median_cost']:.10f}\n"
                             f"- 庄家出货进度: {s['dump_progress']:.1f}%\n\n"
                             f"🏷️ *标签钱包分析*\n"
                             f"{s['holder_tag_desc']}\n\n"
@@ -1498,7 +1540,7 @@ def scan_pro():
                             f"- Top50成本: ${s['top50_avg_cost']:.10f} | 当前/成本 {s['top50_cost_ratio']:.2f}x\n"
                             f"- Top100成本: ${s['top100_avg_cost']:.10f} | 当前/成本 {s['top100_cost_ratio']:.2f}x\n"
                             f"- 主成本区: {s['dominant_cost_band']} {s['dominant_cost_band_count']}个/{s['dominant_cost_band_supply']:.1f}%\n"
-                            f"- 区间分布: {s['cost_band_desc']}\n\n"
+                            f"- 区间分布:\n{s['cost_band_desc']}\n\n"
                             f"💸 *前排资金异动*\n"
                             f"- 结论: {s['holder_flow_verdict']}\n"
                             f"- 前20净流: ${s['front_holder_netflow']:,.0f} | 买入 ${s['front_holder_buy_volume']:,.0f} / 卖出 ${s['front_holder_sell_volume']:,.0f}\n"
