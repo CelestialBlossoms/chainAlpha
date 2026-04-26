@@ -27,7 +27,7 @@ MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
 MAX_DEV_BUY_USD = 500
 MAX_DEV_HOLD_RATE = 0.30
-MAX_TOKEN_AGE_SEC = 2 * 24 * 60 * 60
+MAX_MCAP_USD = 1_000_000
 INFLOW_STATE = {}
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
@@ -640,12 +640,6 @@ def perform_deep_analysis(chain, address, trend_row=None):
             "pair_created_at",
         ),
     )
-    created_ts = safe_float(created_at)
-    if created_ts > 10_000_000_000:
-        created_ts = created_ts / 1000
-    if created_ts > 0 and time.time() - created_ts > MAX_TOKEN_AGE_SEC:
-        print(f"  [跳过] 创建超过2天 {address}: {format_created_time(created_at)}")
-        return None
     flow = analyze_5m_flow(address, trend_row)
     
     # 组装数据
@@ -702,11 +696,16 @@ def scan_pro():
                     addr = t.get("address")
                     if not addr:
                         continue
+                    trend_mcap = calc_mcap(t)
+                    if trend_mcap > MAX_MCAP_USD:
+                        continue
                     
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
 
                     if s["mcap"] < MIN_MCAP_USD:
+                        continue
+                    if s["mcap"] > MAX_MCAP_USD:
                         continue
                     if s["fee_sol"] < MIN_FEE_SOL:
                         continue
