@@ -782,7 +782,10 @@ def is_kline_candidate_ok(stats):
     if score < MIN_CANDIDATE_KLINE_SCORE:
         return False
     weak_keywords = ("走弱", "尾段转弱", "插针重", "高度控盘", "放量下跌", "拉高回落")
-    return not any(keyword in verdict for keyword in weak_keywords)
+    if any(keyword in verdict for keyword in weak_keywords):
+        return False
+    bad_structures = {"高控盘波动", "放量派发", "横盘派发", "拉高回落", "批量钱包控盘"}
+    return stats.get("market_structure") not in bad_structures
 
 def refine_kline_with_holder_flow(stats):
     verdict = str(stats.get("kline_verdict") or "")
@@ -805,6 +808,88 @@ def refine_kline_with_holder_flow(stats):
     elif has_distribution and not has_absorption:
         stats["kline_verdict"] = "放量横盘-派发"
         stats["kline_score"] = max(0, stats.get("kline_score", 0) - 20)
+
+def derive_market_structure(stats):
+    kline = str(stats.get("kline_verdict") or "")
+    front_flow = stats.get("front_holder_netflow", 0)
+    top_flow = stats.get("holder_flow_netflow", 0)
+    accumulation = stats.get("accumulation_score", 0)
+    distribution = stats.get("distribution_score", 0)
+    low_sell_supply = stats.get("low_sell_supply", 0)
+    high_sell_supply = stats.get("high_sell_supply", 0)
+    source_supply = stats.get("source_cluster_supply", 0)
+    source_netflow = stats.get("source_cluster_netflow", 0)
+    conspiracy = stats.get("conspiracy_wallet_score", 0)
+
+    if "放量横盘-吸筹" in kline and accumulation >= 45 and front_flow >= 0:
+        return {
+            "market_structure": "横盘吸筹",
+            "market_structure_score": 25,
+            "market_structure_reason": "放量横盘且前排/Top100净流入，低卖出钱包支撑",
+            "market_structure_risk": "低",
+        }
+    if "放量横盘" in kline and source_supply >= 8 and source_netflow > 0:
+        return {
+            "market_structure": "同源吸筹",
+            "market_structure_score": 20,
+            "market_structure_reason": "放量横盘叠加同源钱包净买入",
+            "market_structure_risk": "中",
+        }
+    if "放量上涨-健康" in kline and accumulation >= 35 and distribution < 45:
+        return {
+            "market_structure": "健康上涨",
+            "market_structure_score": 20,
+            "market_structure_reason": "放量上涨且筹码未出现明显派发",
+            "market_structure_risk": "低",
+        }
+    if ("缩量大涨" in kline or "缩量大跌" in kline) and (source_supply >= 8 or stats.get("control_ratio", 0) >= 30):
+        return {
+            "market_structure": "高控盘波动",
+            "market_structure_score": -35,
+            "market_structure_reason": "缩量大幅波动叠加筹码/同源集中，价格易被少量资金推动",
+            "market_structure_risk": "高",
+        }
+    if "放量下跌" in kline and (distribution >= 45 or front_flow < 0 or top_flow < 0):
+        return {
+            "market_structure": "放量派发",
+            "market_structure_score": -40,
+            "market_structure_reason": "放量下跌叠加前排/Top100流出",
+            "market_structure_risk": "高",
+        }
+    if "放量横盘-派发" in kline or (distribution >= 45 and high_sell_supply >= 5):
+        return {
+            "market_structure": "横盘派发",
+            "market_structure_score": -35,
+            "market_structure_reason": "价格横住但高卖出钱包和出货模型偏强",
+            "market_structure_risk": "高",
+        }
+    if "拉高回落" in kline:
+        return {
+            "market_structure": "拉高回落",
+            "market_structure_score": -30,
+            "market_structure_reason": "当前价从高位明显回撤，追高风险大",
+            "market_structure_risk": "高",
+        }
+    if conspiracy >= 50 and source_supply >= 5:
+        return {
+            "market_structure": "批量钱包控盘",
+            "market_structure_score": -25,
+            "market_structure_reason": "新/同批钱包风险高且同源持仓明显",
+            "market_structure_risk": "高",
+        }
+    if accumulation >= 45 and low_sell_supply >= 5:
+        return {
+            "market_structure": "筹码吸筹",
+            "market_structure_score": 15,
+            "market_structure_reason": "Top100低卖出钱包和吸筹模型较强",
+            "market_structure_risk": "中",
+        }
+    return {
+        "market_structure": "观察",
+        "market_structure_score": 0,
+        "market_structure_reason": "量价和筹码方向尚未形成明确共振",
+        "market_structure_risk": "中",
+    }
 
 def inflow_status_text(stats):
     streak = int(stats.get("inflow_streak", 0))
@@ -1017,6 +1102,10 @@ def calc_buy_score(stats):
     elif stats.get("kline_score", 0) > 0 and stats.get("kline_score", 0) <= 35:
         score -= 20
         reasons.append(f"K线弱{stats['kline_score']}({stats['kline_verdict']})")
+    structure_score = stats.get("market_structure_score", 0)
+    if structure_score:
+        score += structure_score
+        reasons.append(f"结构:{stats.get('market_structure')}({structure_score:+d})")
 
     return max(0, score), reasons
 
@@ -1224,6 +1313,7 @@ def perform_deep_analysis(chain, address, trend_row=None):
     stats.update(wallet_creation)
     stats.update(kline_health)
     refine_kline_with_holder_flow(stats)
+    stats.update(derive_market_structure(stats))
     stats["inflow_status"] = inflow_status_text(stats)
     buy_score, buy_reasons = calc_buy_score(stats)
     stats["buy_score"] = buy_score
@@ -1281,6 +1371,7 @@ def scan_pro():
                             f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
                             f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
                             f"类型={s['token_age_type']} | K线={s['kline_score']}/{s['kline_verdict']} | "
+                            f"结构={s['market_structure']} | "
                             f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
                             f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
                             f"卖出进度={s['dump_progress']:.2f}% | "
@@ -1296,6 +1387,8 @@ def scan_pro():
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
+                            f"🧭 *市场结构*: {s['market_structure']} | 风险: {s['market_structure_risk']}\n"
+                            f"- {s['market_structure_reason']}\n\n"
                             f"✅ *可买评分*: {s['buy_score']} 分\n"
                             f"- 理由: {', '.join(s['buy_reasons'])}\n"
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 流入状态: {s['inflow_status']}\n\n"
