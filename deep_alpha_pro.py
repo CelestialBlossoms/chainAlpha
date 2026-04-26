@@ -547,6 +547,10 @@ def analyze_wallet_creation_clusters(holders_list):
             best_bucket = bucket
 
     new_supply = sum(safe_float(w.get("amount_percentage")) * 100 for w in new_wallets)
+    new_usd_value = sum(safe_float(w.get("usd_value")) for w in new_wallets)
+    new_buy_volume = sum(safe_float(w.get("buy_volume_cur")) for w in new_wallets)
+    new_sell_volume = sum(safe_float(w.get("sell_volume_cur")) for w in new_wallets)
+    new_netflow = sum(holder_net_buy_usd(w) for w in new_wallets)
     cluster_buy = sum(safe_float(w.get("buy_volume_cur")) for w in best_wallets)
     cluster_sell = sum(safe_float(w.get("sell_volume_cur")) for w in best_wallets)
     cluster_netflow = sum(holder_net_buy_usd(w) for w in best_wallets)
@@ -567,6 +571,10 @@ def analyze_wallet_creation_clusters(holders_list):
     return {
         "new_wallet_count": len(new_wallets),
         "new_wallet_supply": new_supply,
+        "new_wallet_usd_value": new_usd_value,
+        "new_wallet_buy_volume": new_buy_volume,
+        "new_wallet_sell_volume": new_sell_volume,
+        "new_wallet_netflow": new_netflow,
         "wallet_creation_cluster_size": len(best_wallets),
         "wallet_creation_cluster_supply": best_supply,
         "wallet_creation_cluster_buy_volume": cluster_buy,
@@ -1043,7 +1051,8 @@ def scan_pro():
                             f"- 同资金/Token来源: {s['source_cluster_desc']}\n"
                             f"- 同源持仓: {s['source_cluster_supply']:.2f}% | ${s['source_cluster_usd_value']:,.0f} | Token数量 {s['source_cluster_amount']:,.0f}\n"
                             f"- 同源买卖: 买入 ${s['source_cluster_buy_volume']:,.0f} | 卖出 ${s['source_cluster_sell_volume']:,.0f} | 净流 ${s['source_cluster_netflow']:,.0f}\n"
-                            f"- 新/同批钱包风险: {s['conspiracy_wallet_score']} | 新钱包 {s['new_wallet_count']}个/{s['new_wallet_supply']:.1f}%\n"
+                            f"- 新/同批钱包风险: {s['conspiracy_wallet_score']} | 新钱包 {s['new_wallet_count']}个/{s['new_wallet_supply']:.1f}% | 持仓 ${s['new_wallet_usd_value']:,.0f}\n"
+                            f"- 新钱包买卖: 买入 ${s['new_wallet_buy_volume']:,.0f} | 卖出 ${s['new_wallet_sell_volume']:,.0f} | 净流 ${s['new_wallet_netflow']:,.0f}\n"
                             f"- 同批创建簇: {s['wallet_creation_cluster_desc']} | 净流 ${s['wallet_creation_cluster_netflow']:,.0f}\n"
                             f"- 庄家出货进度: {s['dump_progress']:.1f}%\n\n"
                             f"💸 *前排资金异动*\n"
