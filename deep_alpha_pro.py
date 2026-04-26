@@ -1,4 +1,4 @@
-import json
+﻿import json
 import subprocess
 import time
 import requests
@@ -28,6 +28,8 @@ MIN_INFLOW_STREAK = 2
 MAX_DEV_BUY_USD = 500
 MAX_DEV_HOLD_RATE = 0.30
 MAX_MCAP_USD = 1_000_000
+MIN_TOP_HOLDER_NETFLOW_USD = 5_000
+MIN_FRONT_HOLDER_NETFLOW_USD = 2_000
 INFLOW_STATE = {}
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
@@ -307,8 +309,6 @@ def extract_pool_label(*sources):
     value = first_value(
         *sources,
         keys=(
-            "pool_address",
-            "pair_address",
             "pool",
             "pair",
             "amm",
@@ -320,12 +320,11 @@ def extract_pool_label(*sources):
     if not value:
         return "未知", 0.0
     if isinstance(value, dict):
-        address = value.get("pooladdress") or value.get("pool_address") or value.get("address") or "未知"
         exchange = value.get("exchange") or value.get("dex") or value.get("amm") or "未知"
         liquidity = safe_float(value.get("liquidity"))
         if liquidity > 0:
-            return f"{exchange} | {address} | 流动性 ${liquidity:,.0f}", liquidity
-        return f"{exchange} | {address}", liquidity
+            return f"{exchange} | 流动性 ${liquidity:,.0f}", liquidity
+        return f"{exchange}", liquidity
     return str(value), 0.0
 
 def format_age(ts):
@@ -436,6 +435,122 @@ def extract_dev_risk(info, sec, trend_row, holders_list):
         "reasons": reasons,
     }
 
+def is_pool_holder(holder):
+    return safe_float(holder.get("addr_type")) == 2 or "pool" in str(holder.get("exchange") or "").lower()
+
+def short_addr(address):
+    address = str(address or "")
+    if len(address) <= 12:
+        return address
+    return f"{address[:6]}...{address[-4:]}"
+
+def source_address(holder, key):
+    value = holder.get(key)
+    if not isinstance(value, dict):
+        return ""
+    address = str(value.get("address") or "").strip()
+    holder_address = str(holder.get("address") or holder.get("wallet_address") or "").strip()
+    if not address or address == holder_address:
+        return ""
+    return address
+
+def analyze_source_clusters(holders_list):
+    clusters = defaultdict(list)
+    for holder in holders_list:
+        if is_pool_holder(holder):
+            continue
+        native_source = source_address(holder, "native_transfer")
+        token_source = source_address(holder, "token_transfer_in")
+        if native_source:
+            clusters[("资金来源", native_source)].append(holder)
+        if token_source:
+            clusters[("Token来源", token_source)].append(holder)
+
+    best = {
+        "source_cluster_type": "无",
+        "source_cluster_address": "",
+        "source_cluster_size": 0,
+        "source_cluster_supply": 0.0,
+        "source_cluster_usd_value": 0.0,
+        "source_cluster_amount": 0.0,
+        "source_cluster_buy_volume": 0.0,
+        "source_cluster_sell_volume": 0.0,
+        "source_cluster_netflow": 0.0,
+        "source_cluster_desc": "未发现同资金/Token来源",
+    }
+    for (source_type, address), wallets in clusters.items():
+        if len(wallets) < 2:
+            continue
+        supply = sum(safe_float(w.get("amount_percentage")) * 100 for w in wallets)
+        usd_value = sum(safe_float(w.get("usd_value")) for w in wallets)
+        amount = sum(safe_float(w.get("amount_cur") or w.get("balance")) for w in wallets)
+        buy_volume = sum(safe_float(w.get("buy_volume_cur")) for w in wallets)
+        sell_volume = sum(safe_float(w.get("sell_volume_cur")) for w in wallets)
+        netflow = sum(safe_float(w.get("netflow_usd")) for w in wallets)
+        if netflow == 0 and (buy_volume > 0 or sell_volume > 0):
+            netflow = buy_volume - sell_volume
+        if supply <= best["source_cluster_supply"]:
+            continue
+        best = {
+            "source_cluster_type": source_type,
+            "source_cluster_address": address,
+            "source_cluster_size": len(wallets),
+            "source_cluster_supply": supply,
+            "source_cluster_usd_value": usd_value,
+            "source_cluster_amount": amount,
+            "source_cluster_buy_volume": buy_volume,
+            "source_cluster_sell_volume": sell_volume,
+            "source_cluster_netflow": netflow,
+            "source_cluster_desc": f"{source_type} {short_addr(address)} | {len(wallets)}个钱包 | 持仓{supply:.2f}%/${usd_value:,.0f}",
+        }
+    return best
+
+def analyze_holder_flow(holders_list):
+    non_pool = [h for h in holders_list if not is_pool_holder(h)]
+    front = non_pool[:20]
+
+    buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in non_pool)
+    sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in non_pool)
+    netflow = sum(safe_float(h.get("netflow_usd")) for h in non_pool)
+    if netflow == 0 and (buy_volume > 0 or sell_volume > 0):
+        netflow = buy_volume - sell_volume
+
+    front_buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in front)
+    front_sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in front)
+    front_netflow = sum(safe_float(h.get("netflow_usd")) for h in front)
+    if front_netflow == 0 and (front_buy_volume > 0 or front_sell_volume > 0):
+        front_netflow = front_buy_volume - front_sell_volume
+
+    net_buy_count = sum(1 for h in non_pool if safe_float(h.get("netflow_usd")) > 0 or safe_float(h.get("buy_volume_cur")) > safe_float(h.get("sell_volume_cur")))
+    net_sell_count = sum(1 for h in non_pool if safe_float(h.get("netflow_usd")) < 0 or safe_float(h.get("sell_volume_cur")) > safe_float(h.get("buy_volume_cur")))
+    front_net_buy_count = sum(1 for h in front if safe_float(h.get("netflow_usd")) > 0 or safe_float(h.get("buy_volume_cur")) > safe_float(h.get("sell_volume_cur")))
+    front_net_sell_count = sum(1 for h in front if safe_float(h.get("netflow_usd")) < 0 or safe_float(h.get("sell_volume_cur")) > safe_float(h.get("buy_volume_cur")))
+
+    if front_netflow >= MIN_FRONT_HOLDER_NETFLOW_USD and front_net_buy_count >= front_net_sell_count:
+        verdict = "前排吸筹"
+    elif front_netflow <= -MIN_FRONT_HOLDER_NETFLOW_USD and front_net_sell_count > front_net_buy_count:
+        verdict = "前排流出"
+    elif netflow >= MIN_TOP_HOLDER_NETFLOW_USD and net_buy_count >= net_sell_count:
+        verdict = "Top100吸筹"
+    elif netflow <= -MIN_TOP_HOLDER_NETFLOW_USD and net_sell_count > net_buy_count:
+        verdict = "Top100流出"
+    else:
+        verdict = "未确认"
+
+    return {
+        "holder_flow_verdict": verdict,
+        "holder_flow_buy_volume": buy_volume,
+        "holder_flow_sell_volume": sell_volume,
+        "holder_flow_netflow": netflow,
+        "holder_flow_net_buy_count": net_buy_count,
+        "holder_flow_net_sell_count": net_sell_count,
+        "front_holder_netflow": front_netflow,
+        "front_holder_buy_volume": front_buy_volume,
+        "front_holder_sell_volume": front_sell_volume,
+        "front_holder_net_buy_count": front_net_buy_count,
+        "front_holder_net_sell_count": front_net_sell_count,
+    }
+
 def analyze_5m_flow(address, trend_row):
     buys = first_float(trend_row, keys=("buys", "buy_count", "buys_5m", "buy_count_5m"))
     sells = first_float(trend_row, keys=("sells", "sell_count", "sells_5m", "sell_count_5m"))
@@ -485,6 +600,12 @@ def calc_buy_score(stats):
     if stats["cluster_size"] >= MIN_CANDIDATE_CLUSTER_SIZE:
         score += 20
         reasons.append(f"同频集群{stats['cluster_size']}个")
+    if stats.get("source_cluster_size", 0) >= 3:
+        score += 20
+        reasons.append(f"同源关联{stats['source_cluster_size']}个/{stats['source_cluster_supply']:.1f}%")
+    elif stats.get("source_cluster_size", 0) >= 2 and stats.get("source_cluster_supply", 0) >= MIN_CANDIDATE_CONTROL_RATIO:
+        score += 12
+        reasons.append(f"同源持仓{stats['source_cluster_supply']:.1f}%")
     if stats["sm_count"] >= MIN_CANDIDATE_SM_COUNT:
         score += 25
         reasons.append(f"Smart Money {stats['sm_count']}")
@@ -494,8 +615,20 @@ def calc_buy_score(stats):
     if stats["sustained_inflow"]:
         score += 25
         reasons.append(f"5m连续流入{stats['inflow_streak']}轮")
+    if stats.get("front_holder_netflow", 0) >= MIN_FRONT_HOLDER_NETFLOW_USD:
+        score += 20
+        reasons.append(f"前排吸筹${stats['front_holder_netflow']:,.0f}")
+    elif stats.get("holder_flow_netflow", 0) >= MIN_TOP_HOLDER_NETFLOW_USD:
+        score += 12
+        reasons.append(f"Top100吸筹${stats['holder_flow_netflow']:,.0f}")
+    if stats.get("front_holder_netflow", 0) <= -MIN_FRONT_HOLDER_NETFLOW_USD:
+        score -= 25
+        reasons.append(f"前排流出${abs(stats['front_holder_netflow']):,.0f}")
+    elif stats.get("holder_flow_netflow", 0) <= -MIN_TOP_HOLDER_NETFLOW_USD:
+        score -= 15
+        reasons.append(f"Top100流出${abs(stats['holder_flow_netflow']):,.0f}")
 
-    return score, reasons
+    return max(0, score), reasons
 
 # ---------------------------------------------------------------------------
 # 关联性与控盘砸盘深度分析
@@ -556,10 +689,11 @@ def analyze_control_and_dump(holders_list, debug=False):
             if c_supply > cluster_supply:
                 cluster_supply = c_supply
                 max_cluster_size = len(hs)
+    source_cluster = analyze_source_clusters(holders_list)
 
     # 综合评估
-    # 控盘率 = 已标记关联 + 时间聚类关联 (去重后的估算)
-    control_ratio = max(associated_supply, cluster_supply)
+    # 控盘率 = 已标记关联 + 时间聚类关联 + 同资金/Token来源关联 (去重后的估算)
+    control_ratio = max(associated_supply, cluster_supply, source_cluster.get("source_cluster_supply", 0))
     
     # 砸盘进度 = 关联钱包已卖出的比例
     # 粗略估算：如果关联钱包卖出比例 > 10% 则视为开始砸盘
@@ -588,6 +722,16 @@ def analyze_control_and_dump(holders_list, debug=False):
         "sold_supply_pct": sold_supply_pct,
         "associated_count": associated_count,
         "associated_supply": associated_supply,
+        "source_cluster_type": source_cluster.get("source_cluster_type", "无"),
+        "source_cluster_address": source_cluster.get("source_cluster_address", ""),
+        "source_cluster_size": source_cluster.get("source_cluster_size", 0),
+        "source_cluster_supply": source_cluster.get("source_cluster_supply", 0),
+        "source_cluster_usd_value": source_cluster.get("source_cluster_usd_value", 0),
+        "source_cluster_amount": source_cluster.get("source_cluster_amount", 0),
+        "source_cluster_buy_volume": source_cluster.get("source_cluster_buy_volume", 0),
+        "source_cluster_sell_volume": source_cluster.get("source_cluster_sell_volume", 0),
+        "source_cluster_netflow": source_cluster.get("source_cluster_netflow", 0),
+        "source_cluster_desc": source_cluster.get("source_cluster_desc", "未发现同资金/Token来源"),
         "is_dumping": is_dumping,
         "verdict": "砸盘中" if is_dumping else ("高度控盘" if control_ratio > 40 else "筹码分散")
     }
@@ -615,6 +759,7 @@ def perform_deep_analysis(chain, address, trend_row=None):
     
     # 执行筹码关联分析
     ctrl = analyze_control_and_dump(holders_list, debug=DEBUG_DEEP_LOG)
+    holder_flow = analyze_holder_flow(holders_list)
     mcap = calc_mcap(info, trend_row)
     holder_count = first_float(
         info,
@@ -667,10 +812,21 @@ def perform_deep_analysis(chain, address, trend_row=None):
         "associated_count": ctrl.get("associated_count", 0),
         "associated_supply": ctrl.get("associated_supply", 0),
         "cluster_size": ctrl.get("cluster_size", 0),
+        "source_cluster_type": ctrl.get("source_cluster_type", "无"),
+        "source_cluster_address": ctrl.get("source_cluster_address", ""),
+        "source_cluster_size": ctrl.get("source_cluster_size", 0),
+        "source_cluster_supply": ctrl.get("source_cluster_supply", 0),
+        "source_cluster_usd_value": ctrl.get("source_cluster_usd_value", 0),
+        "source_cluster_amount": ctrl.get("source_cluster_amount", 0),
+        "source_cluster_buy_volume": ctrl.get("source_cluster_buy_volume", 0),
+        "source_cluster_sell_volume": ctrl.get("source_cluster_sell_volume", 0),
+        "source_cluster_netflow": ctrl.get("source_cluster_netflow", 0),
+        "source_cluster_desc": ctrl.get("source_cluster_desc", "未发现同资金/Token来源"),
         "is_dumping": ctrl.get("is_dumping", False),
         "verdict": ctrl.get("verdict", "未知")
     }
     stats.update(flow)
+    stats.update(holder_flow)
     buy_score, buy_reasons = calc_buy_score(stats)
     stats["buy_score"] = buy_score
     stats["buy_reasons"] = buy_reasons
@@ -720,7 +876,9 @@ def scan_pro():
                             f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
                             f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
                             f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
+                            f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
                             f"卖出进度={s['dump_progress']:.2f}% | "
+                            f"前排净流={s['front_holder_netflow']:.0f}U | Top100净流={s['holder_flow_netflow']:.0f}U | "
                             f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | 连续流入={s['inflow_streak']} | "
                             f"可买分={s['buy_score']} | 理由={', '.join(s['buy_reasons'])}"
                         )
@@ -738,7 +896,15 @@ def scan_pro():
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 最大同频率进场集群: {s['cluster_size']} 个钱包\n"
+                            f"- 同资金/Token来源: {s['source_cluster_desc']}\n"
+                            f"- 同源持仓: {s['source_cluster_supply']:.2f}% | ${s['source_cluster_usd_value']:,.0f} | Token数量 {s['source_cluster_amount']:,.0f}\n"
+                            f"- 同源买卖: 买入 ${s['source_cluster_buy_volume']:,.0f} | 卖出 ${s['source_cluster_sell_volume']:,.0f} | 净流 ${s['source_cluster_netflow']:,.0f}\n"
                             f"- 庄家出货进度: {s['dump_progress']:.1f}%\n\n"
+                            f"💸 *前排资金异动*\n"
+                            f"- 结论: {s['holder_flow_verdict']}\n"
+                            f"- 前20净流: ${s['front_holder_netflow']:,.0f} | 买入 ${s['front_holder_buy_volume']:,.0f} / 卖出 ${s['front_holder_sell_volume']:,.0f}\n"
+                            f"- Top100净流: ${s['holder_flow_netflow']:,.0f} | 买入 ${s['holder_flow_buy_volume']:,.0f} / 卖出 ${s['holder_flow_sell_volume']:,.0f}\n"
+                            f"- 净买/净卖钱包: Top100 {s['holder_flow_net_buy_count']}/{s['holder_flow_net_sell_count']} | 前20 {s['front_holder_net_buy_count']}/{s['front_holder_net_sell_count']}\n\n"
                             f"📊 *基础结构*\n"
                             f"- Top 10 持仓: {s['top10_rate']:.1f}%\n"
                             f"- 狙击手数量: {s['snipers']}\n"
