@@ -1556,6 +1556,8 @@ def scan_pro():
                     trend_mcap = calc_mcap(t)
                     if trend_mcap > MAX_MCAP_USD:
                         continue
+                    if candidate_exists(addr):
+                        continue
                     
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
