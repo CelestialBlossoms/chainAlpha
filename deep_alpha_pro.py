@@ -31,7 +31,11 @@ MAX_MCAP_USD = 1_000_000
 MIN_TOP_HOLDER_NETFLOW_USD = 5_000
 MIN_FRONT_HOLDER_NETFLOW_USD = 2_000
 NEW_WALLET_WINDOW_SEC = 3 * 24 * 60 * 60
-WALLET_CREATION_CLUSTER_SEC = 60 * 60
+WALLET_CREATION_CLUSTER_SEC = 5 * 24 * 60 * 60
+KLINE_LOOKBACK_SEC = 2 * 60 * 60
+NEW_TOKEN_MAX_AGE_SEC = 60 * 60
+EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
+MIN_CANDIDATE_KLINE_SCORE = 45
 INFLOW_STATE = {}
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
@@ -350,6 +354,23 @@ def format_created_time(ts):
         raw_ts = raw_ts / 1000
     return f"{datetime.fromtimestamp(raw_ts).strftime('%Y-%m-%d %H:%M:%S')} ({format_age(ts)})"
 
+def token_age_seconds(ts):
+    raw_ts = safe_float(ts)
+    if raw_ts <= 0:
+        return None
+    if raw_ts > 10_000_000_000:
+        raw_ts = raw_ts / 1000
+    return max(0, int(time.time() - raw_ts))
+
+def token_age_type(age_seconds):
+    if age_seconds is None:
+        return "未知"
+    if age_seconds <= NEW_TOKEN_MAX_AGE_SEC:
+        return "新币"
+    if age_seconds <= EARLY_TOKEN_MAX_AGE_SEC:
+        return "早期币"
+    return "老币"
+
 def normalize_ratio(value):
     ratio = safe_float(value)
     if ratio > 1:
@@ -526,25 +547,25 @@ def analyze_wallet_creation_clusters(holders_list):
         h for h in non_pool
         if h.get("is_new") or (holder_created_ts(h) > 0 and now - holder_created_ts(h) <= NEW_WALLET_WINDOW_SEC)
     ]
-    clusters = defaultdict(list)
-    for holder in non_pool:
-        created_ts = holder_created_ts(holder)
-        if created_ts <= 0:
-            continue
-        bucket = int(created_ts // WALLET_CREATION_CLUSTER_SEC)
-        clusters[bucket].append(holder)
-
+    created_wallets = sorted(
+        [(holder_created_ts(holder), holder) for holder in non_pool if holder_created_ts(holder) > 0],
+        key=lambda item: item[0],
+    )
     best_wallets = []
     best_supply = 0.0
-    best_bucket = 0
-    for bucket, wallets in clusters.items():
+    best_start_ts = 0
+    best_end_ts = 0
+    for idx, (start_ts, _) in enumerate(created_wallets):
+        end_ts = start_ts + WALLET_CREATION_CLUSTER_SEC
+        wallets = [holder for created_ts, holder in created_wallets[idx:] if created_ts <= end_ts]
         if len(wallets) < 2:
             continue
         supply = sum(safe_float(w.get("amount_percentage")) * 100 for w in wallets)
         if supply > best_supply:
             best_wallets = wallets
             best_supply = supply
-            best_bucket = bucket
+            best_start_ts = start_ts
+            best_end_ts = max(holder_created_ts(w) for w in wallets)
 
     new_supply = sum(safe_float(w.get("amount_percentage")) * 100 for w in new_wallets)
     new_usd_value = sum(safe_float(w.get("usd_value")) for w in new_wallets)
@@ -554,11 +575,10 @@ def analyze_wallet_creation_clusters(holders_list):
     cluster_buy = sum(safe_float(w.get("buy_volume_cur")) for w in best_wallets)
     cluster_sell = sum(safe_float(w.get("sell_volume_cur")) for w in best_wallets)
     cluster_netflow = sum(holder_net_buy_usd(w) for w in best_wallets)
-    cluster_start_ts = best_bucket * WALLET_CREATION_CLUSTER_SEC if best_bucket else 0
     cluster_desc = "未发现同批创建钱包"
     if best_wallets:
         cluster_desc = (
-            f"{datetime.fromtimestamp(cluster_start_ts).strftime('%m-%d %H:%M')}附近 | "
+            f"{datetime.fromtimestamp(best_start_ts).strftime('%m-%d')}~{datetime.fromtimestamp(best_end_ts).strftime('%m-%d')} | "
             f"{len(best_wallets)}个钱包 | 持仓{best_supply:.2f}%"
         )
     conspiracy_score = 0
@@ -583,6 +603,172 @@ def analyze_wallet_creation_clusters(holders_list):
         "wallet_creation_cluster_desc": cluster_desc,
         "conspiracy_wallet_score": min(conspiracy_score, 100),
     }
+
+def parse_kline_rows(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    rows = data if isinstance(data, list) else data.get("list") or data.get("data", {}).get("list") or []
+    candles = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ts = safe_float(row.get("time") or row.get("timestamp") or row.get("t"))
+        if ts > 10_000_000_000:
+            ts = ts / 1000
+        close = safe_float(row.get("close") or row.get("c"))
+        if ts <= 0 or close <= 0:
+            continue
+        candles.append({
+            "time": int(ts),
+            "open": safe_float(row.get("open") or row.get("o"), close),
+            "high": safe_float(row.get("high") or row.get("h"), close),
+            "low": safe_float(row.get("low") or row.get("l"), close),
+            "close": close,
+            "volume": safe_float(row.get("volume") or row.get("v")),
+            "amount": safe_float(row.get("amount") or row.get("a")),
+        })
+    return sorted(candles, key=lambda x: x["time"])
+
+def fetch_5m_klines(chain, address, lookback_sec):
+    end_ts = int(time.time())
+    start_ts = end_ts - lookback_sec
+    raw = run_command(
+        f"gmgn-cli market kline --chain {chain} --address {address} "
+        f"--resolution 5m --from {start_ts} --to {end_ts} --raw"
+    )
+    return parse_kline_rows(raw)
+
+def max_drawdown(candles):
+    peak = 0.0
+    drawdown = 0.0
+    for candle in candles:
+        peak = max(peak, safe_float(candle.get("high")))
+        low = safe_float(candle.get("low"))
+        if peak > 0 and low > 0:
+            drawdown = min(drawdown, (low - peak) / peak)
+    return drawdown
+
+def analyze_kline_health(chain, address, age_seconds):
+    age_type = token_age_type(age_seconds)
+    lookback_sec = 60 * 60 if age_type == "新币" else KLINE_LOOKBACK_SEC
+    candles = fetch_5m_klines(chain, address, lookback_sec)
+    if len(candles) < 3:
+        return {
+            "token_age_type": age_type,
+            "kline_score": 0,
+            "kline_verdict": "K线不足",
+            "kline_change_pct": 0,
+            "kline_drawdown_pct": 0,
+            "kline_green_ratio": 0,
+            "kline_volume_ratio": 0,
+            "kline_candle_count": len(candles),
+        }
+
+    first_open = safe_float(candles[0].get("open"))
+    last_close = safe_float(candles[-1].get("close"))
+    change = (last_close - first_open) / first_open if first_open > 0 else 0
+    drawdown = max_drawdown(candles)
+    green_count = sum(1 for c in candles if safe_float(c.get("close")) > safe_float(c.get("open")))
+    green_ratio = green_count / len(candles)
+    recent = candles[-6:] if len(candles) >= 6 else candles
+    previous = candles[:-6] if len(candles) > 6 else candles
+    recent_volume = sum(safe_float(c.get("volume")) for c in recent) / max(1, len(recent))
+    previous_volume = sum(safe_float(c.get("volume")) for c in previous) / max(1, len(previous))
+    volume_ratio = recent_volume / previous_volume if previous_volume > 0 else 0
+    recent_down_count = sum(1 for c in candles[-4:] if safe_float(c.get("close")) < safe_float(c.get("open")))
+    wick_risk_count = sum(
+        1 for c in candles
+        if safe_float(c.get("open")) > 0
+        and (safe_float(c.get("high")) - safe_float(c.get("low"))) / safe_float(c.get("open")) > 0.35
+    )
+
+    score = 50
+    verdict = "震荡"
+    if age_type == "新币":
+        if 0.05 <= change <= 1.50:
+            score += 20
+            verdict = "新币启动"
+        elif change > 1.50:
+            score -= 15
+            verdict = "新币拉升过快"
+        elif change < -0.25:
+            score -= 25
+            verdict = "新币走弱"
+        if drawdown > -0.35:
+            score += 15
+        else:
+            score -= 20
+        if green_ratio >= 0.50:
+            score += 10
+        if volume_ratio >= 1.3 and change > 0:
+            score += 15
+    elif age_type == "早期币":
+        if 0.08 <= change <= 1.00:
+            score += 20
+            verdict = "早期温和上行"
+        elif change > 1.00:
+            score -= 10
+            verdict = "早期涨幅过大"
+        elif change < -0.20:
+            score -= 25
+            verdict = "早期走弱"
+        if drawdown > -0.30:
+            score += 15
+        else:
+            score -= 20
+        if green_ratio >= 0.50:
+            score += 10
+        if volume_ratio >= 1.5 and change > 0:
+            score += 15
+    else:
+        verdict = "老币K线参考"
+        score -= 10
+        if 0.10 <= change <= 0.80 and drawdown > -0.30 and volume_ratio >= 1.5:
+            score += 20
+            verdict = "老币放量修复"
+        if change < -0.20 or drawdown <= -0.40:
+            score -= 25
+            verdict = "老币走弱"
+
+    if recent_down_count >= 3:
+        score -= 15
+        verdict = f"{verdict}/尾段转弱"
+    if wick_risk_count >= max(2, len(candles) // 4):
+        score -= 15
+        verdict = f"{verdict}/插针重"
+
+    return {
+        "token_age_type": age_type,
+        "kline_score": max(0, min(100, int(score))),
+        "kline_verdict": verdict,
+        "kline_change_pct": change * 100,
+        "kline_drawdown_pct": drawdown * 100,
+        "kline_green_ratio": green_ratio * 100,
+        "kline_volume_ratio": volume_ratio,
+        "kline_candle_count": len(candles),
+    }
+
+def is_kline_candidate_ok(stats):
+    score = stats.get("kline_score", 0)
+    verdict = str(stats.get("kline_verdict") or "")
+    if stats.get("kline_candle_count", 0) < 3:
+        return False
+    if score < MIN_CANDIDATE_KLINE_SCORE:
+        return False
+    weak_keywords = ("走弱", "尾段转弱", "插针重")
+    return not any(keyword in verdict for keyword in weak_keywords)
+
+def inflow_status_text(stats):
+    streak = int(stats.get("inflow_streak", 0))
+    if streak >= MIN_INFLOW_STREAK:
+        return f"已确认({streak}轮)"
+    if streak > 0:
+        return f"未确认({streak}轮)"
+    return "无"
 
 def analyze_holder_flow(holders_list):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
@@ -777,6 +963,13 @@ def calc_buy_score(stats):
     elif stats.get("conspiracy_wallet_score", 0) >= 25:
         score -= 10
         reasons.append(f"疑似同批钱包{stats['wallet_creation_cluster_size']}个")
+    if stats.get("kline_score", 0) >= 70:
+        add_score = 5 if stats.get("token_age_type") == "老币" else 15
+        score += add_score
+        reasons.append(f"K线健康{stats['kline_score']}({stats['kline_verdict']})")
+    elif stats.get("kline_score", 0) > 0 and stats.get("kline_score", 0) <= 35:
+        score -= 20
+        reasons.append(f"K线弱{stats['kline_score']}({stats['kline_verdict']})")
 
     return max(0, score), reasons
 
@@ -936,6 +1129,8 @@ def perform_deep_analysis(chain, address, trend_row=None):
             "pair_created_at",
         ),
     )
+    age_seconds = token_age_seconds(created_at)
+    kline_health = analyze_kline_health(chain, address, age_seconds)
     flow = analyze_5m_flow(address, trend_row)
     
     # 组装数据
@@ -949,6 +1144,7 @@ def perform_deep_analysis(chain, address, trend_row=None):
         "created_at": created_at,
         "created_age": format_age(created_at),
         "created_time": format_created_time(created_at),
+        "token_age_type": kline_health.get("token_age_type", "未知"),
         "sm_count": info.get("wallet_tags_stat", {}).get("smart_wallets", 0),
         "kol_count": info.get("wallet_tags_stat", {}).get("renowned_wallets", 0),
         "top10_rate": safe_float(sec.get("top_10_holder_rate")) * 100,
@@ -979,6 +1175,8 @@ def perform_deep_analysis(chain, address, trend_row=None):
     stats.update(flow)
     stats.update(holder_flow)
     stats.update(wallet_creation)
+    stats.update(kline_health)
+    stats["inflow_status"] = inflow_status_text(stats)
     buy_score, buy_reasons = calc_buy_score(stats)
     stats["buy_score"] = buy_score
     stats["buy_reasons"] = buy_reasons
@@ -1019,6 +1217,13 @@ def scan_pro():
                         continue
                     if s["is_dumping"]:
                         continue
+                    if not is_kline_candidate_ok(s):
+                        print(
+                            f"  [跳过] K线不健康 ${s['symbol']} | CA={addr} | "
+                            f"K线={s['kline_score']}/{s['kline_verdict']} | "
+                            f"涨跌={s['kline_change_pct']:.1f}% | 回撤={s['kline_drawdown_pct']:.1f}%"
+                        )
+                        continue
                     
                     # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
                     is_candidate = s["buy_score"] >= MIN_BUY_SCORE
@@ -1027,11 +1232,12 @@ def scan_pro():
                             f"  [候选] ${s['symbol']} | CA={addr} | "
                             f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
                             f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
+                            f"类型={s['token_age_type']} | K线={s['kline_score']}/{s['kline_verdict']} | "
                             f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
                             f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
                             f"卖出进度={s['dump_progress']:.2f}% | "
                             f"前排净流={s['front_holder_netflow']:.0f}U | Top100净流={s['holder_flow_netflow']:.0f}U | "
-                            f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | 连续流入={s['inflow_streak']} | "
+                            f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | 流入状态={s['inflow_status']} | "
                             f"可买分={s['buy_score']} | 理由={', '.join(s['buy_reasons'])}"
                         )
 
@@ -1041,10 +1247,14 @@ def scan_pro():
                             f"{alert_icon} *筹码关联性报警* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"流动性池: {s['pool_label']}\n"
-                            f"创建时间: {s['created_time']} | 状态: {s['verdict']}\n\n"
+                            f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
                             f"✅ *可买评分*: {s['buy_score']} 分\n"
                             f"- 理由: {', '.join(s['buy_reasons'])}\n"
-                            f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 连续流入: {s['inflow_streak']}轮\n\n"
+                            f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 流入状态: {s['inflow_status']}\n\n"
+                            f"📈 *5m K线健康度*\n"
+                            f"- 结论: {s['kline_verdict']} | 评分: {s['kline_score']}/100 | K线数: {s['kline_candle_count']}\n"
+                            f"- 涨跌: {s['kline_change_pct']:.1f}% | 最大回撤: {s['kline_drawdown_pct']:.1f}% | 阳线比例: {s['kline_green_ratio']:.0f}%\n"
+                            f"- 尾段量能: {s['kline_volume_ratio']:.2f}x\n\n"
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 最大同频率进场集群: {s['cluster_size']} 个钱包\n"
