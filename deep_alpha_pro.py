@@ -35,7 +35,6 @@ WALLET_CREATION_CLUSTER_SEC = 5 * 24 * 60 * 60
 KLINE_LOOKBACK_SEC = 2 * 60 * 60
 NEW_TOKEN_MAX_AGE_SEC = 60 * 60
 EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
-MIN_CANDIDATE_KLINE_SCORE = 45
 INFLOW_STATE = {}
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
@@ -662,6 +661,7 @@ def analyze_kline_health(chain, address, age_seconds):
             "kline_candle_count": len(candles),
             "kline_verdict": "K线不足",
             "kline_volume_ratio": 0,
+            "kline_score": 0,
             "spike_high": 0,
             "retreat_low": 0,
             "current_price": 0,
@@ -704,44 +704,44 @@ def analyze_kline_health(chain, address, age_seconds):
     previous_volume = sum(safe_float(c.get("volume")) for c in previous) / max(1, len(previous))
     volume_ratio = recent_volume / previous_volume if previous_volume > 0 else 0
 
+    score = 50
     verdict = "价量震荡"
     if abs(recent_change) >= 0.25 and 0 < volume_ratio <= 0.75:
         verdict = "缩量大涨" if recent_change > 0 else "缩量大跌"
+        score -= 25
     elif volume_ratio >= 1.8 and abs(recent_change) <= 0.08:
         verdict = "放量横盘-换筹"
+        score += 5
     elif volume_ratio >= 1.3 and recent_change >= 0.10:
         verdict = "放量上涨-健康"
+        score += 25
     elif volume_ratio >= 1.3 and recent_change <= -0.10:
         verdict = "放量下跌-出货压力"
+        score -= 30
     elif recent_change >= 0.10:
         verdict = "温和上涨"
+        score += 10
     elif recent_change <= -0.10:
         verdict = "缩量回落" if volume_ratio <= 0.9 else "走弱"
+        score -= 15
+
+    if spike_retreat_pct <= -50 and recovery_from_low_pct < 20:
+        verdict = f"{verdict}/高位回落"
+        score -= 20
 
     return {
         "token_age_type": age_type,
         "kline_candle_count": len(candles),
         "kline_verdict": verdict,
         "kline_volume_ratio": volume_ratio,
+        "kline_score": max(0, min(100, score)),
+        "kline_recent_change_pct": recent_change * 100,
         "spike_high": highest_high,
         "retreat_low": retreat_low,
         "current_price": current_price,
         "spike_retreat_pct": spike_retreat_pct,
         "recovery_from_low_pct": recovery_from_low_pct,
     }
-
-def is_kline_candidate_ok(stats):
-    score = stats.get("kline_score", 0)
-    verdict = str(stats.get("kline_verdict") or "")
-    if stats.get("kline_candle_count", 0) < 3:
-        return False
-    if score < MIN_CANDIDATE_KLINE_SCORE:
-        return False
-    weak_keywords = ("走弱", "尾段转弱", "插针重", "高度控盘", "放量下跌", "拉高回落")
-    if any(keyword in verdict for keyword in weak_keywords):
-        return False
-    bad_structures = {"高控盘波动", "放量派发", "横盘派发", "拉高回落", "批量钱包控盘"}
-    return stats.get("market_structure") not in bad_structures
 
 def refine_kline_with_holder_flow(stats):
     verdict = str(stats.get("kline_verdict") or "")
