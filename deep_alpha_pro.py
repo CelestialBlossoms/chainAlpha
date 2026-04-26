@@ -672,10 +672,15 @@ def analyze_kline_health(chain, address, age_seconds):
     last_close = safe_float(candles[-1].get("close"))
     change = (last_close - first_open) / first_open if first_open > 0 else 0
     drawdown = max_drawdown(candles)
+    highest = max(safe_float(c.get("high")) for c in candles)
+    current_drawdown = (last_close - highest) / highest if highest > 0 else 0
     green_count = sum(1 for c in candles if safe_float(c.get("close")) > safe_float(c.get("open")))
     green_ratio = green_count / len(candles)
     recent = candles[-6:] if len(candles) >= 6 else candles
     previous = candles[:-6] if len(candles) > 6 else candles
+    recent_open = safe_float(recent[0].get("open"))
+    recent_close = safe_float(recent[-1].get("close"))
+    recent_change = (recent_close - recent_open) / recent_open if recent_open > 0 else 0
     recent_volume = sum(safe_float(c.get("volume")) for c in recent) / max(1, len(recent))
     previous_volume = sum(safe_float(c.get("volume")) for c in previous) / max(1, len(previous))
     volume_ratio = recent_volume / previous_volume if previous_volume > 0 else 0
@@ -687,52 +692,67 @@ def analyze_kline_health(chain, address, age_seconds):
     )
 
     score = 50
-    verdict = "震荡"
+    verdict = "价量震荡"
+
+    # 先看最近 30m 的价量关系：这是候选是否健康的核心。
+    if abs(recent_change) >= 0.25 and 0 < volume_ratio <= 0.75:
+        verdict = "缩量大涨-高度控盘" if recent_change > 0 else "缩量大跌-高度控盘"
+        score -= 35
+    elif volume_ratio >= 1.8 and abs(recent_change) <= 0.08:
+        verdict = "放量横盘-换筹"
+        score += 5
+    elif volume_ratio >= 1.3 and recent_change >= 0.10:
+        verdict = "放量上涨-健康"
+        score += 25
+    elif volume_ratio >= 1.3 and recent_change <= -0.10:
+        verdict = "放量下跌-出货压力"
+        score -= 30
+    elif recent_change >= 0.10:
+        verdict = "温和上涨"
+        score += 10
+    elif recent_change <= -0.10:
+        verdict = "缩量回落" if volume_ratio <= 0.9 else "走弱"
+        score -= 15
+
+    # 再用整体窗口修正：避免短线好看但整体已经拉高回落。
     if age_type == "新币":
         if 0.05 <= change <= 1.50:
-            score += 20
-            verdict = "新币启动"
-        elif change > 1.50:
-            score -= 15
-            verdict = "新币拉升过快"
-        elif change < -0.25:
-            score -= 25
-            verdict = "新币走弱"
-        if drawdown > -0.35:
-            score += 15
-        else:
-            score -= 20
-        if green_ratio >= 0.50:
             score += 10
-        if volume_ratio >= 1.3 and change > 0:
-            score += 15
+        elif change > 1.50:
+            score -= 10
+            verdict = f"{verdict}/新币涨幅过大"
+        elif change < -0.25:
+            score -= 20
+            verdict = f"{verdict}/新币走弱"
+        if current_drawdown <= -0.45:
+            score -= 25
+            verdict = f"{verdict}/拉高回落"
     elif age_type == "早期币":
         if 0.08 <= change <= 1.00:
-            score += 20
-            verdict = "早期温和上行"
-        elif change > 1.00:
-            score -= 10
-            verdict = "早期涨幅过大"
-        elif change < -0.20:
-            score -= 25
-            verdict = "早期走弱"
-        if drawdown > -0.30:
-            score += 15
-        else:
-            score -= 20
-        if green_ratio >= 0.50:
             score += 10
-        if volume_ratio >= 1.5 and change > 0:
-            score += 15
-    else:
-        verdict = "老币K线参考"
-        score -= 10
-        if 0.10 <= change <= 0.80 and drawdown > -0.30 and volume_ratio >= 1.5:
-            score += 20
-            verdict = "老币放量修复"
-        if change < -0.20 or drawdown <= -0.40:
+        elif change > 1.00:
+            score -= 8
+            verdict = f"{verdict}/早期涨幅过大"
+        elif change < -0.20:
+            score -= 20
+            verdict = f"{verdict}/早期走弱"
+        if current_drawdown <= -0.40:
             score -= 25
-            verdict = "老币走弱"
+            verdict = f"{verdict}/拉高回落"
+    else:
+        score -= 10
+        if 0.10 <= change <= 0.80 and volume_ratio >= 1.5 and current_drawdown > -0.35:
+            score += 10
+            verdict = f"老币修复/{verdict}"
+        if change < -0.20 or current_drawdown <= -0.45:
+            score -= 25
+            verdict = f"{verdict}/老币走弱"
+
+    if green_ratio >= 0.50:
+        score += 8
+    if drawdown <= -0.70:
+        score -= 10
+        verdict = f"{verdict}/深插针"
 
     if recent_down_count >= 3:
         score -= 15
@@ -746,7 +766,9 @@ def analyze_kline_health(chain, address, age_seconds):
         "kline_score": max(0, min(100, int(score))),
         "kline_verdict": verdict,
         "kline_change_pct": change * 100,
+        "kline_recent_change_pct": recent_change * 100,
         "kline_drawdown_pct": drawdown * 100,
+        "kline_current_drawdown_pct": current_drawdown * 100,
         "kline_green_ratio": green_ratio * 100,
         "kline_volume_ratio": volume_ratio,
         "kline_candle_count": len(candles),
@@ -759,8 +781,30 @@ def is_kline_candidate_ok(stats):
         return False
     if score < MIN_CANDIDATE_KLINE_SCORE:
         return False
-    weak_keywords = ("走弱", "尾段转弱", "插针重")
+    weak_keywords = ("走弱", "尾段转弱", "插针重", "高度控盘", "放量下跌", "拉高回落")
     return not any(keyword in verdict for keyword in weak_keywords)
+
+def refine_kline_with_holder_flow(stats):
+    verdict = str(stats.get("kline_verdict") or "")
+    if "放量横盘" not in verdict:
+        return
+    has_absorption = (
+        stats.get("front_holder_netflow", 0) >= MIN_FRONT_HOLDER_NETFLOW_USD
+        or stats.get("holder_flow_netflow", 0) >= MIN_TOP_HOLDER_NETFLOW_USD
+        or stats.get("accumulation_score", 0) >= 45
+        or stats.get("low_sell_supply", 0) >= 5
+    )
+    has_distribution = (
+        stats.get("front_holder_netflow", 0) <= -MIN_FRONT_HOLDER_NETFLOW_USD
+        or stats.get("holder_flow_netflow", 0) <= -MIN_TOP_HOLDER_NETFLOW_USD
+        or stats.get("distribution_score", 0) >= 45
+    )
+    if has_absorption and not has_distribution:
+        stats["kline_verdict"] = "放量横盘-吸筹"
+        stats["kline_score"] = min(100, stats.get("kline_score", 0) + 20)
+    elif has_distribution and not has_absorption:
+        stats["kline_verdict"] = "放量横盘-派发"
+        stats["kline_score"] = max(0, stats.get("kline_score", 0) - 20)
 
 def inflow_status_text(stats):
     streak = int(stats.get("inflow_streak", 0))
@@ -967,6 +1011,9 @@ def calc_buy_score(stats):
         add_score = 5 if stats.get("token_age_type") == "老币" else 15
         score += add_score
         reasons.append(f"K线健康{stats['kline_score']}({stats['kline_verdict']})")
+    elif "放量横盘-吸筹" in str(stats.get("kline_verdict") or ""):
+        score += 12
+        reasons.append("放量横盘吸筹")
     elif stats.get("kline_score", 0) > 0 and stats.get("kline_score", 0) <= 35:
         score -= 20
         reasons.append(f"K线弱{stats['kline_score']}({stats['kline_verdict']})")
@@ -1176,6 +1223,7 @@ def perform_deep_analysis(chain, address, trend_row=None):
     stats.update(holder_flow)
     stats.update(wallet_creation)
     stats.update(kline_health)
+    refine_kline_with_holder_flow(stats)
     stats["inflow_status"] = inflow_status_text(stats)
     buy_score, buy_reasons = calc_buy_score(stats)
     stats["buy_score"] = buy_score
@@ -1253,8 +1301,8 @@ def scan_pro():
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 流入状态: {s['inflow_status']}\n\n"
                             f"📈 *5m K线健康度*\n"
                             f"- 结论: {s['kline_verdict']} | 评分: {s['kline_score']}/100 | K线数: {s['kline_candle_count']}\n"
-                            f"- 涨跌: {s['kline_change_pct']:.1f}% | 最大回撤: {s['kline_drawdown_pct']:.1f}% | 阳线比例: {s['kline_green_ratio']:.0f}%\n"
-                            f"- 尾段量能: {s['kline_volume_ratio']:.2f}x\n\n"
+                            f"- 窗口涨跌: {s['kline_change_pct']:.1f}% | 近30m涨跌: {s['kline_recent_change_pct']:.1f}% | 当前回撤: {s['kline_current_drawdown_pct']:.1f}%\n"
+                            f"- 最大插针回撤: {s['kline_drawdown_pct']:.1f}% | 阳线比例: {s['kline_green_ratio']:.0f}% | 尾段量能: {s['kline_volume_ratio']:.2f}x\n\n"
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 最大同频率进场集群: {s['cluster_size']} 个钱包\n"
