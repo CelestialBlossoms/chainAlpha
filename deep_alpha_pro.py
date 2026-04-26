@@ -25,6 +25,9 @@ MIN_CANDIDATE_SM_COUNT = 1
 MIN_CANDIDATE_HOLDER_COUNT = 500
 MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
+MAX_DEV_BUY_USD = 500
+MAX_DEV_HOLD_RATE = 0.30
+MAX_TOKEN_AGE_SEC = 2 * 24 * 60 * 60
 INFLOW_STATE = {}
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
@@ -243,6 +246,36 @@ def optional_float(*sources, keys=()):
         return None
     return safe_float(value)
 
+def nested_value(source, path):
+    current = source
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+        if current in (None, ""):
+            return None
+    return current
+
+def first_nested_float(*sources, paths=(), default=0.0):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for path in paths:
+            value = nested_value(source, path)
+            if value not in (None, ""):
+                return safe_float(value, default)
+    return default
+
+def first_nested_value(*sources, paths=()):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for path in paths:
+            value = nested_value(source, path)
+            if value not in (None, ""):
+                return value
+    return None
+
 def calc_mcap(*sources):
     mcap = first_float(
         *sources,
@@ -321,6 +354,87 @@ def normalize_ratio(value):
     if ratio > 1:
         ratio = ratio / 100
     return max(0.0, ratio)
+
+def extract_dev_risk(info, sec, trend_row, holders_list):
+    creator_address = first_nested_value(
+        info,
+        sec,
+        trend_row,
+        paths=(
+            ("dev", "creator_address"),
+            ("creator_address",),
+            ("creator",),
+            ("deployer",),
+            ("owner",),
+        ),
+    )
+    dev_team_hold_rate = first_nested_float(
+        info,
+        sec,
+        trend_row,
+        paths=(
+            ("stat", "dev_team_hold_rate"),
+            ("dev_team_hold_rate",),
+            ("dev", "dev_team_hold_rate"),
+        ),
+    )
+    creator_hold_rate = first_nested_float(
+        info,
+        sec,
+        trend_row,
+        paths=(
+            ("stat", "creator_hold_rate"),
+            ("creator_hold_rate",),
+            ("creator_balance_rate",),
+            ("dev", "creator_hold_rate"),
+            ("dev", "creator_balance_rate"),
+        ),
+    )
+    dev_buy_usd = first_nested_float(
+        info,
+        sec,
+        trend_row,
+        paths=(
+            ("dev", "buy_volume_cur"),
+            ("dev", "buy_volume_usd"),
+            ("dev", "history_bought_cost"),
+            ("creator_buy_volume",),
+            ("creator_buy_usd",),
+            ("creator_bought_cost",),
+            ("dev_buy_volume",),
+            ("dev_buy_usd",),
+            ("dev_bought_cost",),
+        ),
+    )
+
+    creator_address = str(creator_address or "").strip()
+    if creator_address:
+        for holder in holders_list:
+            holder_address = str(holder.get("address") or holder.get("wallet_address") or "").strip()
+            if holder_address != creator_address:
+                continue
+            creator_hold_rate = max(creator_hold_rate, normalize_ratio(holder.get("amount_percentage")))
+            dev_buy_usd = max(
+                dev_buy_usd,
+                safe_float(holder.get("buy_volume_cur")),
+                safe_float(holder.get("history_bought_cost")),
+            )
+            break
+
+    dev_hold_rate = max(normalize_ratio(dev_team_hold_rate), normalize_ratio(creator_hold_rate))
+    should_skip = dev_buy_usd > MAX_DEV_BUY_USD or dev_hold_rate > MAX_DEV_HOLD_RATE
+    reasons = []
+    if dev_buy_usd > MAX_DEV_BUY_USD:
+        reasons.append(f"dev_buy=${dev_buy_usd:.0f}>{MAX_DEV_BUY_USD:.0f}")
+    if dev_hold_rate > MAX_DEV_HOLD_RATE:
+        reasons.append(f"dev_hold={dev_hold_rate * 100:.1f}%>{MAX_DEV_HOLD_RATE * 100:.0f}%")
+    return {
+        "creator_address": creator_address,
+        "dev_buy_usd": dev_buy_usd,
+        "dev_hold_rate": dev_hold_rate,
+        "should_skip": should_skip,
+        "reasons": reasons,
+    }
 
 def analyze_5m_flow(address, trend_row):
     buys = first_float(trend_row, keys=("buys", "buy_count", "buys_5m", "buy_count_5m"))
@@ -493,6 +607,11 @@ def perform_deep_analysis(chain, address, trend_row=None):
     holders_raw = run_command(f"gmgn-cli token holders --chain {chain} --address {address} --limit 100 --raw")
     holders_data = json.loads(holders_raw) if holders_raw else {"list": []}
     holders_list = holders_data.get("list", [])
+
+    dev_risk = extract_dev_risk(info, sec, trend_row, holders_list)
+    if dev_risk["should_skip"]:
+        print(f"  [跳过] dev风险 {address}: {', '.join(dev_risk['reasons'])}")
+        return None
     
     # 执行筹码关联分析
     ctrl = analyze_control_and_dump(holders_list, debug=DEBUG_DEEP_LOG)
@@ -521,6 +640,12 @@ def perform_deep_analysis(chain, address, trend_row=None):
             "pair_created_at",
         ),
     )
+    created_ts = safe_float(created_at)
+    if created_ts > 10_000_000_000:
+        created_ts = created_ts / 1000
+    if created_ts > 0 and time.time() - created_ts > MAX_TOKEN_AGE_SEC:
+        print(f"  [跳过] 创建超过2天 {address}: {format_created_time(created_at)}")
+        return None
     flow = analyze_5m_flow(address, trend_row)
     
     # 组装数据
@@ -539,6 +664,9 @@ def perform_deep_analysis(chain, address, trend_row=None):
         "top10_rate": safe_float(sec.get("top_10_holder_rate")) * 100,
         "snipers": sec.get("sniper_count", 0),
         "rug_ratio": sec.get("rug_ratio", "0"),
+        "creator_address": dev_risk.get("creator_address"),
+        "dev_buy_usd": dev_risk.get("dev_buy_usd", 0),
+        "dev_hold_rate": dev_risk.get("dev_hold_rate", 0),
         "control_ratio": ctrl.get("control_ratio", 0),
         "dump_progress": ctrl.get("dump_progress", 0),
         "sold_supply_pct": ctrl.get("sold_supply_pct", 0),
@@ -561,7 +689,7 @@ def scan_pro():
     for chain in CHAINS:
         for interval in TREND_INTERVALS:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
-            output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 50 --raw")
+            output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 100 --raw")
             if not output:
                 print(f"  No trending output for {chain} {interval}")
                 continue
