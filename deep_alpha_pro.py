@@ -1068,8 +1068,8 @@ def format_pnl_pct(current_price, avg_cost):
     pnl_pct = (safe_float(current_price) / safe_float(avg_cost) - 1) * 100
     return f"{pnl_pct:+.1f}%"
 
-def holder_native_sol(holder):
-    return safe_float(holder.get("native_balance")) / 1_000_000_000
+def holder_position_value_usd(holder):
+    return safe_float(holder.get("usd_value"))
 
 def analyze_holder_tags_and_costs(holders_list, current_price):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
@@ -1091,7 +1091,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
         netflow = sum(holder_net_buy_usd(h) for h in wallets)
-        native_sol = sum(holder_native_sol(h) for h in wallets)
+        position_value = sum(holder_position_value_usd(h) for h in wallets)
         avg_cost = weighted_avg_cost(wallets)
         mid_cost = median_cost(wallets)
         tag_stats[tag_key] = {
@@ -1101,13 +1101,13 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "netflow": netflow,
-            "native_sol": native_sol,
+            "position_value": position_value,
             "avg_cost": avg_cost,
             "median_cost": mid_cost,
         }
         if wallets:
             tag_lines.append(
-                f"{label}{len(wallets)}个/{supply:.1f}% 余额{native_sol:.2f}SOL 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
+                f"{label}{len(wallets)}个/{supply:.1f}% 持仓${position_value:,.0f} 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
             )
 
     same_batch_wallets, _, same_batch_start_ts, same_batch_end_ts = find_best_creation_cluster(non_pool)
@@ -1117,7 +1117,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in same_batch_wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in same_batch_wallets)
         netflow = sum(holder_net_buy_usd(h) for h in same_batch_wallets)
-        native_sol = sum(holder_native_sol(h) for h in same_batch_wallets)
+        position_value = sum(holder_position_value_usd(h) for h in same_batch_wallets)
         avg_cost = weighted_avg_cost(same_batch_wallets)
         mid_cost = median_cost(same_batch_wallets)
         date_range = (
@@ -1131,13 +1131,13 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "netflow": netflow,
-            "native_sol": native_sol,
+            "position_value": position_value,
             "avg_cost": avg_cost,
             "median_cost": mid_cost,
             "date_range": date_range,
         }
         tag_lines.append(
-            f"{label}({date_range}) {len(same_batch_wallets)}个/{supply:.1f}% 余额{native_sol:.2f}SOL 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
+            f"{label}({date_range}) {len(same_batch_wallets)}个/{supply:.1f}% 持仓${position_value:,.0f} 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
         )
 
     top20 = non_pool[:20]
@@ -1613,7 +1613,7 @@ def scan_pro():
                             f"🏷️ *标签钱包分析*\n"
                             f"{s['holder_tag_desc']}\n\n"
                             f"📐 *成本线分析*\n"
-                            f"- 当前价: {format_chain_price(s['price'])}\n"
+                            f"- 链上价(x1e9): {format_chain_price(s['price'])}\n"
                             f"- Top20成本: {format_chain_price(s['top20_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top20_avg_cost'])}\n"
                             f"- Top50成本: {format_chain_price(s['top50_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top50_avg_cost'])}\n"
                             f"- Top100成本: {format_chain_price(s['top100_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top100_avg_cost'])}\n"
