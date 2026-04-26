@@ -1,4 +1,4 @@
-﻿import json
+import json
 import subprocess
 import time
 import requests
@@ -659,23 +659,42 @@ def analyze_kline_health(chain, address, age_seconds):
     if len(candles) < 3:
         return {
             "token_age_type": age_type,
-            "kline_score": 0,
-            "kline_verdict": "K线不足",
-            "kline_change_pct": 0,
-            "kline_drawdown_pct": 0,
-            "kline_green_ratio": 0,
-            "kline_volume_ratio": 0,
             "kline_candle_count": len(candles),
+            "kline_verdict": "K线不足",
+            "kline_volume_ratio": 0,
+            "spike_high": 0,
+            "retreat_low": 0,
+            "current_price": 0,
+            "spike_retreat_pct": 0,
+            "recovery_from_low_pct": 0,
         }
 
-    first_open = safe_float(candles[0].get("open"))
-    last_close = safe_float(candles[-1].get("close"))
-    change = (last_close - first_open) / first_open if first_open > 0 else 0
-    drawdown = max_drawdown(candles)
-    highest = max(safe_float(c.get("high")) for c in candles)
-    current_drawdown = (last_close - highest) / highest if highest > 0 else 0
-    green_count = sum(1 for c in candles if safe_float(c.get("close")) > safe_float(c.get("open")))
-    green_ratio = green_count / len(candles)
+    # ---- 冲高回落分析 ----
+    # 找历史最高点
+    highest_idx = 0
+    highest_high = 0
+    for i, c in enumerate(candles):
+        h = safe_float(c.get("high"))
+        if h > highest_high:
+            highest_high = h
+            highest_idx = i
+
+    # 找最高点之后的最低点（冲高回落的低点）
+    retreat_low = highest_high
+    for c in candles[highest_idx:]:
+        low = safe_float(c.get("low"))
+        if low > 0 and low < retreat_low:
+            retreat_low = low
+
+    current_price = safe_float(candles[-1].get("close"))
+
+    # 冲高回落幅度 = (回落低点 - 最高点) / 最高点 * 100
+    spike_retreat_pct = (retreat_low - highest_high) / highest_high * 100 if highest_high > 0 else 0
+
+    # 从低点到当前价的涨跌百分比
+    recovery_from_low_pct = (current_price - retreat_low) / retreat_low * 100 if retreat_low > 0 else 0
+
+    # ---- 量价分析 ----
     recent = candles[-6:] if len(candles) >= 6 else candles
     previous = candles[:-6] if len(candles) > 6 else candles
     recent_open = safe_float(recent[0].get("open"))
@@ -684,94 +703,31 @@ def analyze_kline_health(chain, address, age_seconds):
     recent_volume = sum(safe_float(c.get("volume")) for c in recent) / max(1, len(recent))
     previous_volume = sum(safe_float(c.get("volume")) for c in previous) / max(1, len(previous))
     volume_ratio = recent_volume / previous_volume if previous_volume > 0 else 0
-    recent_down_count = sum(1 for c in candles[-4:] if safe_float(c.get("close")) < safe_float(c.get("open")))
-    wick_risk_count = sum(
-        1 for c in candles
-        if safe_float(c.get("open")) > 0
-        and (safe_float(c.get("high")) - safe_float(c.get("low"))) / safe_float(c.get("open")) > 0.35
-    )
 
-    score = 50
     verdict = "价量震荡"
-
-    # 先看最近 30m 的价量关系：这是候选是否健康的核心。
     if abs(recent_change) >= 0.25 and 0 < volume_ratio <= 0.75:
-        verdict = "缩量大涨-高度控盘" if recent_change > 0 else "缩量大跌-高度控盘"
-        score -= 35
+        verdict = "缩量大涨" if recent_change > 0 else "缩量大跌"
     elif volume_ratio >= 1.8 and abs(recent_change) <= 0.08:
         verdict = "放量横盘-换筹"
-        score += 5
     elif volume_ratio >= 1.3 and recent_change >= 0.10:
         verdict = "放量上涨-健康"
-        score += 25
     elif volume_ratio >= 1.3 and recent_change <= -0.10:
         verdict = "放量下跌-出货压力"
-        score -= 30
     elif recent_change >= 0.10:
         verdict = "温和上涨"
-        score += 10
     elif recent_change <= -0.10:
         verdict = "缩量回落" if volume_ratio <= 0.9 else "走弱"
-        score -= 15
-
-    # 再用整体窗口修正：避免短线好看但整体已经拉高回落。
-    if age_type == "新币":
-        if 0.05 <= change <= 1.50:
-            score += 10
-        elif change > 1.50:
-            score -= 10
-            verdict = f"{verdict}/新币涨幅过大"
-        elif change < -0.25:
-            score -= 20
-            verdict = f"{verdict}/新币走弱"
-        if current_drawdown <= -0.45:
-            score -= 25
-            verdict = f"{verdict}/拉高回落"
-    elif age_type == "早期币":
-        if 0.08 <= change <= 1.00:
-            score += 10
-        elif change > 1.00:
-            score -= 8
-            verdict = f"{verdict}/早期涨幅过大"
-        elif change < -0.20:
-            score -= 20
-            verdict = f"{verdict}/早期走弱"
-        if current_drawdown <= -0.40:
-            score -= 25
-            verdict = f"{verdict}/拉高回落"
-    else:
-        score -= 10
-        if 0.10 <= change <= 0.80 and volume_ratio >= 1.5 and current_drawdown > -0.35:
-            score += 10
-            verdict = f"老币修复/{verdict}"
-        if change < -0.20 or current_drawdown <= -0.45:
-            score -= 25
-            verdict = f"{verdict}/老币走弱"
-
-    if green_ratio >= 0.50:
-        score += 8
-    if drawdown <= -0.70:
-        score -= 10
-        verdict = f"{verdict}/深插针"
-
-    if recent_down_count >= 3:
-        score -= 15
-        verdict = f"{verdict}/尾段转弱"
-    if wick_risk_count >= max(2, len(candles) // 4):
-        score -= 15
-        verdict = f"{verdict}/插针重"
 
     return {
         "token_age_type": age_type,
-        "kline_score": max(0, min(100, int(score))),
-        "kline_verdict": verdict,
-        "kline_change_pct": change * 100,
-        "kline_recent_change_pct": recent_change * 100,
-        "kline_drawdown_pct": drawdown * 100,
-        "kline_current_drawdown_pct": current_drawdown * 100,
-        "kline_green_ratio": green_ratio * 100,
-        "kline_volume_ratio": volume_ratio,
         "kline_candle_count": len(candles),
+        "kline_verdict": verdict,
+        "kline_volume_ratio": volume_ratio,
+        "spike_high": highest_high,
+        "retreat_low": retreat_low,
+        "current_price": current_price,
+        "spike_retreat_pct": spike_retreat_pct,
+        "recovery_from_low_pct": recovery_from_low_pct,
     }
 
 def is_kline_candidate_ok(stats):
@@ -1355,13 +1311,7 @@ def scan_pro():
                         continue
                     if s["is_dumping"]:
                         continue
-                    if not is_kline_candidate_ok(s):
-                        print(
-                            f"  [跳过] K线不健康 ${s['symbol']} | CA={addr} | "
-                            f"K线={s['kline_score']}/{s['kline_verdict']} | "
-                            f"涨跌={s['kline_change_pct']:.1f}% | 回撤={s['kline_drawdown_pct']:.1f}%"
-                        )
-                        continue
+
                     
                     # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
                     is_candidate = s["buy_score"] >= MIN_BUY_SCORE
@@ -1370,7 +1320,7 @@ def scan_pro():
                             f"  [候选] ${s['symbol']} | CA={addr} | "
                             f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
                             f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
-                            f"类型={s['token_age_type']} | K线={s['kline_score']}/{s['kline_verdict']} | "
+                            f"类型={s['token_age_type']} | 量价={s['kline_verdict']} | 冲高回落={s['spike_retreat_pct']:.1f}% | 低点反弹={s['recovery_from_low_pct']:.1f}% | "
                             f"结构={s['market_structure']} | "
                             f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
                             f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
@@ -1392,10 +1342,11 @@ def scan_pro():
                             f"✅ *可买评分*: {s['buy_score']} 分\n"
                             f"- 理由: {', '.join(s['buy_reasons'])}\n"
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']} | 流入状态: {s['inflow_status']}\n\n"
-                            f"📈 *5m K线健康度*\n"
-                            f"- 结论: {s['kline_verdict']} | 评分: {s['kline_score']}/100 | K线数: {s['kline_candle_count']}\n"
-                            f"- 窗口涨跌: {s['kline_change_pct']:.1f}% | 近30m涨跌: {s['kline_recent_change_pct']:.1f}% | 当前回撤: {s['kline_current_drawdown_pct']:.1f}%\n"
-                            f"- 最大插针回撤: {s['kline_drawdown_pct']:.1f}% | 阳线比例: {s['kline_green_ratio']:.0f}% | 尾段量能: {s['kline_volume_ratio']:.2f}x\n\n"
+                            f"📈 *K线量价分析*\n"
+                            f"- K线数: {s['kline_candle_count']} | 类型: {s['token_age_type']}\n"
+                            f"- 量价判定: {s['kline_verdict']} | 尾段量能: {s['kline_volume_ratio']:.2f}x\n"
+                            f"- 冲高回落: {s['spike_retreat_pct']:.1f}% (最高点 → 回落低点)\n"
+                            f"- 低点反弹: {s['recovery_from_low_pct']:.1f}% (回落低点 → 当前价)\n\n"
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 最大同频率进场集群: {s['cluster_size']} 个钱包\n"
