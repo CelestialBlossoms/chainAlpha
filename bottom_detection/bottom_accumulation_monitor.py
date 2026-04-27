@@ -334,6 +334,88 @@ def fetch_token_metadata(address: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return (info if isinstance(info, dict) else {}, sec if isinstance(sec, dict) else {})
 
 
+def fetch_token_pool(address: str) -> dict[str, Any] | list[Any] | None:
+    return run_gmgn(["token", "pool", "--chain", CHAIN, "--address", address], timeout=75)
+
+
+def extract_pool_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
+    if not data:
+        return []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        rows = (
+            data.get("list")
+            or data.get("pools")
+            or data.get("pairs")
+            or data.get("data", {}).get("list")
+            or data.get("data", {}).get("pools")
+            or data.get("data", {}).get("pairs")
+        )
+        if not rows and any(key in data for key in ("pool_address", "address", "liquidity", "exchange")):
+            rows = [data]
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def normalize_pool(row: dict[str, Any]) -> dict[str, Any]:
+    liquidity = to_float(
+        row.get("liquidity")
+        or row.get("liquidity_usd")
+        or row.get("usd_liquidity")
+        or row.get("reserve_usd")
+    )
+    return {
+        "address": str(row.get("pool_address") or row.get("address") or row.get("pair_address") or "").strip(),
+        "exchange": str(row.get("exchange") or row.get("dex") or row.get("amm") or "").strip(),
+        "quote_address": str(row.get("quote_address") or "").strip(),
+        "quote_symbol": str(row.get("quote_symbol") or row.get("quote") or "").strip(),
+        "liquidity": liquidity,
+        "base_reserve": to_float(row.get("base_reserve")),
+        "quote_reserve": to_float(row.get("quote_reserve")),
+        "price": to_float(row.get("price")),
+        "created_ts": parse_timestamp(row.get("creation_timestamp") or row.get("created_at")),
+    }
+
+
+def summarize_pools(token: dict[str, Any]) -> dict[str, Any]:
+    rows = extract_pool_rows(token.get("_gmgn_pool"))
+    info_pool = token.get("_gmgn_info", {}).get("pool")
+    if isinstance(info_pool, dict):
+        rows.append(info_pool)
+    if not rows:
+        rows.append(
+            {
+                "pool_address": token.get("biggest_pool_address") or token.get("pool_address"),
+                "exchange": token.get("exchange") or token.get("launchpad_platform"),
+                "liquidity": token.get("liquidity") or token.get("pool_liquidity"),
+                "price": token.get("price"),
+            }
+        )
+
+    pools = [normalize_pool(row) for row in rows]
+    pools = [pool for pool in pools if pool["liquidity"] > 0 or pool["address"] or pool["exchange"]]
+    pools.sort(key=lambda item: item["liquidity"], reverse=True)
+    total_liquidity = sum(pool["liquidity"] for pool in pools)
+    main_pool = pools[0] if pools else {}
+    main_liquidity = to_float(main_pool.get("liquidity")) if main_pool else 0.0
+    mcap = calc_mcap(token)
+    return {
+        "pool_count": len(pools),
+        "total_liquidity": total_liquidity,
+        "main_liquidity": main_liquidity,
+        "main_pool_address": main_pool.get("address", "") if main_pool else "",
+        "main_exchange": main_pool.get("exchange", "") if main_pool else "",
+        "main_quote_symbol": main_pool.get("quote_symbol", "") if main_pool else "",
+        "main_price": to_float(main_pool.get("price")) if main_pool else 0.0,
+        "main_share": main_liquidity / total_liquidity if total_liquidity > 0 else 0.0,
+        "liquidity_mcap_ratio": total_liquidity / mcap if mcap > 0 else 0.0,
+        "main_liquidity_mcap_ratio": main_liquidity / mcap if mcap > 0 else 0.0,
+        "pools": pools[:8],
+    }
+
+
 def extract_kline_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
     if not data:
         return []
@@ -424,6 +506,12 @@ def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: 
     return merged
 
 
+def attach_token_pool(token: dict[str, Any], pool_data: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+    merged = dict(token)
+    merged["_gmgn_pool"] = pool_data if pool_data is not None else {}
+    return merged
+
+
 def fill_watchlist_create_at(token: dict[str, Any]) -> None:
     if "watchlist" not in set(token.get("_sources", [])):
         return
@@ -487,6 +575,9 @@ def build_snapshot_json(
         if normalized:
             holders.append(normalized)
 
+    pool_summary = summarize_pools(token)
+    liquidity = pool_summary["total_liquidity"] or to_float(token.get("liquidity") or token.get("pool_liquidity"))
+
     summary = {
         "holder_count": len(raw_holders),
         "non_pool_count": len(holders),
@@ -499,7 +590,8 @@ def build_snapshot_json(
         "netflow": sum(h["netflow"] for h in holders),
         "mcap": calc_mcap(token),
         "price": to_float(token.get("price")),
-        "liquidity": to_float(token.get("liquidity") or token.get("pool_liquidity")),
+        "liquidity": liquidity,
+        "pool": pool_summary,
         "created_ts": token_created_ts(token),
         "age_sec": token_age_sec(token),
         "fee_sol": fee_sol(token),
@@ -611,14 +703,43 @@ def compare_holder_sets(current_holders: list[dict[str, Any]], previous_holders:
     }
 
 
-def analyze_snapshot_change(current_holders: list[dict[str, Any]], recent_history: list[dict[str, Any]]) -> dict[str, Any]:
+
+def pool_change(current_summary: dict[str, Any], previous_summary: dict[str, Any] | None) -> dict[str, Any]:
+    current_pool = current_summary.get("pool") or {}
+    previous_pool = (previous_summary or {}).get("pool") or {}
+    current_liq = to_float(current_pool.get("total_liquidity") or current_summary.get("liquidity"))
+    previous_liq = to_float(previous_pool.get("total_liquidity") or (previous_summary or {}).get("liquidity"))
+    current_ratio = to_float(current_pool.get("liquidity_mcap_ratio"))
+    previous_ratio = to_float(previous_pool.get("liquidity_mcap_ratio"))
+    return {
+        "pool_count": to_int(current_pool.get("pool_count")),
+        "pool_total_liquidity": current_liq,
+        "pool_main_liquidity": to_float(current_pool.get("main_liquidity")),
+        "pool_main_exchange": current_pool.get("main_exchange") or "",
+        "pool_main_share": to_float(current_pool.get("main_share")),
+        "pool_mcap_ratio": current_ratio,
+        "pool_mcap_ratio_text": f"1:{(1 / current_ratio):.1f}" if current_ratio > 0 else "N/A",
+        "pool_liquidity_delta": current_liq - previous_liq if previous_liq > 0 else 0.0,
+        "pool_liquidity_delta_pct": ((current_liq - previous_liq) / previous_liq) if previous_liq > 0 else 0.0,
+        "pool_mcap_ratio_delta": current_ratio - previous_ratio if previous_ratio > 0 else 0.0,
+    }
+
+
+def analyze_snapshot_change(
+    current_holders: list[dict[str, Any]],
+    recent_history: list[dict[str, Any]],
+    current_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    pool_stats = pool_change(current_summary or {}, (recent_history[0].get("summary") if recent_history else None) or {})
+    window_pool_stats = pool_change(current_summary or {}, (recent_history[-1].get("summary") if recent_history else None) or {})
+
     if not current_holders or not recent_history:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["需要历史快照"], "history_count": len(recent_history)}
+        return {"score": 0, "signal_type": "baseline", "reasons": ["need history snapshots"], "history_count": len(recent_history), **pool_stats}
 
     previous_holders = recent_history[0].get("holders") or []
     earliest_holders = recent_history[-1].get("holders") or []
     if not previous_holders:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["上一轮快照为空"], "history_count": len(recent_history)}
+        return {"score": 0, "signal_type": "baseline", "reasons": ["previous snapshot empty"], "history_count": len(recent_history), **pool_stats}
 
     last_change = compare_holder_sets(current_holders, previous_holders)
     window_change = compare_holder_sets(current_holders, earliest_holders) if earliest_holders else last_change
@@ -637,34 +758,54 @@ def analyze_snapshot_change(current_holders: list[dict[str, Any]], recent_histor
 
     if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
         score += 30
-        reasons.append(f"本轮Top100增持{accumulated_delta:.2%}")
+        reasons.append(f"current top100 accumulation {accumulated_delta:.2%}")
     if netflow_delta >= MIN_NETFLOW_USD:
         score += 25
-        reasons.append(f"本轮净买入${netflow_delta:,.0f}")
+        reasons.append(f"current net buy ${netflow_delta:,.0f}")
     if tagged_delta >= 0.005:
         score += 15
-        reasons.append(f"标签钱包增持{tagged_delta:.2%}")
+        reasons.append(f"tagged wallets accumulation {tagged_delta:.2%}")
     if window_change["accumulation_pct_delta"] >= MIN_ACCUMULATED_PCT_DELTA * 2:
         score += 20
-        reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
+        reasons.append(f"last {len(recent_history)} snapshots accumulation {window_change['accumulation_pct_delta']:.2%}")
     if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
         score += 15
-        reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
+        reasons.append(f"last {len(recent_history)} snapshots net buy ${window_change['netflow_usd']:,.0f}")
+
+    if pool_stats["pool_mcap_ratio"] >= 0.12:
+        score += 15
+        reasons.append(f"pool/mcap {pool_stats['pool_mcap_ratio']:.1%}({pool_stats['pool_mcap_ratio_text']})")
+    elif pool_stats["pool_mcap_ratio"] >= 0.08:
+        score += 8
+        reasons.append(f"pool/mcap near 1:10 ({pool_stats['pool_mcap_ratio']:.1%})")
+    elif 0 < pool_stats["pool_mcap_ratio"] < 0.03:
+        score = max(score - 15, 0)
+        reasons.append(f"thin pool {pool_stats['pool_mcap_ratio']:.1%}")
+    if pool_stats["pool_liquidity_delta_pct"] >= 0.2 and pool_stats["pool_liquidity_delta"] >= 5000:
+        score += 15
+        reasons.append(f"current pool liquidity added ${pool_stats['pool_liquidity_delta']:,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
+    if window_pool_stats["pool_liquidity_delta_pct"] >= 0.3 and window_pool_stats["pool_liquidity_delta"] >= 8000:
+        score += 15
+        reasons.append(f"last {len(recent_history)} snapshots pool liquidity added ${window_pool_stats['pool_liquidity_delta']:,.0f}/{window_pool_stats['pool_liquidity_delta_pct']:.1%}")
+    if pool_stats["pool_liquidity_delta_pct"] <= -0.25 and abs(pool_stats["pool_liquidity_delta"]) >= 5000:
+        score = max(score - 25, 0)
+        reasons.append(f"pool liquidity removed ${abs(pool_stats['pool_liquidity_delta']):,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
+
     if accumulation_hits >= 2:
         score += 10
-        reasons.append(f"历史连续吸筹/换筹{accumulation_hits}次")
+        reasons.append(f"historical accumulation/rotation {accumulation_hits} times")
     if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8:
         score += 20
         signal_type = "rotation"
-        reasons.append(f"换筹{turnover_pct:.2%}")
+        reasons.append(f"rotation {turnover_pct:.2%}")
     if distributed_delta >= MIN_DISTRIBUTED_PCT_DELTA and distributed_delta > accumulated_delta * 1.3:
         signal_type = "distribution"
         score = max(score - 30, 0)
-        reasons.append(f"派发{distributed_delta:.2%}")
+        reasons.append(f"distribution {distributed_delta:.2%}")
     if distribution_hits >= 2:
         signal_type = "distribution"
         score = max(score - 20, 0)
-        reasons.append(f"历史派发{distribution_hits}次")
+        reasons.append(f"historical distribution {distribution_hits} times")
     elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation":
         signal_type = "accumulation"
 
@@ -673,6 +814,10 @@ def analyze_snapshot_change(current_holders: list[dict[str, Any]], recent_histor
         "signal_type": signal_type,
         "reasons": reasons,
         "history_count": len(recent_history),
+        **pool_stats,
+        "window_pool_liquidity_delta": window_pool_stats["pool_liquidity_delta"],
+        "window_pool_liquidity_delta_pct": window_pool_stats["pool_liquidity_delta_pct"],
+        "window_pool_mcap_ratio_delta": window_pool_stats["pool_mcap_ratio_delta"],
         "accumulation_pct_delta": last_change["accumulation_pct_delta"],
         "distribution_pct_delta": last_change["distribution_pct_delta"],
         "rotation_score": last_change["rotation_score"],
@@ -687,7 +832,6 @@ def analyze_snapshot_change(current_holders: list[dict[str, Any]], recent_histor
         "top_buyers": last_change["top_buyers"],
         "top_sellers": last_change["top_sellers"],
     }
-
 
 def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
     address = token_address(token)
@@ -738,22 +882,25 @@ def send_tg(text: str) -> None:
         print(f"tg exception: {exc}")
 
 
+
 def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
     return (
-        f"Top100筹码异动 | ${token.get('symbol') or 'UNKNOWN'}\n"
-        f"类型: {analysis['signal_type']} | 分数: {analysis['score']}\n"
+        f"Top100 chip signal | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"type: {analysis['signal_type']} | score: {analysis['score']}\n"
         f"CA: {address}\n"
-        f"市值: ${calc_mcap(token):,.0f} | 价格: {to_float(token.get('price')):.12f}\n"
-        f"增持: {analysis['accumulation_pct_delta']:.2%} | 减持: {analysis['distribution_pct_delta']:.2%}\n"
-        f"新进: {analysis['new_holder_pct']:.2%} | 退出: {analysis['exited_holder_pct']:.2%}\n"
-        f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
-        f"近{analysis.get('history_count', 0)}次: 增持{analysis.get('window_accumulation_pct_delta', 0):.2%} | "
-        f"减持{analysis.get('window_distribution_pct_delta', 0):.2%} | 净买入${analysis.get('window_netflow_usd', 0):,.0f}\n"
-        f"理由: {', '.join(analysis['reasons']) or '无'}\n"
+        f"mcap: ${calc_mcap(token):,.0f} | price: {to_float(token.get('price')):.12f}\n"
+        f"pool: ${analysis.get('pool_total_liquidity', 0):,.0f} | pool/mcap: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | "
+        f"pool delta: ${analysis.get('pool_liquidity_delta', 0):,.0f}/{analysis.get('pool_liquidity_delta_pct', 0):.1%}\n"
+        f"main pool: {analysis.get('pool_main_exchange') or 'unknown'} | main share: {analysis.get('pool_main_share', 0):.1%}\n"
+        f"acc: {analysis['accumulation_pct_delta']:.2%} | dist: {analysis['distribution_pct_delta']:.2%}\n"
+        f"new: {analysis['new_holder_pct']:.2%} | exited: {analysis['exited_holder_pct']:.2%}\n"
+        f"rotation: {analysis['rotation_score']:.2f} | net buy: ${analysis['netflow_usd']:,.0f}\n"
+        f"last {analysis.get('history_count', 0)}: acc {analysis.get('window_accumulation_pct_delta', 0):.2%} | "
+        f"dist {analysis.get('window_distribution_pct_delta', 0):.2%} | net ${analysis.get('window_netflow_usd', 0):,.0f}\n"
+        f"reason: {', '.join(analysis['reasons']) or 'none'}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
-
 
 def should_notify(analysis: dict[str, Any]) -> bool:
     return analysis.get("score", 0) >= MIN_SIGNAL_SCORE or analysis.get("signal_type") == "distribution"
@@ -769,14 +916,16 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
     candles = fetch_kline(address, kline_resolution)
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     history = recent_snapshots(address)
-    analysis = analyze_snapshot_change(holders, history)
+    analysis = analyze_snapshot_change(holders, history, summary)
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
         f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
         f"type={analysis.get('signal_type')} score={analysis.get('score')} "
         f"acc={analysis.get('accumulation_pct_delta', 0):.2%} "
         f"dist={analysis.get('distribution_pct_delta', 0):.2%} "
-        f"win_acc={analysis.get('window_accumulation_pct_delta', 0):.2%}"
+        f"win_acc={analysis.get('window_accumulation_pct_delta', 0):.2%} "
+        f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
+        f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis):
         send_tg(signal_text(token, analysis))
@@ -815,6 +964,8 @@ def scan_once(args: argparse.Namespace) -> None:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
                 continue
+            pool_data = fetch_token_pool(address)
+            token = attach_token_pool(token, pool_data)
             if handle_token(scan_id, token, args.notify):
                 processed += 1
         except Exception as exc:
