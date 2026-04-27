@@ -1042,15 +1042,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             f"均{format_chain_price(cluster_avg_cost)} 中{format_chain_price(cluster_median_cost)} "
             f"区间{cost_range} 盈亏{format_pnl_pct(current_price, cluster_avg_cost)}"
         )
-        for idx, cluster in enumerate(creation_clusters, start=1):
-            tag_lines.append(
-                f"同批创建簇#{idx}({cluster['date_range']}) "
-                f"{cluster['count']}个/{cluster['supply']:.1f}% "
-                f"持仓${cluster['position_value']:,.0f} "
-                f"买${cluster['buy_volume']:,.0f} 卖${cluster['sell_volume']:,.0f} "
-                f"净${cluster['netflow']:,.0f} "
-                f"均{format_chain_price(cluster['avg_cost'])} 中{format_chain_price(cluster['median_cost'])}"
-            )
+
     top20 = non_pool[:20]
     top50 = non_pool[:50]
     top20_cost = weighted_avg_cost(top20)
@@ -1503,21 +1495,34 @@ def scan_pro():
 
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         
+                        # Build Smart Money / KOL holding details from tag stats
+                        sm_stats = s.get('holder_tag_stats', {}).get('smart_degen', {})
+                        kol_stats = s.get('holder_tag_stats', {}).get('renowned', {})
+                        sm_detail = (
+                            f"聪明钱{sm_stats['count']}个/{sm_stats['supply']:.1f}% "
+                            f"持仓${sm_stats['position_value']:,.0f} "
+                            f"买${sm_stats['buy_volume']:,.0f} 卖${sm_stats['sell_volume']:,.0f} 净${sm_stats['netflow']:,.0f}"
+                        ) if sm_stats.get('count', 0) > 0 else "聪明钱0个"
+                        kol_detail = (
+                            f"KOL{kol_stats['count']}个/{kol_stats['supply']:.1f}% "
+                            f"持仓${kol_stats['position_value']:,.0f} "
+                            f"买${kol_stats['buy_volume']:,.0f} 卖${kol_stats['sell_volume']:,.0f} 净${kol_stats['netflow']:,.0f}"
+                        ) if kol_stats.get('count', 0) > 0 else "KOL0个"
+
                         msg = (
                             f"{alert_icon} *筹码关联性报警* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
+                            f"👥 *共识强度*\n"
+                            f"- Smart Money: {s['sm_count']} | KOL: {s['kol_count']}\n\n"
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']}\n\n"
-                            f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
-                            f"- 同资金/Token来源: {s['source_cluster_desc']}\n"
-                            f"- 同源持仓: {s['source_cluster_supply']:.2f}% | ${s['source_cluster_usd_value']:,.0f} | Token数量 {s['source_cluster_amount']:,.0f}\n"
-                            f"- 同源买卖: 买入 ${s['source_cluster_buy_volume']:,.0f} | 卖出 ${s['source_cluster_sell_volume']:,.0f} | 净流 ${s['source_cluster_netflow']:,.0f}\n"
-                            f"- 庄家出货进度: {s['dump_progress']:.1f}%\n\n"
                             f"🏷️ *标签钱包分析*\n"
+                            f"{sm_detail}\n"
+                            f"{kol_detail}\n"
                             f"{s['holder_tag_desc']}\n\n"
                             f"📐 *成本线分析*\n"
-                            f"- 链上价(x1e9): {format_chain_price(s['price'])}\n"
+                            f"- 链上价格: {format_chain_price(s['price'])}\n"
                             f"- Top20成本: {format_chain_price(s['top20_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top20_avg_cost'])}\n"
                             f"- Top50成本: {format_chain_price(s['top50_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top50_avg_cost'])}\n"
                             f"- Top100成本: {format_chain_price(s['top100_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top100_avg_cost'])}\n"
@@ -1528,8 +1533,6 @@ def scan_pro():
                             f"- 捆绑持仓: {s['associated_supply']:.1f}% | 钱包 {s['associated_count']}个 | 卖出进度 {s['dump_progress']:.1f}%\n"
                             f"- 狙击手数量: {s['snipers']}\n"
                             f"- 风险分数: {s['rug_ratio']}\n\n"
-                            f"👥 *共识强度*\n"
-                            f"- Smart Money: {s['sm_count']} | KOL: {s['kol_count']}\n\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )

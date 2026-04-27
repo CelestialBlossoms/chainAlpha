@@ -281,8 +281,9 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             continue
         token = {"address": address, "source": "watchlist"}
         if create_at:
-            token["watchlist_create_at"] = create_at
-            token["created_at"] = int(create_at.timestamp()) if isinstance(create_at, datetime) else create_at
+            created_ts = int(create_at.timestamp()) if isinstance(create_at, datetime) else parse_timestamp(create_at)
+            token["watchlist_create_at"] = created_ts
+            token["created_at"] = created_ts
         tokens.append(token)
     return tokens
 
@@ -627,6 +628,18 @@ def recent_snapshots(address: str, limit: int = RECENT_COMPARE_LIMIT) -> list[di
         ]
 
     return db_op(_op)
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def latest_snapshot_ts(address: str) -> int | None:
@@ -1104,10 +1117,10 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
                 now_ts(),
                 analysis.get("signal_type"),
                 analysis.get("score", 0),
-                Json(summary),
-                Json(holders),
-                Json(analysis),
-                Json(token),
+                Json(json_safe(summary)),
+                Json(json_safe(holders)),
+                Json(json_safe(analysis)),
+                Json(json_safe(token)),
             ),
         )
         return int(cur.fetchone()[0])

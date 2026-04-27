@@ -28,6 +28,7 @@ DEEPSEEK_MAX_HISTORY = int(os.getenv("DEEPSEEK_MAX_HISTORY", "100"))
 DEEPSEEK_KLINE_CANDLES_PER_SNAPSHOT = int(os.getenv("DEEPSEEK_KLINE_CANDLES_PER_SNAPSHOT", "12"))
 PHASE_UP_PCT = float(os.getenv("DEEPSEEK_PHASE_UP_PCT", "0.12"))
 PHASE_DOWN_PCT = float(os.getenv("DEEPSEEK_PHASE_DOWN_PCT", "-0.12"))
+CURRENT_NODE_MIN_AGE_SEC = int(os.getenv("TG_CA_CURRENT_NODE_MIN_AGE_SEC", "900"))
 DEEPSEEK_ENABLED = os.getenv("DEEPSEEK_ENABLED", "1") != "0"
 DEEPSEEK_THINKING = os.getenv("DEEPSEEK_THINKING", "enabled")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
@@ -147,6 +148,14 @@ def phase_name(price_change_pct):
     return "sideways"
 
 
+def phase_text(name):
+    return {
+        "up": "上涨",
+        "down": "下跌",
+        "sideways": "横盘",
+    }.get(name, name or "未知")
+
+
 def holder_map(holders):
     return {str(holder.get("wallet") or "").strip(): holder for holder in holders if holder.get("wallet")}
 
@@ -167,6 +176,7 @@ def wallet_delta(prev_holder, cur_holder):
             - (float(cur_holder.get("sell_volume") or 0) - float(prev_holder.get("sell_volume") or 0)),
             2,
         ),
+        "profit_delta": round_float(float(cur_holder.get("profit") or 0) - float(prev_holder.get("profit") or 0), 2),
         "last_hold_pct": round_float(cur_holder.get("hold_pct"), 6),
         "avg_cost": cur_holder.get("avg_cost") or prev_holder.get("avg_cost"),
         "tags": cur_holder.get("tags") or prev_holder.get("tags") or [],
@@ -187,6 +197,7 @@ def merge_wallet_phase_delta(bucket, delta):
             "buy_delta": 0.0,
             "sell_delta": 0.0,
             "netflow_delta": 0.0,
+            "profit_delta": 0.0,
             "last_hold_pct": 0.0,
             "avg_cost": delta.get("avg_cost"),
             "tags": delta.get("tags") or [],
@@ -198,6 +209,7 @@ def merge_wallet_phase_delta(bucket, delta):
     item["buy_delta"] += float(delta.get("buy_delta") or 0)
     item["sell_delta"] += float(delta.get("sell_delta") or 0)
     item["netflow_delta"] += float(delta.get("netflow_delta") or 0)
+    item["profit_delta"] += float(delta.get("profit_delta") or 0)
     item["last_hold_pct"] = delta.get("last_hold_pct", item["last_hold_pct"])
     item["avg_cost"] = delta.get("avg_cost") or item.get("avg_cost")
     item["tags"] = delta.get("tags") or item.get("tags") or []
@@ -211,6 +223,7 @@ def top_wallets(bucket, mode, limit=8):
         item["buy_delta"] = round_float(item.get("buy_delta"), 2)
         item["sell_delta"] = round_float(item.get("sell_delta"), 2)
         item["netflow_delta"] = round_float(item.get("netflow_delta"), 2)
+        item["profit_delta"] = round_float(item.get("profit_delta"), 2)
     if mode == "buy":
         items.sort(key=lambda item: (item["hold_delta"], item["netflow_delta"], item["buy_delta"]), reverse=True)
     else:
@@ -247,10 +260,42 @@ def analyze_phase_wallet_flows(current_summary, current_holders, history):
         }
     )
     frames = [frame for frame in frames if frame["holders"]]
+    current_node = {}
+    if len(frames) >= 2:
+        cur = frames[-1]
+        cur_ts = int(cur.get("ts") or time.time())
+        prev_candidates = [
+            frame for frame in frames[:-1]
+            if int(frame.get("ts") or 0) > 0 and cur_ts - int(frame.get("ts") or 0) >= CURRENT_NODE_MIN_AGE_SEC
+        ]
+        prev = prev_candidates[-1] if prev_candidates else {}
+    if len(frames) >= 2 and prev:
+        prev_price = float(prev.get("price") or 0)
+        cur_price = float(cur.get("price") or 0)
+        change_pct = ((cur_price - prev_price) / prev_price) if prev_price > 0 and cur_price > 0 else 0.0
+        phase = phase_name(change_pct)
+        prev_map = holder_map(prev["holders"])
+        cur_map = holder_map(cur["holders"])
+        wallet_bucket = {}
+        for wallet in set(prev_map) | set(cur_map):
+            merge_wallet_phase_delta(wallet_bucket, wallet_delta(prev_map.get(wallet), cur_map.get(wallet)))
+        current_node = {
+            "phase": phase,
+            "phase_text": phase_text(phase),
+            "from_ts": prev.get("ts") or 0,
+            "to_ts": cur.get("ts") or 0,
+            "price_from": prev_price,
+            "price_to": cur_price,
+            "price_change_pct": round_float(change_pct * 100, 2),
+            "top100_hold_delta": round_float(float(cur.get("top100_pct") or 0) - float(prev.get("top100_pct") or 0), 6),
+            "top20_hold_delta": round_float(float(cur.get("top20_pct") or 0) - float(prev.get("top20_pct") or 0), 6),
+            "buyers_or_accumulators": top_wallets(wallet_bucket, "buy", limit=8),
+            "sellers_or_distributors": top_wallets(wallet_bucket, "sell", limit=8),
+        }
     phases = {
-        "up": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": []},
-        "down": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": []},
-        "sideways": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": []},
+        "up": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": [], "first_ts": 0, "last_ts": 0},
+        "down": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": [], "first_ts": 0, "last_ts": 0},
+        "sideways": {"intervals": 0, "wallets": {}, "top100_delta": 0.0, "netflow": 0.0, "price_changes": [], "first_ts": 0, "last_ts": 0},
     }
     for prev, cur in zip(frames, frames[1:]):
         prev_price = float(prev.get("price") or 0)
@@ -262,6 +307,8 @@ def analyze_phase_wallet_flows(current_summary, current_holders, history):
         phase = phase_name(change_pct)
         phase_bucket = phases[phase]
         phase_bucket["intervals"] += 1
+        phase_bucket["first_ts"] = phase_bucket["first_ts"] or prev.get("ts") or 0
+        phase_bucket["last_ts"] = cur.get("ts") or phase_bucket["last_ts"]
         phase_bucket["top100_delta"] += float(cur.get("top100_pct") or 0) - float(prev.get("top100_pct") or 0)
         phase_bucket["price_changes"].append(change_pct)
         prev_map = holder_map(prev["holders"])
@@ -279,6 +326,8 @@ def analyze_phase_wallet_flows(current_summary, current_holders, history):
             "phase": name,
             "intervals": bucket["intervals"],
             "avg_price_change_pct": round_float(avg_change * 100, 2),
+            "first_ts": bucket.get("first_ts") or 0,
+            "last_ts": bucket.get("last_ts") or 0,
             "top100_hold_delta": round_float(bucket["top100_delta"], 6),
             "netflow_delta": round_float(bucket["netflow"], 2),
             "buyers_or_accumulators": top_wallets(wallets, "buy", limit=8),
@@ -304,6 +353,7 @@ def analyze_phase_wallet_flows(current_summary, current_holders, history):
             "last": round_float(last.get("top20_pct"), 6),
             "delta": round_float(float(last.get("top20_pct") or 0) - float(first.get("top20_pct") or 0), 6),
         },
+        "current_node": current_node,
         "phases": {
             "up": phase_summary("up", phases["up"]),
             "down": phase_summary("down", phases["down"]),
@@ -383,8 +433,65 @@ def wallet_brief(items, limit=3, sign="+"):
         suffix = f" {tags_text}" if tags_text else ""
         hold_delta = float(item.get("hold_delta") or 0)
         netflow = float(item.get("netflow_delta") or 0)
-        parts.append(f"{short} {hold_delta:+.2%} 净{compact_money(netflow)}{suffix}")
+        profit = float(item.get("profit_delta") or 0)
+        parts.append(f"{short} {hold_delta:+.2%} 净{compact_money(netflow)} 盈亏{compact_money(profit)}{suffix}")
     return " | ".join(parts) if parts else "证据不足"
+
+
+def fmt_ts(ts):
+    ts = int(float(ts or 0))
+    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts > 0 else "未知"
+
+
+def phase_time_text(phase):
+    if not phase or not phase.get("intervals"):
+        return "无对应阶段"
+    return f"{fmt_ts(phase.get('first_ts'))}~{fmt_ts(phase.get('last_ts'))}"
+
+
+def wallet_flow_totals(items, mode):
+    items = items or []
+    if mode == "buy":
+        selected = [item for item in items if float(item.get("hold_delta") or 0) > 0]
+        hold = sum(float(item.get("hold_delta") or 0) for item in selected)
+    else:
+        selected = [item for item in items if float(item.get("hold_delta") or 0) < 0]
+        hold = sum(abs(float(item.get("hold_delta") or 0)) for item in selected)
+    return {
+        "count": len(selected),
+        "hold": hold,
+        "buy": sum(float(item.get("buy_delta") or 0) for item in selected),
+        "sell": sum(float(item.get("sell_delta") or 0) for item in selected),
+        "net": sum(float(item.get("netflow_delta") or 0) for item in selected),
+        "profit": sum(float(item.get("profit_delta") or 0) for item in selected),
+    }
+
+
+def wallet_flow_summary(label, phase_label, phase, items, mode, limit=3):
+    totals = wallet_flow_totals(items, mode)
+    return (
+        f"- {label}: {phase_label}阶段({phase_time_text(phase)})，"
+        f"{totals['count']}个钱包，持仓变化{totals['hold']:.2%}，"
+        f"买入{compact_money(totals['buy'])}，卖出{compact_money(totals['sell'])}，"
+        f"净流{compact_money(totals['net'])}，盈亏{compact_money(totals['profit'])}。\n"
+        f"  重点钱包: {wallet_brief(items, limit=limit)}"
+    )
+
+
+def current_node_text(node):
+    if not node:
+        return f"- 当前节点: 没有找到距离当前至少{CURRENT_NODE_MIN_AGE_SEC // 60}分钟的历史快照，暂不判断。"
+    buyers = node.get("buyers_or_accumulators") or []
+    sellers = node.get("sellers_or_distributors") or []
+    buyer_totals = wallet_flow_totals(buyers, "buy")
+    seller_totals = wallet_flow_totals(sellers, "sell")
+    return (
+        f"- 当前节点: {node.get('phase_text')}状态({fmt_ts(node.get('from_ts'))}~{fmt_ts(node.get('to_ts'))})，"
+        f"价格{node.get('price_from')}->{node.get('price_to')}({float(node.get('price_change_pct') or 0):+.2f}%)，"
+        f"Top100变化{float(node.get('top100_hold_delta') or 0):+.2%}，Top20变化{float(node.get('top20_hold_delta') or 0):+.2%}。\n"
+        f"  当前增持: {buyer_totals['count']}个钱包，持仓+{buyer_totals['hold']:.2%}，净流{compact_money(buyer_totals['net'])}；{wallet_brief(buyers, limit=3)}。\n"
+        f"  当前卖出: {seller_totals['count']}个钱包，减持{seller_totals['hold']:.2%}，净流{compact_money(seller_totals['net'])}；{wallet_brief(sellers, limit=3)}。"
+    )
 
 
 def local_stage_conclusion(phase_flows):
@@ -416,6 +523,7 @@ def local_phase_rule_text(analysis):
     sideways = phases.get("sideways") or {}
     top100 = phase_flows.get("top100_hold_change") or {}
     top20 = phase_flows.get("top20_hold_change") or {}
+    current_node = phase_flows.get("current_node") or {}
     current_kline = (analysis or {}).get("current_kline") or {}
     kline_summary = current_kline.get("summary") or {}
     stage = local_stage_conclusion(phase_flows)
@@ -430,17 +538,20 @@ def local_phase_rule_text(analysis):
         risks.append("未见明确砸盘证据")
     return (
         f"本地规则阶段分析\n"
-        f"- 阶段结论: {stage}\n"
+        f"- 阶段结论: {stage}。\n"
         f"- K线证据: 总涨跌{phase_flows.get('price_change_total_pct', 0):.2f}% | "
-        f"现价{phase_flows.get('current_price', 0)} | 高{phase_flows.get('price_high', 0)} | 低{phase_flows.get('price_low', 0)}\n"
+        f"现价{phase_flows.get('current_price', 0)} | 高{phase_flows.get('price_high', 0)} | 低{phase_flows.get('price_low', 0)}。\n"
         f"- Top100持仓变化: {fmt_pct(top100.get('first'))}->{fmt_pct(top100.get('last'))} "
         f"({float(top100.get('delta') or 0):+.2%}) | Top20 {fmt_pct(top20.get('first'))}->{fmt_pct(top20.get('last'))} "
-        f"({float(top20.get('delta') or 0):+.2%})\n"
-        f"- 吸筹钱包: 横盘 {wallet_brief(sideways.get('buyers_or_accumulators'))} | 上涨 {wallet_brief(up.get('buyers_or_accumulators'), limit=2)}\n"
-        f"- 出货钱包: 下跌 {wallet_brief(down.get('sellers_or_distributors'), sign='-')}\n"
+        f"({float(top20.get('delta') or 0):+.2%})。\n"
+        f"{wallet_flow_summary('吸筹钱包', '横盘', sideways, sideways.get('buyers_or_accumulators'), 'buy')}。\n"
+        f"{wallet_flow_summary('上涨买入', '上涨', up, up.get('buyers_or_accumulators'), 'buy', limit=2)}。\n"
+        f"{wallet_flow_summary('出货钱包', '下跌', down, down.get('sellers_or_distributors'), 'sell')}。\n"
         f"- 换筹证据: 横盘Top100变化{float(sideways.get('top100_hold_delta') or 0):+.2%} | "
-        f"横盘净流{compact_money(sideways.get('netflow_delta'))} | 下跌净流{compact_money(down.get('netflow_delta'))}\n"
-        f"- 风险点: {'；'.join(risks)}"
+        f"横盘净流{compact_money(sideways.get('netflow_delta'))} | 下跌净流{compact_money(down.get('netflow_delta'))} | "
+        f"时间段{phase_time_text(sideways)}，与K线横盘阶段对应。\n"
+        f"{current_node_text(current_node)}\n"
+        f"- 风险点: {'；'.join(risks)}。"
     )
 
 
@@ -579,7 +690,9 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
         return
 
     bottom_analysis = load_bottom_snapshot_analysis(address, chain=chain, limit=100, stats=stats)
-    deepseek_analysis = call_deepseek_chip_analysis(chain, address, stats, bottom_analysis)
+    # DeepSeek analysis is disabled for now to avoid API usage.
+    # deepseek_analysis = call_deepseek_chip_analysis(chain, address, stats, bottom_analysis)
+    deepseek_analysis = ""
     msg = build_chip_alert_message(
         chain,
         address,
