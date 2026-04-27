@@ -12,6 +12,7 @@ from deep_alpha_pro import (
     format_pnl_pct,
     perform_deep_analysis,
 )
+from bottom_detection import bottom_accumulation_monitor as bottom_monitor
 
 
 POLL_TIMEOUT = 25
@@ -91,7 +92,55 @@ def clean_holder_tag_desc(desc):
     return desc
 
 
-def build_chip_alert_message(chain, address, stats):
+def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
+    raw_holders = bottom_monitor.fetch_top100_holders(address)
+    if not raw_holders:
+        return None
+
+    token = {
+        "address": address,
+        "symbol": (stats or {}).get("symbol"),
+        "market_cap": (stats or {}).get("mcap"),
+        "price": (stats or {}).get("price"),
+        "liquidity": (stats or {}).get("pool_liquidity"),
+        "created_at": (stats or {}).get("created_at"),
+        "fee_sol": (stats or {}).get("fee_sol"),
+    }
+    summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders)
+    history = bottom_monitor.recent_snapshots(address, limit=limit)
+    analysis = bottom_monitor.analyze_snapshot_change(holders, history, summary)
+    analysis["snapshot_count"] = len(history)
+    analysis["current_holder_count"] = len(holders)
+    analysis["current_snapshot_ts"] = int(time.time())
+    analysis["latest_history_snapshot_ts"] = history[0].get("snapshot_ts") if history else None
+    return analysis
+
+
+def bottom_chip_history_text(analysis):
+    if not analysis:
+        return "最近100次筹码轨迹\n- 暂无 bottom_top100_snapshots 历史数据"
+    current_ts = analysis.get("current_snapshot_ts")
+    history_ts = analysis.get("latest_history_snapshot_ts")
+    current_time = datetime.fromtimestamp(current_ts).strftime("%Y-%m-%d %H:%M:%S") if current_ts else "未知"
+    history_time = datetime.fromtimestamp(history_ts).strftime("%Y-%m-%d %H:%M:%S") if history_ts else "暂无"
+    reasons = ", ".join(analysis.get("reasons") or []) or "无"
+    return (
+        f"实时Top100 + 最近100次筹码轨迹\n"
+        f"- 当前查询: {current_time} | 当前Top100: {analysis.get('current_holder_count', 0)}个 | 历史快照: {analysis.get('snapshot_count', 0)}条\n"
+        f"- 最近历史: {history_time}\n"
+        f"- 类型: {bottom_monitor.signal_type_text(analysis.get('signal_type'))} | 分数: {analysis.get('score', 0)}\n"
+        f"- 窗口增持: {analysis.get('window_accumulation_pct_delta', 0):.2%} | "
+        f"窗口减持: {analysis.get('window_distribution_pct_delta', 0):.2%} | "
+        f"窗口净买入: {compact_money(analysis.get('window_netflow_usd'))}\n"
+        f"- 本轮增持: {analysis.get('accumulation_pct_delta', 0):.2%} | "
+        f"本轮减持: {analysis.get('distribution_pct_delta', 0):.2%} | "
+        f"换筹比: {analysis.get('rotation_score', 0):.2f}\n"
+        f"{bottom_monitor.wallet_behavior_text(analysis)}\n"
+        f"- 理由: {reasons}"
+    )
+
+
+def build_chip_alert_message(chain, address, stats, bottom_analysis=None):
     reasons = ", ".join(stats.get("buy_reasons") or []) or "无明显加分项"
     icon = "高风险" if stats.get("is_dumping") else "筹码报警"
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
@@ -128,6 +177,7 @@ def build_chip_alert_message(chain, address, stats):
         f"基础结构\n"
         f"{stats.get('rank_bucket_desc')}\n"
         f"- 捆绑持仓: {stats.get('associated_supply', 0):.1f}% | 钱包 {stats.get('associated_count', 0)}个 | 卖出进度 {stats.get('dump_progress', 0):.1f}%\n\n"
+        f"{bottom_chip_history_text(bottom_analysis)}\n\n"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
 
@@ -138,7 +188,8 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
         send_message(chat_id, f"查询失败或该 CA 被风控条件跳过：\n{address}", message_id)
         return
 
-    msg = build_chip_alert_message(chain, address, stats)
+    bottom_analysis = load_bottom_snapshot_analysis(address, chain=chain, limit=100, stats=stats)
+    msg = build_chip_alert_message(chain, address, stats, bottom_analysis=bottom_analysis)
     if len(msg) <= 4000:
         send_message(chat_id, msg, message_id)
         return

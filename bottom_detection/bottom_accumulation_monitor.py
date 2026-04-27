@@ -34,7 +34,7 @@ TREND_INTERVAL = os.getenv("BOTTOM_TREND_INTERVAL", "1h")
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
-RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "30"))
+RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "100"))
 NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
@@ -48,6 +48,11 @@ MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "10"))
 MIN_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_ACCUM_PCT_DELTA", "0.015"))
 MIN_WINDOW_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_WINDOW_ACCUM_PCT_DELTA", "0.10"))
 MIN_SIGNAL_HISTORY_COUNT = int(os.getenv("BOTTOM_MIN_SIGNAL_HISTORY_COUNT", str(RECENT_COMPARE_LIMIT)))
+MIN_WALLET_BEHAVIOR_PCT_DELTA = float(os.getenv("BOTTOM_MIN_WALLET_BEHAVIOR_PCT_DELTA", "0.003"))
+MIN_WALLET_BEHAVIOR_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_WALLET_BEHAVIOR_NETFLOW_USD", "1000"))
+EARLY_WALLET_RANK_LIMIT = int(os.getenv("BOTTOM_EARLY_WALLET_RANK_LIMIT", "30"))
+MIN_EARLY_WALLET_SELL_STEPS = int(os.getenv("BOTTOM_MIN_EARLY_WALLET_SELL_STEPS", "3"))
+MIN_EARLY_WALLET_DISTRIBUTION_PCT = float(os.getenv("BOTTOM_MIN_EARLY_WALLET_DISTRIBUTION_PCT", "0.005"))
 MIN_DISTRIBUTED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_DISTRIB_PCT_DELTA", "0.015"))
 MIN_ROTATION_PCT = float(os.getenv("BOTTOM_MIN_ROTATION_PCT", "0.02"))
 MIN_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_NETFLOW_USD", "5000"))
@@ -608,7 +613,7 @@ def recent_snapshots(address: str, limit: int = RECENT_COMPARE_LIMIT) -> list[di
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, summary, holders, analysis
+            SELECT id, snapshot_ts, summary, holders, analysis
             FROM bottom_top100_snapshots
             WHERE chain=%s AND address=%s
             ORDER BY snapshot_ts DESC
@@ -617,7 +622,7 @@ def recent_snapshots(address: str, limit: int = RECENT_COMPARE_LIMIT) -> list[di
             (CHAIN, address, limit),
         )
         return [
-            {"id": row[0], "summary": row[1] or {}, "holders": row[2] or [], "analysis": row[3] or {}}
+            {"id": row[0], "snapshot_ts": int(row[1] or 0), "summary": row[2] or {}, "holders": row[3] or [], "analysis": row[4] or {}}
             for row in cur.fetchall()
         ]
 
@@ -705,6 +710,192 @@ def compare_holder_sets(current_holders: list[dict[str, Any]], previous_holders:
     }
 
 
+def wallet_behavior_item(wallet: str, points: list[dict[str, Any]]) -> dict[str, Any]:
+    first = points[0]
+    last = points[-1]
+    hold_delta = to_float(last.get("hold_pct")) - to_float(first.get("hold_pct"))
+    buy_delta = to_float(last.get("buy_volume")) - to_float(first.get("buy_volume"))
+    sell_delta = to_float(last.get("sell_volume")) - to_float(first.get("sell_volume"))
+    netflow_delta = buy_delta - sell_delta
+    rank_delta = to_int(first.get("rank")) - to_int(last.get("rank"))
+    active_points = [point for point in points if to_float(point.get("hold_pct")) > 0]
+    first_active = active_points[0] if active_points else first
+    sell_steps = 0
+    buy_steps = 0
+    hold_down_steps = 0
+    hold_up_steps = 0
+    max_hold_pct = max((to_float(point.get("hold_pct")) for point in points), default=0.0)
+    min_after_peak_pct = to_float(last.get("hold_pct"))
+    peak_seen = False
+    for prev, cur in zip(points, points[1:]):
+        prev_hold = to_float(prev.get("hold_pct"))
+        cur_hold = to_float(cur.get("hold_pct"))
+        if prev_hold >= max_hold_pct:
+            peak_seen = True
+        if peak_seen:
+            min_after_peak_pct = min(min_after_peak_pct, cur_hold)
+        sell_step = to_float(cur.get("sell_volume")) - to_float(prev.get("sell_volume"))
+        buy_step = to_float(cur.get("buy_volume")) - to_float(prev.get("buy_volume"))
+        if sell_step > max(buy_step, 0) and sell_step > 0:
+            sell_steps += 1
+        if buy_step > max(sell_step, 0) and buy_step > 0:
+            buy_steps += 1
+        if cur_hold < prev_hold:
+            hold_down_steps += 1
+        elif cur_hold > prev_hold:
+            hold_up_steps += 1
+    distributed_from_peak = max_hold_pct - min_after_peak_pct
+    return {
+        "wallet": wallet,
+        "first_ts": to_int(first.get("_snapshot_ts")),
+        "last_ts": to_int(last.get("_snapshot_ts")),
+        "first_active_ts": to_int(first_active.get("_snapshot_ts")),
+        "first_rank": to_int(first.get("rank")),
+        "last_rank": to_int(last.get("rank")),
+        "first_active_rank": to_int(first_active.get("rank")),
+        "rank_delta": rank_delta,
+        "first_hold_pct": to_float(first.get("hold_pct")),
+        "last_hold_pct": to_float(last.get("hold_pct")),
+        "first_active_hold_pct": to_float(first_active.get("hold_pct")),
+        "max_hold_pct": max_hold_pct,
+        "distributed_from_peak": distributed_from_peak,
+        "hold_delta": hold_delta,
+        "buy_delta": buy_delta,
+        "sell_delta": sell_delta,
+        "netflow_delta": netflow_delta,
+        "sell_steps": sell_steps,
+        "buy_steps": buy_steps,
+        "hold_down_steps": hold_down_steps,
+        "hold_up_steps": hold_up_steps,
+        "avg_cost": to_float(last.get("avg_cost")) or to_float(first.get("avg_cost")),
+        "profit": to_float(last.get("profit")),
+        "tags": last.get("tags") or first.get("tags") or [],
+        "point_count": len(points),
+        "is_new_entry": to_float(first.get("hold_pct")) <= 0 and to_float(last.get("hold_pct")) > 0,
+        "is_exited": to_float(first.get("hold_pct")) > 0 and to_float(last.get("hold_pct")) <= 0,
+    }
+
+
+def analyze_wallet_behaviors(
+    current_holders: list[dict[str, Any]],
+    recent_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    frames = []
+    for snap in reversed(recent_history):
+        frames.append({"snapshot_ts": to_int(snap.get("snapshot_ts")), "holders": snap.get("holders") or []})
+    frames.append({"snapshot_ts": now_ts(), "holders": current_holders})
+
+    wallets = set()
+    for frame in frames:
+        holder_map = {}
+        for holder in frame["holders"]:
+            wallet = str(holder.get("wallet") or "").strip()
+            if wallet:
+                wallets.add(wallet)
+                holder_map[wallet] = holder
+        frame["holder_map"] = holder_map
+
+    trajectories = {}
+    for wallet in wallets:
+        points = []
+        previous_holder = None
+        for frame in frames:
+            holder = dict(frame["holder_map"].get(wallet) or {})
+            if not holder:
+                holder = {
+                    "wallet": wallet,
+                    "rank": 0,
+                    "hold_pct": 0,
+                    "usd_value": 0,
+                    "buy_volume": previous_holder.get("buy_volume", 0) if previous_holder else 0,
+                    "sell_volume": previous_holder.get("sell_volume", 0) if previous_holder else 0,
+                    "netflow": previous_holder.get("netflow", 0) if previous_holder else 0,
+                    "avg_cost": previous_holder.get("avg_cost", 0) if previous_holder else 0,
+                    "profit": previous_holder.get("profit", 0) if previous_holder else 0,
+                    "tags": previous_holder.get("tags", []) if previous_holder else [],
+                }
+            holder["_snapshot_ts"] = frame["snapshot_ts"]
+            points.append(holder)
+            previous_holder = holder
+        trajectories[wallet] = wallet_behavior_item(wallet, points)
+
+    def strong_buy(item: dict[str, Any]) -> bool:
+        return (
+            item["hold_delta"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA
+            and (item["netflow_delta"] >= MIN_WALLET_BEHAVIOR_NETFLOW_USD or item["buy_delta"] > item["sell_delta"] * 1.5)
+        )
+
+    def strong_sell(item: dict[str, Any]) -> bool:
+        return (
+            item["hold_delta"] <= -MIN_WALLET_BEHAVIOR_PCT_DELTA
+            and (item["netflow_delta"] <= -MIN_WALLET_BEHAVIOR_NETFLOW_USD or item["sell_delta"] > item["buy_delta"] * 1.5)
+        )
+
+    def early_distributor(item: dict[str, Any]) -> bool:
+        is_early = (
+            0 < item["first_active_rank"] <= EARLY_WALLET_RANK_LIMIT
+            or item["first_active_hold_pct"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
+        )
+        persistent_sell = (
+            item["sell_steps"] >= MIN_EARLY_WALLET_SELL_STEPS
+            or item["hold_down_steps"] >= MIN_EARLY_WALLET_SELL_STEPS
+        )
+        meaningful_distribution = (
+            item["distributed_from_peak"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
+            or abs(min(item["hold_delta"], 0)) >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
+        )
+        sell_dominant = item["sell_delta"] > item["buy_delta"] or item["netflow_delta"] < 0
+        return is_early and persistent_sell and meaningful_distribution and sell_dominant
+
+    items = list(trajectories.values())
+    accumulators = sorted([item for item in items if strong_buy(item)], key=lambda x: x["hold_delta"], reverse=True)[:10]
+    distributors = sorted([item for item in items if strong_sell(item)], key=lambda x: x["hold_delta"])[:10]
+    early_distributors = sorted(
+        [item for item in items if early_distributor(item)],
+        key=lambda x: (x["distributed_from_peak"], x["sell_steps"], abs(min(x["hold_delta"], 0))),
+        reverse=True,
+    )[:10]
+    rotators_in = sorted(
+        [item for item in items if item["is_new_entry"] and item["last_hold_pct"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA],
+        key=lambda x: x["last_hold_pct"],
+        reverse=True,
+    )[:10]
+    rotators_out = sorted(
+        [item for item in items if item["is_exited"] and item["first_hold_pct"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA],
+        key=lambda x: x["first_hold_pct"],
+        reverse=True,
+    )[:10]
+
+    tagged_accumulation = [
+        item for item in accumulators
+        if any(str(tag) in {"smart_degen", "renowned", "bundler", "rat_trader", "fresh_wallet", "sniper"} for tag in item.get("tags", []))
+    ]
+    return {
+        "frames": len(frames),
+        "wallet_count": len(items),
+        "accumulator_count": len(accumulators),
+        "accumulator_hold_delta": sum(item["hold_delta"] for item in accumulators),
+        "accumulator_netflow": sum(item["netflow_delta"] for item in accumulators),
+        "distributor_count": len(distributors),
+        "distributor_hold_delta": sum(abs(item["hold_delta"]) for item in distributors),
+        "distributor_netflow": sum(item["netflow_delta"] for item in distributors),
+        "early_distributor_count": len(early_distributors),
+        "early_distributor_hold_delta": sum(item["distributed_from_peak"] for item in early_distributors),
+        "early_distributor_netflow": sum(item["netflow_delta"] for item in early_distributors),
+        "rotator_in_count": len(rotators_in),
+        "rotator_in_hold": sum(item["last_hold_pct"] for item in rotators_in),
+        "rotator_out_count": len(rotators_out),
+        "rotator_out_hold": sum(item["first_hold_pct"] for item in rotators_out),
+        "tagged_accumulator_count": len(tagged_accumulation),
+        "tagged_accumulator_hold_delta": sum(item["hold_delta"] for item in tagged_accumulation),
+        "accumulators": accumulators,
+        "distributors": distributors,
+        "early_distributors": early_distributors,
+        "rotators_in": rotators_in,
+        "rotators_out": rotators_out,
+    }
+
+
 
 def pool_change(current_summary: dict[str, Any], previous_summary: dict[str, Any] | None) -> dict[str, Any]:
     current_pool = current_summary.get("pool") or {}
@@ -753,6 +944,7 @@ def analyze_snapshot_change(
         history_ready
         and window_change["accumulation_pct_delta"] >= MIN_WINDOW_ACCUMULATED_PCT_DELTA
     )
+    wallet_behaviors = analyze_wallet_behaviors(current_holders, recent_history)
 
     accumulated_delta = last_change["accumulation_pct_delta"]
     distributed_delta = last_change["distribution_pct_delta"]
@@ -772,6 +964,21 @@ def analyze_snapshot_change(
     if tagged_delta >= 0.005:
         score += 15
         reasons.append(f"标签钱包增持{tagged_delta:.2%}")
+    if wallet_behaviors["accumulator_hold_delta"] >= 0.02:
+        score += 10
+        reasons.append(
+            f"轨迹吸筹钱包{wallet_behaviors['accumulator_count']}个/"
+            f"{wallet_behaviors['accumulator_hold_delta']:.2%}"
+        )
+    if wallet_behaviors["tagged_accumulator_hold_delta"] >= 0.005:
+        score += 10
+        reasons.append(f"标签钱包轨迹吸筹{wallet_behaviors['tagged_accumulator_hold_delta']:.2%}")
+    if wallet_behaviors["early_distributor_hold_delta"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT:
+        score = max(score - 25, 0)
+        reasons.append(
+            f"早期钱包持续出货{wallet_behaviors['early_distributor_count']}个/"
+            f"{wallet_behaviors['early_distributor_hold_delta']:.2%}"
+        )
     if window_accumulation_ready:
         score += 40
         reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
@@ -814,6 +1021,9 @@ def analyze_snapshot_change(
         signal_type = "distribution"
         score = max(score - 30, 0)
         reasons.append(f"派发{distributed_delta:.2%}")
+    if wallet_behaviors["early_distributor_hold_delta"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT * 2:
+        signal_type = "distribution"
+        score = max(score - 20, 0)
     if distribution_hits >= 2:
         signal_type = "distribution"
         score = max(score - 20, 0)
@@ -850,6 +1060,7 @@ def analyze_snapshot_change(
         "distribution_hits": distribution_hits,
         "top_buyers": last_change["top_buyers"],
         "top_sellers": last_change["top_sellers"],
+        "wallet_behaviors": wallet_behaviors,
     }
 
 def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
@@ -914,6 +1125,79 @@ def signal_type_text(signal_type: str) -> str:
     return mapping.get(signal_type, signal_type or "未知")
 
 
+def short_wallet(address: str) -> str:
+    address = str(address or "")
+    if len(address) <= 12:
+        return address
+    return f"{address[:6]}...{address[-4:]}"
+
+
+def wallet_behavior_text(analysis: dict[str, Any]) -> str:
+    behaviors = analysis.get("wallet_behaviors") or {}
+    if not behaviors:
+        return "钱包轨迹: 暂无"
+    lines = [
+        (
+            f"钱包轨迹: 吸筹{behaviors.get('accumulator_count', 0)}个/"
+            f"{behaviors.get('accumulator_hold_delta', 0):.2%}/净${behaviors.get('accumulator_netflow', 0):,.0f} | "
+            f"出货{behaviors.get('distributor_count', 0)}个/"
+            f"{behaviors.get('distributor_hold_delta', 0):.2%}/净${behaviors.get('distributor_netflow', 0):,.0f}"
+        ),
+        (
+            f"早期出货: {behaviors.get('early_distributor_count', 0)}个/"
+            f"{behaviors.get('early_distributor_hold_delta', 0):.2%}/净${behaviors.get('early_distributor_netflow', 0):,.0f}"
+        ),
+        (
+            f"换筹: 新进{behaviors.get('rotator_in_count', 0)}个/"
+            f"{behaviors.get('rotator_in_hold', 0):.2%} | "
+            f"退出{behaviors.get('rotator_out_count', 0)}个/"
+            f"{behaviors.get('rotator_out_hold', 0):.2%} | "
+            f"标签吸筹{behaviors.get('tagged_accumulator_count', 0)}个/"
+            f"{behaviors.get('tagged_accumulator_hold_delta', 0):.2%}"
+        ),
+    ]
+    top_accumulators = behaviors.get("accumulators") or []
+    if top_accumulators:
+        parts = []
+        for item in top_accumulators[:3]:
+            raw_tags = item.get("tags") or []
+            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
+            tags = ",".join(str(tag) for tag in tags[:2])
+            tag_text = f" {tags}" if tags else ""
+            parts.append(
+                f"{short_wallet(item.get('wallet'))} +{item.get('hold_delta', 0):.2%} "
+                f"净${item.get('netflow_delta', 0):,.0f}{tag_text}"
+            )
+        lines.append("重点吸筹: " + " | ".join(parts))
+    top_distributors = behaviors.get("distributors") or []
+    if top_distributors:
+        parts = []
+        for item in top_distributors[:3]:
+            raw_tags = item.get("tags") or []
+            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
+            tags = ",".join(str(tag) for tag in tags[:2])
+            tag_text = f" {tags}" if tags else ""
+            parts.append(
+                f"{short_wallet(item.get('wallet'))} {item.get('hold_delta', 0):.2%} "
+                f"净${item.get('netflow_delta', 0):,.0f}{tag_text}"
+            )
+        lines.append("重点出货: " + " | ".join(parts))
+    early_distributors = behaviors.get("early_distributors") or []
+    if early_distributors:
+        parts = []
+        for item in early_distributors[:3]:
+            raw_tags = item.get("tags") or []
+            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
+            tags = ",".join(str(tag) for tag in tags[:2])
+            tag_text = f" {tags}" if tags else ""
+            parts.append(
+                f"{short_wallet(item.get('wallet'))} 峰值出{item.get('distributed_from_peak', 0):.2%} "
+                f"卖{item.get('sell_steps', 0)}次 净${item.get('netflow_delta', 0):,.0f}{tag_text}"
+            )
+        lines.append("早期持续出货: " + " | ".join(parts))
+    return "\n".join(lines)
+
+
 def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
     return (
@@ -929,6 +1213,7 @@ def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
         f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
         f"近{analysis.get('history_count', 0)}次: 增持{analysis.get('window_accumulation_pct_delta', 0):.2%} | "
         f"减持{analysis.get('window_distribution_pct_delta', 0):.2%} | 净买入${analysis.get('window_netflow_usd', 0):,.0f}\n"
+        f"{wallet_behavior_text(analysis)}\n"
         f"理由: {', '.join(analysis['reasons']) or '无'}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
