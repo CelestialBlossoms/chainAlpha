@@ -108,6 +108,13 @@ def token_address(row: dict[str, Any]) -> str:
     return str(row.get("address") or row.get("token_address") or row.get("ca") or "").strip()
 
 
+def token_label(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or row.get("ticker") or row.get("name") or "UNKNOWN").strip()
+    address = token_address(row)
+    short_addr = address[:8] if address else "noaddr"
+    return f"${symbol}({short_addr})"
+
+
 def holder_key(holder: dict[str, Any]) -> str:
     return str(holder.get("address") or holder.get("wallet_address") or "").strip()
 
@@ -157,32 +164,40 @@ def token_age_sec(row: dict[str, Any]) -> int:
     return now_ts() - created_ts if created_ts > 0 else 0
 
 
-def fee_sol(row: dict[str, Any]) -> float:
+def fee_sol(row: dict[str, Any]) -> float | None:
     value = first_value(
         row,
         (
             "fee_sol",
-            "fees_sol",
             "total_fee_sol",
+            "fees_sol",
+            "swap_fee_sol",
+            "trade_fee_sol",
             "fee",
             "fees",
             "total_fee",
             "tx_fee_sol",
         ),
     )
+    if value in (None, ""):
+        return None
     fee = to_float(value)
     return fee / 1_000_000_000 if fee > 1_000_000 else fee
 
 
-def token_filter_reason(row: dict[str, Any]) -> str | None:
+def token_basic_filter_reason(row: dict[str, Any]) -> str | None:
     mcap = calc_mcap(row)
     if mcap < MIN_MCAP_USD:
         return f"市值${mcap:,.0f}<{MIN_MCAP_USD:,.0f}"
     age = token_age_sec(row)
     if age and age < MIN_TOKEN_AGE_SEC:
         return f"创建{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
+    return None
+
+
+def token_fee_filter_reason(row: dict[str, Any]) -> str | None:
     fee = fee_sol(row)
-    if fee < MIN_FEE_SOL:
+    if fee is not None and fee < MIN_FEE_SOL:
         return f"手续费{fee:.2f}SOL<{MIN_FEE_SOL:.2f}SOL"
     return None
 
@@ -229,6 +244,23 @@ def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
         return []
     holders = data.get("list") or data.get("data", {}).get("list") or []
     return holders if isinstance(holders, list) else []
+
+
+def fetch_token_metadata(address: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    info = run_gmgn(["token", "info", "--chain", CHAIN, "--address", address], timeout=75)
+    sec = run_gmgn(["token", "security", "--chain", CHAIN, "--address", address], timeout=75)
+    return (info if isinstance(info, dict) else {}, sec if isinstance(sec, dict) else {})
+
+
+def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(token)
+    for source in (security, info):
+        for key, value in source.items():
+            if key not in merged or merged.get(key) in (None, "", 0):
+                merged[key] = value
+    merged["_gmgn_info"] = info
+    merged["_gmgn_security"] = security
+    return merged
 
 
 def normalize_holder(holder: dict[str, Any], rank_no: int) -> dict[str, Any] | None:
@@ -533,14 +565,14 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
     address = token_address(token)
     raw_holders = fetch_top100_holders(address)
     if not raw_holders:
-        print(f"{address[:8]} no holders")
+        print(f"{token_label(token)} no holders")
         return False
     summary, holders = build_snapshot_json(token, raw_holders)
     history = recent_snapshots(address)
     analysis = analyze_snapshot_change(holders, history)
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
-        f"{address[:8]} snapshot={snapshot_id} history={len(history)} "
+        f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
         f"type={analysis.get('signal_type')} score={analysis.get('score')} "
         f"acc={analysis.get('accumulation_pct_delta', 0):.2%} "
         f"dist={analysis.get('distribution_pct_delta', 0):.2%} "
@@ -559,20 +591,28 @@ def scan_once(args: argparse.Namespace) -> None:
     skipped = 0
     for token in tokens[: args.max_tokens]:
         try:
-            skip_reason = token_filter_reason(token)
+            skip_reason = token_basic_filter_reason(token)
             if skip_reason:
                 skipped += 1
-                print(f"{token_address(token)[:8]} skip {skip_reason}")
+                print(f"{token_label(token)} skip {skip_reason}")
+                continue
+            address = token_address(token)
+            info, security = fetch_token_metadata(address)
+            token = merge_token_metadata(token, info, security)
+            skip_reason = token_fee_filter_reason(token)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {skip_reason}")
                 continue
             skip_reason = recent_snapshot_skip_reason(token_address(token))
             if skip_reason:
                 skipped += 1
-                print(f"{token_address(token)[:8]} skip {skip_reason}")
+                print(f"{token_label(token)} skip {skip_reason}")
                 continue
             if handle_token(scan_id, token, args.notify):
                 processed += 1
         except Exception as exc:
-            print(f"{token_address(token)[:8]} failed: {exc}")
+            print(f"{token_label(token)} failed: {exc}")
         time.sleep(args.token_delay)
     print(f"scan_id={scan_id} processed={processed}/{len(tokens)} skipped={skipped}")
 
