@@ -1006,6 +1006,42 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             {key: value for key, value in cluster.items() if key != "wallets"}
             for cluster in creation_clusters
         ]
+        cluster_wallets = []
+        for cluster in creation_clusters:
+            cluster_wallets.extend(cluster.get("wallets", []))
+        cluster_count = len(cluster_wallets)
+        cluster_supply = sum(safe_float(cluster.get("supply")) for cluster in creation_clusters)
+        cluster_position_value = sum(safe_float(cluster.get("position_value")) for cluster in creation_clusters)
+        cluster_buy_volume = sum(safe_float(cluster.get("buy_volume")) for cluster in creation_clusters)
+        cluster_sell_volume = sum(safe_float(cluster.get("sell_volume")) for cluster in creation_clusters)
+        cluster_netflow = sum(safe_float(cluster.get("netflow")) for cluster in creation_clusters)
+        cluster_avg_cost = weighted_avg_cost(cluster_wallets)
+        cluster_median_cost = median_cost(cluster_wallets)
+        cost_values = [safe_float(holder.get("avg_cost")) for holder in cluster_wallets if safe_float(holder.get("avg_cost")) > 0]
+        cost_range = (
+            f"{format_chain_price(min(cost_values))}-{format_chain_price(max(cost_values))}"
+            if cost_values
+            else "0"
+        )
+        tag_stats["same_creation_cluster_summary"] = {
+            "cluster_count": len(creation_clusters),
+            "wallet_count": cluster_count,
+            "supply": cluster_supply,
+            "position_value": cluster_position_value,
+            "buy_volume": cluster_buy_volume,
+            "sell_volume": cluster_sell_volume,
+            "netflow": cluster_netflow,
+            "avg_cost": cluster_avg_cost,
+            "median_cost": cluster_median_cost,
+            "cost_range": cost_range,
+        }
+        tag_lines.append(
+            f"同批创建簇汇总 {len(creation_clusters)}簇/{cluster_count}个 "
+            f"持仓{cluster_supply:.1f}%/${cluster_position_value:,.0f} "
+            f"买${cluster_buy_volume:,.0f} 卖${cluster_sell_volume:,.0f} 净${cluster_netflow:,.0f} "
+            f"均{format_chain_price(cluster_avg_cost)} 中{format_chain_price(cluster_median_cost)} "
+            f"区间{cost_range} 盈亏{format_pnl_pct(current_price, cluster_avg_cost)}"
+        )
         for idx, cluster in enumerate(creation_clusters, start=1):
             tag_lines.append(
                 f"同批创建簇#{idx}({cluster['date_range']}) "
