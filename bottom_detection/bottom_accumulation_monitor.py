@@ -222,6 +222,44 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
     return tokens
 
 
+def fetch_watchlist_tokens() -> list[dict[str, Any]]:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute("SELECT ca FROM bottom_watchlist_tokens WHERE ca IS NOT NULL")
+        return [str(row[0]).strip() for row in cur.fetchall()]
+
+    try:
+        addresses = db_op(_op)
+    except Exception as exc:
+        print(f"watchlist query failed: {exc}")
+        return []
+    return [{"address": address, "source": "watchlist"} for address in addresses if valid_sol_ca(address)]
+
+
+def merge_token_sources(*token_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = []
+    by_address = {}
+    for tokens in token_lists:
+        for token in tokens:
+            address = token_address(token)
+            if not valid_sol_ca(address):
+                continue
+            if address in by_address:
+                existing = by_address[address]
+                sources = set(existing.get("_sources", []))
+                sources.add(str(token.get("source") or "trending"))
+                existing["_sources"] = sorted(sources)
+                for key, value in token.items():
+                    if key not in existing or existing.get(key) in (None, "", 0):
+                        existing[key] = value
+                continue
+            item = dict(token)
+            item["_sources"] = [str(token.get("source") or "trending")]
+            by_address[address] = item
+            merged.append(item)
+    return merged
+
+
 def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
     data = run_gmgn(
         [
@@ -585,8 +623,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
 
 def scan_once(args: argparse.Namespace) -> None:
     scan_id = str(uuid.uuid4())
-    tokens = fetch_trending_tokens()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} trending={len(tokens)}")
+    trending_tokens = fetch_trending_tokens()
+    watchlist_tokens = fetch_watchlist_tokens()
+    tokens = merge_token_sources(trending_tokens, watchlist_tokens)
+    print(
+        f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
+        f"trending={len(trending_tokens)} watchlist={len(watchlist_tokens)} merged={len(tokens)}"
+    )
     processed = 0
     skipped = 0
     for token in tokens[: args.max_tokens]:

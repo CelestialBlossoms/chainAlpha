@@ -15,6 +15,7 @@ CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
 MIN_MCAP_USD = 5_000
 MIN_FEE_SOL = 1
+MIN_FEE_MCAP_USD = 20_000
 DUMP_PROGRESS_THRESHOLD = 20
 MIN_DUMP_ASSOCIATED_SUPPLY = 10
 MIN_DUMP_SOLD_SUPPLY = 2
@@ -1570,7 +1571,7 @@ def scan_pro():
                     age_seconds = token_age_seconds(s.get("created_at"))
                     if age_seconds is not None and age_seconds > MAX_TOKEN_AGE_SEC:
                         continue
-                    if s["fee_sol"] < MIN_FEE_SOL:
+                    if s["mcap"] >= MIN_FEE_MCAP_USD and s["fee_sol"] < MIN_FEE_SOL:
                         continue
                     if s["is_dumping"]:
                         continue
