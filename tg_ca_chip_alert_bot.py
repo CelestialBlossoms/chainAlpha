@@ -101,28 +101,6 @@ def compact_holder(holder, include_wallet=True):
     return item
 
 
-def compact_behavior_item(item):
-    return {
-        "wallet": item.get("wallet"),
-        "first_rank": item.get("first_rank"),
-        "last_rank": item.get("last_rank"),
-        "first_active_rank": item.get("first_active_rank"),
-        "hold_delta": round_float(item.get("hold_delta"), 6),
-        "first_hold_pct": round_float(item.get("first_hold_pct"), 6),
-        "last_hold_pct": round_float(item.get("last_hold_pct"), 6),
-        "max_hold_pct": round_float(item.get("max_hold_pct"), 6),
-        "distributed_from_peak": round_float(item.get("distributed_from_peak"), 6),
-        "buy_delta": round_float(item.get("buy_delta"), 2),
-        "sell_delta": round_float(item.get("sell_delta"), 2),
-        "netflow_delta": round_float(item.get("netflow_delta"), 2),
-        "sell_steps": item.get("sell_steps"),
-        "hold_down_steps": item.get("hold_down_steps"),
-        "avg_cost": item.get("avg_cost"),
-        "profit": round_float(item.get("profit"), 2),
-        "tags": item.get("tags") or [],
-    }
-
-
 def clean_holder_tag_desc(desc):
     desc = str(desc or "未发现重点标签钱包")
     replacements = {
@@ -169,22 +147,11 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     analysis["current_holder_count"] = len(holders)
     analysis["current_snapshot_ts"] = int(time.time())
     analysis["latest_history_snapshot_ts"] = history[0].get("snapshot_ts") if history else None
-    analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:30]]
-    analysis["history_summaries"] = [
+    analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:100]]
+    analysis["history_top100_holders"] = [
         {
             "snapshot_ts": snap.get("snapshot_ts"),
-            "top10_pct": round_float((snap.get("summary") or {}).get("top10_pct"), 6),
-            "top20_pct": round_float((snap.get("summary") or {}).get("top20_pct"), 6),
-            "top50_pct": round_float((snap.get("summary") or {}).get("top50_pct"), 6),
-            "top100_pct": round_float((snap.get("summary") or {}).get("top100_pct"), 6),
-            "buy_volume": round_float((snap.get("summary") or {}).get("buy_volume"), 2),
-            "sell_volume": round_float((snap.get("summary") or {}).get("sell_volume"), 2),
-            "netflow": round_float((snap.get("summary") or {}).get("netflow"), 2),
-            "mcap": round_float((snap.get("summary") or {}).get("mcap"), 2),
-            "price": (snap.get("summary") or {}).get("price"),
-            "liquidity": round_float((snap.get("summary") or {}).get("liquidity"), 2),
-            "signal_type": (snap.get("analysis") or {}).get("signal_type"),
-            "signal_score": (snap.get("analysis") or {}).get("score"),
+            "holders": [compact_holder(holder) for holder in (snap.get("holders") or [])[:100]],
         }
         for snap in history[:DEEPSEEK_MAX_HISTORY]
     ]
@@ -216,7 +183,6 @@ def bottom_chip_history_text(analysis):
 
 
 def build_deepseek_payload(chain, address, stats, bottom_analysis):
-    behaviors = (bottom_analysis or {}).get("wallet_behaviors") or {}
     return {
         "chain": chain,
         "address": address,
@@ -234,44 +200,9 @@ def build_deepseek_payload(chain, address, stats, bottom_analysis):
             "associated_supply": stats.get("associated_supply"),
             "dump_progress": stats.get("dump_progress"),
         },
-        "snapshot_analysis": {
-            "history_count": (bottom_analysis or {}).get("history_count"),
-            "snapshot_count": (bottom_analysis or {}).get("snapshot_count"),
-            "signal_type": (bottom_analysis or {}).get("signal_type"),
-            "score": (bottom_analysis or {}).get("score"),
-            "window_accumulation_pct_delta": (bottom_analysis or {}).get("window_accumulation_pct_delta"),
-            "window_distribution_pct_delta": (bottom_analysis or {}).get("window_distribution_pct_delta"),
-            "window_netflow_usd": (bottom_analysis or {}).get("window_netflow_usd"),
-            "accumulation_pct_delta": (bottom_analysis or {}).get("accumulation_pct_delta"),
-            "distribution_pct_delta": (bottom_analysis or {}).get("distribution_pct_delta"),
-            "rotation_score": (bottom_analysis or {}).get("rotation_score"),
-            "pool_liquidity_delta": (bottom_analysis or {}).get("pool_liquidity_delta"),
-            "pool_liquidity_delta_pct": (bottom_analysis or {}).get("pool_liquidity_delta_pct"),
-            "pool_mcap_ratio": (bottom_analysis or {}).get("pool_mcap_ratio"),
-            "reasons": (bottom_analysis or {}).get("reasons") or [],
-        },
-        "wallet_behaviors": {
-            "accumulator_count": behaviors.get("accumulator_count"),
-            "accumulator_hold_delta": behaviors.get("accumulator_hold_delta"),
-            "accumulator_netflow": behaviors.get("accumulator_netflow"),
-            "distributor_count": behaviors.get("distributor_count"),
-            "distributor_hold_delta": behaviors.get("distributor_hold_delta"),
-            "distributor_netflow": behaviors.get("distributor_netflow"),
-            "early_distributor_count": behaviors.get("early_distributor_count"),
-            "early_distributor_hold_delta": behaviors.get("early_distributor_hold_delta"),
-            "early_distributor_netflow": behaviors.get("early_distributor_netflow"),
-            "rotator_in_count": behaviors.get("rotator_in_count"),
-            "rotator_in_hold": behaviors.get("rotator_in_hold"),
-            "rotator_out_count": behaviors.get("rotator_out_count"),
-            "rotator_out_hold": behaviors.get("rotator_out_hold"),
-            "accumulators": [compact_behavior_item(item) for item in (behaviors.get("accumulators") or [])[:10]],
-            "distributors": [compact_behavior_item(item) for item in (behaviors.get("distributors") or [])[:10]],
-            "early_distributors": [compact_behavior_item(item) for item in (behaviors.get("early_distributors") or [])[:10]],
-            "rotators_in": [compact_behavior_item(item) for item in (behaviors.get("rotators_in") or [])[:10]],
-            "rotators_out": [compact_behavior_item(item) for item in (behaviors.get("rotators_out") or [])[:10]],
-        },
-        "current_top_holders": (bottom_analysis or {}).get("current_top_holders") or [],
-        "history_summaries": (bottom_analysis or {}).get("history_summaries") or [],
+        "data_note": "Only raw compressed Top100 holder snapshots are provided. No local signal conclusion, score, reasons, or precomputed wallet behavior labels are included.",
+        "current_top100_holders": (bottom_analysis or {}).get("current_top_holders") or [],
+        "history_top100_snapshots": (bottom_analysis or {}).get("history_top100_holders") or [],
     }
 
 
@@ -280,9 +211,10 @@ def call_deepseek_chip_analysis(chain, address, stats, bottom_analysis):
         return ""
     payload = build_deepseek_payload(chain, address, stats, bottom_analysis)
     prompt = (
-        "你是链上筹码操纵分析助手。请基于输入的当前Top100持仓、最近历史快照摘要和钱包轨迹，"
-        "判断该CA当前更像吸筹、换筹、派发、砸盘风险还是观察。"
-        "请用中文输出，限制在8行内。必须包含：结论、主要证据、风险点、后续观察条件。"
+        "你是链上筹码操纵分析助手。输入只包含当前实时Top100持仓和最近历史Top100持仓快照，"
+        "没有本地预计算结论。请你自己基于钱包持仓占比、买入/卖出、净流、排名变化、成本、标签和进出Top100情况，"
+        "识别该CA最近是否存在吸筹、换筹、出货、早期钱包持续卖出或砸盘风险。"
+        "请用中文输出，限制在10行内。必须包含：总体结论、吸筹钱包、出货钱包、换筹证据、风险点、后续观察条件。"
         "不要给出买入建议，不要编造输入里没有的数据。\n\n"
         f"数据JSON:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
