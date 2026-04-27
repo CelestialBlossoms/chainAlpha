@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -19,6 +20,14 @@ POLL_TIMEOUT = 25
 POLL_INTERVAL = 1
 REQUEST_TIMEOUT = 30
 ADDRESS_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,50}\b")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-b9fa593d50ce4e469d7645f530de2623")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+DEEPSEEK_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "45"))
+DEEPSEEK_MAX_HISTORY = int(os.getenv("DEEPSEEK_MAX_HISTORY", "100"))
+DEEPSEEK_ENABLED = os.getenv("DEEPSEEK_ENABLED", "1") != "0"
+DEEPSEEK_THINKING = os.getenv("DEEPSEEK_THINKING", "enabled")
+DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
 
 
 def allowed_chat_ids():
@@ -67,6 +76,53 @@ def compact_money(value):
     return f"${value:,.0f}"
 
 
+def round_float(value, digits=4):
+    try:
+        return round(float(value or 0), digits)
+    except (TypeError, ValueError):
+        return 0
+
+
+def compact_holder(holder, include_wallet=True):
+    item = {
+        "rank": holder.get("rank"),
+        "hold_pct": round_float(holder.get("hold_pct"), 6),
+        "usd_value": round_float(holder.get("usd_value"), 2),
+        "buy": round_float(holder.get("buy_volume"), 2),
+        "sell": round_float(holder.get("sell_volume"), 2),
+        "net": round_float(holder.get("netflow"), 2),
+        "avg_cost": holder.get("avg_cost"),
+        "buy_count": holder.get("buy_count"),
+        "sell_count": holder.get("sell_count"),
+        "tags": holder.get("tags") or [],
+    }
+    if include_wallet:
+        item["wallet"] = holder.get("wallet")
+    return item
+
+
+def compact_behavior_item(item):
+    return {
+        "wallet": item.get("wallet"),
+        "first_rank": item.get("first_rank"),
+        "last_rank": item.get("last_rank"),
+        "first_active_rank": item.get("first_active_rank"),
+        "hold_delta": round_float(item.get("hold_delta"), 6),
+        "first_hold_pct": round_float(item.get("first_hold_pct"), 6),
+        "last_hold_pct": round_float(item.get("last_hold_pct"), 6),
+        "max_hold_pct": round_float(item.get("max_hold_pct"), 6),
+        "distributed_from_peak": round_float(item.get("distributed_from_peak"), 6),
+        "buy_delta": round_float(item.get("buy_delta"), 2),
+        "sell_delta": round_float(item.get("sell_delta"), 2),
+        "netflow_delta": round_float(item.get("netflow_delta"), 2),
+        "sell_steps": item.get("sell_steps"),
+        "hold_down_steps": item.get("hold_down_steps"),
+        "avg_cost": item.get("avg_cost"),
+        "profit": round_float(item.get("profit"), 2),
+        "tags": item.get("tags") or [],
+    }
+
+
 def clean_holder_tag_desc(desc):
     desc = str(desc or "未发现重点标签钱包")
     replacements = {
@@ -113,6 +169,25 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     analysis["current_holder_count"] = len(holders)
     analysis["current_snapshot_ts"] = int(time.time())
     analysis["latest_history_snapshot_ts"] = history[0].get("snapshot_ts") if history else None
+    analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:30]]
+    analysis["history_summaries"] = [
+        {
+            "snapshot_ts": snap.get("snapshot_ts"),
+            "top10_pct": round_float((snap.get("summary") or {}).get("top10_pct"), 6),
+            "top20_pct": round_float((snap.get("summary") or {}).get("top20_pct"), 6),
+            "top50_pct": round_float((snap.get("summary") or {}).get("top50_pct"), 6),
+            "top100_pct": round_float((snap.get("summary") or {}).get("top100_pct"), 6),
+            "buy_volume": round_float((snap.get("summary") or {}).get("buy_volume"), 2),
+            "sell_volume": round_float((snap.get("summary") or {}).get("sell_volume"), 2),
+            "netflow": round_float((snap.get("summary") or {}).get("netflow"), 2),
+            "mcap": round_float((snap.get("summary") or {}).get("mcap"), 2),
+            "price": (snap.get("summary") or {}).get("price"),
+            "liquidity": round_float((snap.get("summary") or {}).get("liquidity"), 2),
+            "signal_type": (snap.get("analysis") or {}).get("signal_type"),
+            "signal_score": (snap.get("analysis") or {}).get("score"),
+        }
+        for snap in history[:DEEPSEEK_MAX_HISTORY]
+    ]
     return analysis
 
 
@@ -140,7 +215,109 @@ def bottom_chip_history_text(analysis):
     )
 
 
-def build_chip_alert_message(chain, address, stats, bottom_analysis=None):
+def build_deepseek_payload(chain, address, stats, bottom_analysis):
+    behaviors = (bottom_analysis or {}).get("wallet_behaviors") or {}
+    return {
+        "chain": chain,
+        "address": address,
+        "token": {
+            "symbol": stats.get("symbol"),
+            "mcap": stats.get("mcap"),
+            "price": stats.get("price"),
+            "holder_count": stats.get("holder_count"),
+            "fee_sol": stats.get("fee_sol"),
+            "pool_label": stats.get("pool_label"),
+            "pool_liquidity": stats.get("pool_liquidity"),
+            "created_time": stats.get("created_time"),
+            "verdict": stats.get("verdict"),
+            "control_ratio": stats.get("control_ratio"),
+            "associated_supply": stats.get("associated_supply"),
+            "dump_progress": stats.get("dump_progress"),
+        },
+        "snapshot_analysis": {
+            "history_count": (bottom_analysis or {}).get("history_count"),
+            "snapshot_count": (bottom_analysis or {}).get("snapshot_count"),
+            "signal_type": (bottom_analysis or {}).get("signal_type"),
+            "score": (bottom_analysis or {}).get("score"),
+            "window_accumulation_pct_delta": (bottom_analysis or {}).get("window_accumulation_pct_delta"),
+            "window_distribution_pct_delta": (bottom_analysis or {}).get("window_distribution_pct_delta"),
+            "window_netflow_usd": (bottom_analysis or {}).get("window_netflow_usd"),
+            "accumulation_pct_delta": (bottom_analysis or {}).get("accumulation_pct_delta"),
+            "distribution_pct_delta": (bottom_analysis or {}).get("distribution_pct_delta"),
+            "rotation_score": (bottom_analysis or {}).get("rotation_score"),
+            "pool_liquidity_delta": (bottom_analysis or {}).get("pool_liquidity_delta"),
+            "pool_liquidity_delta_pct": (bottom_analysis or {}).get("pool_liquidity_delta_pct"),
+            "pool_mcap_ratio": (bottom_analysis or {}).get("pool_mcap_ratio"),
+            "reasons": (bottom_analysis or {}).get("reasons") or [],
+        },
+        "wallet_behaviors": {
+            "accumulator_count": behaviors.get("accumulator_count"),
+            "accumulator_hold_delta": behaviors.get("accumulator_hold_delta"),
+            "accumulator_netflow": behaviors.get("accumulator_netflow"),
+            "distributor_count": behaviors.get("distributor_count"),
+            "distributor_hold_delta": behaviors.get("distributor_hold_delta"),
+            "distributor_netflow": behaviors.get("distributor_netflow"),
+            "early_distributor_count": behaviors.get("early_distributor_count"),
+            "early_distributor_hold_delta": behaviors.get("early_distributor_hold_delta"),
+            "early_distributor_netflow": behaviors.get("early_distributor_netflow"),
+            "rotator_in_count": behaviors.get("rotator_in_count"),
+            "rotator_in_hold": behaviors.get("rotator_in_hold"),
+            "rotator_out_count": behaviors.get("rotator_out_count"),
+            "rotator_out_hold": behaviors.get("rotator_out_hold"),
+            "accumulators": [compact_behavior_item(item) for item in (behaviors.get("accumulators") or [])[:10]],
+            "distributors": [compact_behavior_item(item) for item in (behaviors.get("distributors") or [])[:10]],
+            "early_distributors": [compact_behavior_item(item) for item in (behaviors.get("early_distributors") or [])[:10]],
+            "rotators_in": [compact_behavior_item(item) for item in (behaviors.get("rotators_in") or [])[:10]],
+            "rotators_out": [compact_behavior_item(item) for item in (behaviors.get("rotators_out") or [])[:10]],
+        },
+        "current_top_holders": (bottom_analysis or {}).get("current_top_holders") or [],
+        "history_summaries": (bottom_analysis or {}).get("history_summaries") or [],
+    }
+
+
+def call_deepseek_chip_analysis(chain, address, stats, bottom_analysis):
+    if not DEEPSEEK_ENABLED or not DEEPSEEK_API_KEY or not bottom_analysis:
+        return ""
+    payload = build_deepseek_payload(chain, address, stats, bottom_analysis)
+    prompt = (
+        "你是链上筹码操纵分析助手。请基于输入的当前Top100持仓、最近历史快照摘要和钱包轨迹，"
+        "判断该CA当前更像吸筹、换筹、派发、砸盘风险还是观察。"
+        "请用中文输出，限制在8行内。必须包含：结论、主要证据、风险点、后续观察条件。"
+        "不要给出买入建议，不要编造输入里没有的数据。\n\n"
+        f"数据JSON:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+    )
+    body = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": "你是严谨的链上数据分析师，只根据给定JSON做判断。"},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "reasoning_effort": DEEPSEEK_REASONING_EFFORT,
+        "thinking": {"type": DEEPSEEK_THINKING},
+    }
+    try:
+        resp = requests.post(
+            f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json=body,
+            timeout=DEEPSEEK_TIMEOUT,
+        )
+        if not resp.ok:
+            return f"DeepSeek分析失败: http={resp.status_code} {resp.text[:160]}"
+        data = resp.json()
+        return str(data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    except Exception as exc:
+        return f"DeepSeek分析异常: {exc}"
+
+
+def deepseek_chip_text(text):
+    if not text:
+        return ""
+    return f"DeepSeek筹码结论\n{text}\n\n"
+
+
+def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis=""):
     reasons = ", ".join(stats.get("buy_reasons") or []) or "无明显加分项"
     icon = "高风险" if stats.get("is_dumping") else "筹码报警"
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
@@ -178,6 +355,7 @@ def build_chip_alert_message(chain, address, stats, bottom_analysis=None):
         f"{stats.get('rank_bucket_desc')}\n"
         f"- 捆绑持仓: {stats.get('associated_supply', 0):.1f}% | 钱包 {stats.get('associated_count', 0)}个 | 卖出进度 {stats.get('dump_progress', 0):.1f}%\n\n"
         f"{bottom_chip_history_text(bottom_analysis)}\n\n"
+        f"{deepseek_chip_text(deepseek_analysis)}"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
 
@@ -189,7 +367,14 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
         return
 
     bottom_analysis = load_bottom_snapshot_analysis(address, chain=chain, limit=100, stats=stats)
-    msg = build_chip_alert_message(chain, address, stats, bottom_analysis=bottom_analysis)
+    deepseek_analysis = call_deepseek_chip_analysis(chain, address, stats, bottom_analysis)
+    msg = build_chip_alert_message(
+        chain,
+        address,
+        stats,
+        bottom_analysis=bottom_analysis,
+        deepseek_analysis=deepseek_analysis,
+    )
     if len(msg) <= 4000:
         send_message(chat_id, msg, message_id)
         return
