@@ -66,9 +66,35 @@ def compact_money(value):
     return f"${value:,.0f}"
 
 
+def clean_holder_tag_desc(desc):
+    desc = str(desc or "未发现重点标签钱包")
+    replacements = {
+        "same_batch#": "同批创建簇#",
+        " wallets/": "个/",
+        " wallet/": "个/",
+        "hold $": "持仓$",
+        " buy $": " 买$",
+        " sell $": " 卖$",
+        " net $": " 净$",
+        " avg ": " 均",
+        " med ": " 中",
+        "smart ": "聪明钱 ",
+        "fresh ": "新钱包 ",
+        "bundler ": "捆绑 ",
+        "sniper ": "狙击手 ",
+        "rat ": "老鼠仓 ",
+        "bot ": "交易机器人 ",
+        "bluechip ": "蓝筹持有人 ",
+    }
+    for old, new in replacements.items():
+        desc = desc.replace(old, new)
+    return desc
+
+
 def build_chip_alert_message(chain, address, stats):
     reasons = ", ".join(stats.get("buy_reasons") or []) or "无明显加分项"
     icon = "高风险" if stats.get("is_dumping") else "筹码报警"
+    holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
 
     return (
         f"{icon} | ${stats.get('symbol') or 'UNKNOWN'}\n"
@@ -82,10 +108,7 @@ def build_chip_alert_message(chain, address, stats):
         f"市场结构\n"
         f"- {stats.get('market_structure')} | 风险: {stats.get('market_structure_risk')}\n"
         f"- {stats.get('market_structure_reason')}\n"
-        f"- 可买评分: {stats.get('buy_score', 0)} | 理由: {reasons}\n\n"
-        f"K线量价\n"
-        f"- 判定: {stats.get('kline_verdict')} | 尾段量能: {stats.get('kline_volume_ratio', 0):.2f}x | K线数: {stats.get('kline_candle_count', 0)}\n"
-        f"- 冲高回落: {stats.get('spike_retreat_pct', 0):.1f}% | 低点反弹: {stats.get('recovery_from_low_pct', 0):.1f}%\n"
+        f"- 可买评分: {stats.get('buy_score', 0)} | 理由: {reasons}\n"
         f"- 5m买/卖: {stats.get('buys_5m', 0)}/{stats.get('sells_5m', 0)}\n\n"
         f"资金关联分析 Top100\n"
         f"- 疑似关联控盘: {stats.get('control_ratio', 0):.1f}%\n"
@@ -94,7 +117,7 @@ def build_chip_alert_message(chain, address, stats):
         f"- 同源买卖: 买入 {compact_money(stats.get('source_cluster_buy_volume'))} | 卖出 {compact_money(stats.get('source_cluster_sell_volume'))} | 净流 {compact_money(stats.get('source_cluster_netflow'))}\n"
         f"- 庄家出货进度: {stats.get('dump_progress', 0):.1f}%\n\n"
         f"标签钱包分析\n"
-        f"{stats.get('holder_tag_desc')}\n\n"
+        f"{holder_tag_desc}\n\n"
         f"成本线分析\n"
         f"- 链上价(x1e9): {format_chain_price(stats.get('price'))}\n"
         f"- Top20成本: {format_chain_price(stats.get('top20_avg_cost'))} | 盈亏 {format_pnl_pct(stats.get('price'), stats.get('top20_avg_cost'))}\n"
@@ -107,7 +130,6 @@ def build_chip_alert_message(chain, address, stats):
         f"- 捆绑持仓: {stats.get('associated_supply', 0):.1f}% | 钱包 {stats.get('associated_count', 0)}个 | 卖出进度 {stats.get('dump_progress', 0):.1f}%\n\n"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
-
 
 def analyze_and_reply(chat_id, message_id, address, chain="sol"):
     send_message(chat_id, f"收到 CA，开始查询 GMGN Top100 筹码关联数据...\n{address}", message_id)
