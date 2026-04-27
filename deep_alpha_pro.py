@@ -11,7 +11,7 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
-CHECK_INTERVAL = 45 
+CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
 MIN_MCAP_USD = 5_000
 MIN_FEE_SOL = 1
@@ -1646,4 +1646,5 @@ if __name__ == "__main__":
     print("深度关联分析机器人已启动...")
     while True:
         scan_pro()
-        time.sleep(CHECK_INTERVAL)
+        if CHECK_INTERVAL > 0:
+            time.sleep(CHECK_INTERVAL)
