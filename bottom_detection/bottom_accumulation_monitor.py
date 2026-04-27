@@ -940,11 +940,20 @@ def analyze_snapshot_change(
     accumulation_hits = sum(1 for item in historical_analyses if item.get("signal_type") in {"accumulation", "rotation"})
     distribution_hits = sum(1 for item in historical_analyses if item.get("signal_type") == "distribution")
     history_ready = len(recent_history) >= MIN_SIGNAL_HISTORY_COUNT
+    enough_history_for_window = len(recent_history) >= min(MIN_SIGNAL_HISTORY_COUNT, RECENT_COMPARE_LIMIT)
+    window_accumulation_pct = window_change["accumulation_pct_delta"]
+    window_distribution_pct = window_change["distribution_pct_delta"]
     window_accumulation_ready = (
-        history_ready
-        and window_change["accumulation_pct_delta"] >= MIN_WINDOW_ACCUMULATED_PCT_DELTA
+        enough_history_for_window
+        and window_accumulation_pct >= MIN_WINDOW_ACCUMULATED_PCT_DELTA
     )
     wallet_behaviors = analyze_wallet_behaviors(current_holders, recent_history)
+    early_distribution_pct = wallet_behaviors["early_distributor_hold_delta"]
+    trajectory_accumulation_pct = wallet_behaviors["accumulator_hold_delta"]
+    early_distribution_dominates = (
+        early_distribution_pct >= MIN_EARLY_WALLET_DISTRIBUTION_PCT * 2
+        and early_distribution_pct >= max(window_accumulation_pct, trajectory_accumulation_pct) * 0.35
+    )
 
     accumulated_delta = last_change["accumulation_pct_delta"]
     distributed_delta = last_change["distribution_pct_delta"]
@@ -973,20 +982,26 @@ def analyze_snapshot_change(
     if wallet_behaviors["tagged_accumulator_hold_delta"] >= 0.005:
         score += 10
         reasons.append(f"标签钱包轨迹吸筹{wallet_behaviors['tagged_accumulator_hold_delta']:.2%}")
-    if wallet_behaviors["early_distributor_hold_delta"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT:
-        score = max(score - 25, 0)
+    if early_distribution_pct >= MIN_EARLY_WALLET_DISTRIBUTION_PCT:
+        score = max(score - (25 if early_distribution_dominates else 10), 0)
         reasons.append(
             f"早期钱包持续出货{wallet_behaviors['early_distributor_count']}个/"
-            f"{wallet_behaviors['early_distributor_hold_delta']:.2%}"
+            f"{early_distribution_pct:.2%}"
         )
     if window_accumulation_ready:
         score += 40
-        reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
+        reasons.append(f"近{len(recent_history)}次累计增持{window_accumulation_pct:.2%}")
     else:
-        reasons.append(
-            f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}"
-            f"<{MIN_WINDOW_ACCUMULATED_PCT_DELTA:.0%}"
-        )
+        if not enough_history_for_window:
+            reasons.append(
+                f"历史快照{len(recent_history)}/{MIN_SIGNAL_HISTORY_COUNT}，"
+                f"累计增持{window_accumulation_pct:.2%}"
+            )
+        else:
+            reasons.append(
+                f"近{len(recent_history)}次累计增持{window_accumulation_pct:.2%}"
+                f"<{MIN_WINDOW_ACCUMULATED_PCT_DELTA:.0%}"
+            )
     if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
         score += 15
         reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
@@ -1021,10 +1036,11 @@ def analyze_snapshot_change(
         signal_type = "distribution"
         score = max(score - 30, 0)
         reasons.append(f"派发{distributed_delta:.2%}")
-    if wallet_behaviors["early_distributor_hold_delta"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT * 2:
+    if early_distribution_dominates and window_distribution_pct > window_accumulation_pct * 0.8:
         signal_type = "distribution"
         score = max(score - 20, 0)
-    if distribution_hits >= 2:
+        reasons.append("早期出货压过吸筹")
+    if distribution_hits >= 2 and not window_accumulation_ready:
         signal_type = "distribution"
         score = max(score - 20, 0)
         reasons.append(f"历史派发{distribution_hits}次")
@@ -1040,9 +1056,11 @@ def analyze_snapshot_change(
         "reasons": reasons,
         "history_count": len(recent_history),
         "history_ready": history_ready,
+        "enough_history_for_window": enough_history_for_window,
         "min_signal_history_count": MIN_SIGNAL_HISTORY_COUNT,
         "window_accumulation_ready": window_accumulation_ready,
         "min_window_accumulation_pct_delta": MIN_WINDOW_ACCUMULATED_PCT_DELTA,
+        "early_distribution_dominates": early_distribution_dominates,
         **pool_stats,
         "window_pool_liquidity_delta": window_pool_stats["pool_liquidity_delta"],
         "window_pool_liquidity_delta_pct": window_pool_stats["pool_liquidity_delta_pct"],
@@ -1252,7 +1270,7 @@ def scan_once(args: argparse.Namespace) -> None:
     scan_id = str(uuid.uuid4())
     trending_tokens = fetch_trending_tokens()
     watchlist_tokens = fetch_watchlist_tokens()
-    tokens = merge_token_sources(trending_tokens, watchlist_tokens)
+    tokens = merge_token_sources(watchlist_tokens, trending_tokens)
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
         f"trending={len(trending_tokens)} watchlist={len(watchlist_tokens)} merged={len(tokens)}"
@@ -1261,20 +1279,22 @@ def scan_once(args: argparse.Namespace) -> None:
     skipped = 0
     for token in tokens[: args.max_tokens]:
         try:
-            skip_reason = token_basic_filter_reason(token)
-            if skip_reason:
-                skipped += 1
-                print(f"{token_label(token)} skip {skip_reason}")
-                continue
             address = token_address(token)
+            is_watchlist = "watchlist" in set(token.get("_sources", []))
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
-            skip_reason = token_fee_filter_reason(token)
-            if skip_reason:
-                skipped += 1
-                print(f"{token_label(token)} skip {skip_reason}")
-                continue
+            if not is_watchlist:
+                skip_reason = token_basic_filter_reason(token)
+                if skip_reason:
+                    skipped += 1
+                    print(f"{token_label(token)} skip {skip_reason}")
+                    continue
+                skip_reason = token_fee_filter_reason(token)
+                if skip_reason:
+                    skipped += 1
+                    print(f"{token_label(token)} skip {skip_reason}")
+                    continue
             skip_reason = recent_snapshot_skip_reason(token_address(token), token)
             if skip_reason:
                 skipped += 1
