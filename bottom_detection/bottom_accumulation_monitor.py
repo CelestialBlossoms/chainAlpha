@@ -32,10 +32,15 @@ from db_client import db_op
 CHAIN = "sol"
 TREND_INTERVAL = os.getenv("BOTTOM_TREND_INTERVAL", "1h")
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
-DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "3600"))
+DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
 RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "10"))
-MIN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_MIN_SNAPSHOT_INTERVAL_SEC", "3000"))
+NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(24 * 3600)))
+NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
+OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
+NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m")
+OLD_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_OLD_TOKEN_KLINE_RESOLUTION", "15m")
+KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(6 * 3600)))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
 MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", str(5 * 3600)))
 MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "10"))
@@ -141,10 +146,27 @@ def first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def parse_timestamp(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    ts = to_int(value)
+    if ts > 0:
+        return ts // 1000 if ts > 10_000_000_000 else ts
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return 0
+    return 0
+
+
 def token_created_ts(row: dict[str, Any]) -> int:
     value = first_value(
         row,
         (
+            "watchlist_create_at",
             "created_at",
             "creation_timestamp",
             "created_timestamp",
@@ -155,13 +177,25 @@ def token_created_ts(row: dict[str, Any]) -> int:
             "pair_created_at",
         ),
     )
-    ts = to_int(value)
-    return ts // 1000 if ts > 10_000_000_000 else ts
+    return parse_timestamp(value)
 
 
 def token_age_sec(row: dict[str, Any]) -> int:
     created_ts = token_created_ts(row)
     return now_ts() - created_ts if created_ts > 0 else 0
+
+
+def is_new_token(row: dict[str, Any]) -> bool:
+    age = token_age_sec(row)
+    return age > 0 and age <= NEW_TOKEN_AGE_CUTOFF_SEC
+
+
+def token_snapshot_interval_sec(row: dict[str, Any]) -> int:
+    return NEW_TOKEN_SNAPSHOT_INTERVAL_SEC if is_new_token(row) else OLD_TOKEN_SNAPSHOT_INTERVAL_SEC
+
+
+def token_kline_resolution(row: dict[str, Any]) -> str:
+    return NEW_TOKEN_KLINE_RESOLUTION if is_new_token(row) else OLD_TOKEN_KLINE_RESOLUTION
 
 
 def fee_sol(row: dict[str, Any]) -> float | None:
@@ -225,15 +259,25 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
 def fetch_watchlist_tokens() -> list[dict[str, Any]]:
     def _op(conn):
         cur = conn.cursor()
-        cur.execute("SELECT ca FROM bottom_watchlist_tokens WHERE ca IS NOT NULL")
-        return [str(row[0]).strip() for row in cur.fetchall()]
+        cur.execute("SELECT ca, create_at FROM bottom_watchlist_tokens WHERE ca IS NOT NULL")
+        return cur.fetchall()
 
     try:
-        addresses = db_op(_op)
+        rows = db_op(_op)
     except Exception as exc:
         print(f"watchlist query failed: {exc}")
         return []
-    return [{"address": address, "source": "watchlist"} for address in addresses if valid_sol_ca(address)]
+    tokens = []
+    for ca, create_at in rows:
+        address = str(ca).strip()
+        if not valid_sol_ca(address):
+            continue
+        token = {"address": address, "source": "watchlist"}
+        if create_at:
+            token["watchlist_create_at"] = create_at
+            token["created_at"] = int(create_at.timestamp()) if isinstance(create_at, datetime) else create_at
+        tokens.append(token)
+    return tokens
 
 
 def merge_token_sources(*token_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -290,6 +334,85 @@ def fetch_token_metadata(address: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return (info if isinstance(info, dict) else {}, sec if isinstance(sec, dict) else {})
 
 
+def extract_kline_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
+    if not data:
+        return []
+    if isinstance(data, list):
+        rows = data
+    else:
+        rows = data.get("list") or data.get("data", {}).get("list") or data.get("data") or []
+    candles = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        raw_ts = to_int(row.get("time") or row.get("timestamp") or row.get("t"))
+        ts = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
+        close = to_float(row.get("close") or row.get("c"))
+        if ts <= 0 or close <= 0:
+            continue
+        candles.append(
+            {
+                "ts": ts,
+                "open": to_float(row.get("open") or row.get("o"), close),
+                "high": to_float(row.get("high") or row.get("h"), close),
+                "low": to_float(row.get("low") or row.get("l"), close),
+                "close": close,
+                "volume": to_float(row.get("volume") or row.get("v")),
+                "amount": to_float(row.get("amount") or row.get("a")),
+            }
+        )
+    candles.sort(key=lambda item: item["ts"])
+    return candles
+
+
+def fetch_kline(address: str, resolution: str) -> list[dict[str, Any]]:
+    end_ts = now_ts()
+    start_ts = end_ts - KLINE_LOOKBACK_SEC
+    data = run_gmgn(
+        [
+            "market",
+            "kline",
+            "--chain",
+            CHAIN,
+            "--address",
+            address,
+            "--resolution",
+            resolution,
+            "--from",
+            str(start_ts),
+            "--to",
+            str(end_ts),
+        ],
+        timeout=75,
+    )
+    return extract_kline_rows(data)
+
+
+def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
+    if not candles:
+        return {"resolution": resolution, "count": 0}
+    first = candles[0]
+    last = candles[-1]
+    open_price = to_float(first.get("open"))
+    close_price = to_float(last.get("close"))
+    lows = [to_float(c.get("low")) for c in candles if to_float(c.get("low")) > 0]
+    highs = [to_float(c.get("high")) for c in candles if to_float(c.get("high")) > 0]
+    total_volume = sum(to_float(c.get("volume")) for c in candles)
+    return {
+        "resolution": resolution,
+        "count": len(candles),
+        "from_ts": first.get("ts"),
+        "to_ts": last.get("ts"),
+        "open": open_price,
+        "close": close_price,
+        "change_pct": ((close_price - open_price) / open_price * 100) if open_price > 0 else 0,
+        "high": max(highs) if highs else 0,
+        "low": min(lows) if lows else 0,
+        "volume_usd": total_volume,
+        "last_volume_usd": to_float(last.get("volume")),
+    }
+
+
 def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: dict[str, Any]) -> dict[str, Any]:
     merged = dict(token)
     for source in (security, info):
@@ -299,6 +422,35 @@ def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: 
     merged["_gmgn_info"] = info
     merged["_gmgn_security"] = security
     return merged
+
+
+def fill_watchlist_create_at(token: dict[str, Any]) -> None:
+    if "watchlist" not in set(token.get("_sources", [])):
+        return
+    if token.get("watchlist_create_at"):
+        return
+    created_ts = token_created_ts(token)
+    if created_ts <= 0:
+        return
+    address = token_address(token)
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE bottom_watchlist_tokens
+            SET create_at = to_timestamp(%s)
+            WHERE ca = %s AND create_at IS NULL
+            """,
+            (created_ts, address),
+        )
+
+    try:
+        db_op(_op)
+        token["watchlist_create_at"] = created_ts
+        print(f"{token_label(token)} watchlist create_at filled")
+    except Exception as exc:
+        print(f"{token_label(token)} watchlist create_at fill failed: {exc}")
 
 
 def normalize_holder(holder: dict[str, Any], rank_no: int) -> dict[str, Any] | None:
@@ -323,7 +475,12 @@ def normalize_holder(holder: dict[str, Any], rank_no: int) -> dict[str, Any] | N
     }
 
 
-def build_snapshot_json(token: dict[str, Any], raw_holders: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def build_snapshot_json(
+    token: dict[str, Any],
+    raw_holders: list[dict[str, Any]],
+    candles: list[dict[str, Any]] | None = None,
+    kline_resolution: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     holders = []
     for rank_no, holder in enumerate(raw_holders, start=1):
         normalized = normalize_holder(holder, rank_no)
@@ -346,6 +503,8 @@ def build_snapshot_json(token: dict[str, Any], raw_holders: list[dict[str, Any]]
         "created_ts": token_created_ts(token),
         "age_sec": token_age_sec(token),
         "fee_sol": fee_sol(token),
+        "kline": summarize_kline(candles or [], kline_resolution or token_kline_resolution(token)),
+        "kline_candles": candles or [],
     }
     return summary, holders
 
@@ -390,13 +549,14 @@ def latest_snapshot_ts(address: str) -> int | None:
     return db_op(_op)
 
 
-def recent_snapshot_skip_reason(address: str) -> str | None:
+def recent_snapshot_skip_reason(address: str, token: dict[str, Any]) -> str | None:
     latest_ts = latest_snapshot_ts(address)
     if not latest_ts:
         return None
     age = now_ts() - latest_ts
-    if age < MIN_SNAPSHOT_INTERVAL_SEC:
-        return f"最近快照{age / 60:.1f}m<{MIN_SNAPSHOT_INTERVAL_SEC / 60:.1f}m"
+    required_interval = token_snapshot_interval_sec(token)
+    if age < required_interval:
+        return f"最近快照{age / 60:.1f}m<{required_interval / 60:.1f}m"
     return None
 
 
@@ -605,7 +765,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
     if not raw_holders:
         print(f"{token_label(token)} no holders")
         return False
-    summary, holders = build_snapshot_json(token, raw_holders)
+    kline_resolution = token_kline_resolution(token)
+    candles = fetch_kline(address, kline_resolution)
+    summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     history = recent_snapshots(address)
     analysis = analyze_snapshot_change(holders, history)
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
@@ -642,12 +804,13 @@ def scan_once(args: argparse.Namespace) -> None:
             address = token_address(token)
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
+            fill_watchlist_create_at(token)
             skip_reason = token_fee_filter_reason(token)
             if skip_reason:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
                 continue
-            skip_reason = recent_snapshot_skip_reason(token_address(token))
+            skip_reason = recent_snapshot_skip_reason(token_address(token), token)
             if skip_reason:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
@@ -668,7 +831,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC, help="Watch interval seconds.")
     parser.add_argument("--max-tokens", type=int, default=TREND_LIMIT)
     parser.add_argument("--token-delay", type=float, default=0.5, help="Delay between holder calls.")
-    parser.add_argument("--min-snapshot-minutes", type=float, default=MIN_SNAPSHOT_INTERVAL_SEC / 60, help="Skip same CA if latest snapshot is newer than this many minutes.")
     parser.add_argument("--min-mcap", type=float, default=MIN_MCAP_USD, help="Skip tokens below this market cap in USD.")
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
@@ -676,9 +838,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_SNAPSHOT_INTERVAL_SEC
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL
     args = build_parser().parse_args()
-    MIN_SNAPSHOT_INTERVAL_SEC = int(args.min_snapshot_minutes * 60)
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol

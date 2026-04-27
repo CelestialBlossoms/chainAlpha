@@ -13,8 +13,11 @@ def init_bottom_watchlist_table(conn):
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS bottom_watchlist_tokens (
-            ca TEXT PRIMARY KEY
+            ca TEXT PRIMARY KEY,
+            create_at TIMESTAMPTZ
         );
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS create_at TIMESTAMPTZ;
         """
     )
     print("Initialized bottom_watchlist_tokens")
