@@ -12,8 +12,8 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 # 配置
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 45 
-TREND_INTERVALS = ["5m"]
-MIN_MCAP_USD = 10_000
+TREND_INTERVALS = ["1m"]
+MIN_MCAP_USD = 5_000
 MIN_FEE_SOL = 1
 DUMP_PROGRESS_THRESHOLD = 20
 MIN_DUMP_ASSOCIATED_SUPPLY = 10
@@ -27,7 +27,8 @@ MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
 MAX_DEV_BUY_USD = 500
 MAX_DEV_HOLD_RATE = 0.30
-MAX_MCAP_USD = 1_000_000
+MAX_MCAP_USD = 100_000
+MAX_TOKEN_AGE_SEC = 4 * 60 * 60
 MIN_TOP_HOLDER_NETFLOW_USD = 5_000
 MIN_FRONT_HOLDER_NETFLOW_USD = 2_000
 NEW_WALLET_WINDOW_SEC = 3 * 24 * 60 * 60
@@ -1565,6 +1566,9 @@ def scan_pro():
                     if s["mcap"] < MIN_MCAP_USD:
                         continue
                     if s["mcap"] > MAX_MCAP_USD:
+                        continue
+                    age_seconds = token_age_seconds(s.get("created_at"))
+                    if age_seconds is not None and age_seconds > MAX_TOKEN_AGE_SEC:
                         continue
                     if s["fee_sol"] < MIN_FEE_SOL:
                         continue
