@@ -965,9 +965,10 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         }
         if wallets:
             tag_lines.append(
-                f"{label}{len(wallets)}个/{supply:.1f}% 持仓${position_value:,.0f} 买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} 均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
+                f"{label}{len(wallets)}个/{supply:.1f}% 持仓${position_value:,.0f} "
+                f"买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} "
+                f"均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
             )
-
 
     creation_clusters = find_creation_clusters(non_pool, min_wallets=2, max_clusters=5)
     if creation_clusters:
@@ -977,10 +978,12 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         ]
         for idx, cluster in enumerate(creation_clusters, start=1):
             tag_lines.append(
-                f"same_batch#{idx}({cluster['date_range']}) {cluster['count']} wallets/{cluster['supply']:.1f}% "
-                f"hold ${cluster['position_value']:,.0f} buy ${cluster['buy_volume']:,.0f} "
-                f"sell ${cluster['sell_volume']:,.0f} net ${cluster['netflow']:,.0f} "
-                f"avg {format_chain_price(cluster['avg_cost'])} med {format_chain_price(cluster['median_cost'])}"
+                f"同批创建簇#{idx}({cluster['date_range']}) "
+                f"{cluster['count']}个/{cluster['supply']:.1f}% "
+                f"持仓${cluster['position_value']:,.0f} "
+                f"买${cluster['buy_volume']:,.0f} 卖${cluster['sell_volume']:,.0f} "
+                f"净${cluster['netflow']:,.0f} "
+                f"均{format_chain_price(cluster['avg_cost'])} 中{format_chain_price(cluster['median_cost'])}"
             )
     top20 = non_pool[:20]
     top50 = non_pool[:50]
@@ -1033,7 +1036,9 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         })
     dominant_band = max(band_stats, key=lambda item: item["supply"], default={"label": "未知", "supply": 0, "count": 0})
     band_desc = "\n".join(
-        f"{item['label']}({item['price_range']}) 持仓{item['supply']:.1f}%/{item['count']}个 均{format_chain_price(item['avg_cost'])} 中{format_chain_price(item['median_cost'])} {item['pnl_text']}{item['pnl_pct']:+.1f}%"
+        f"{item['label']}({item['price_range']}) 持仓{item['supply']:.1f}%/{item['count']}个 "
+        f"均{format_chain_price(item['avg_cost'])} 中{format_chain_price(item['median_cost'])} "
+        f"{item['pnl_text']}{item['pnl_pct']:+.1f}%"
         for item in band_stats
         if item["count"] > 0
     ) or "无有效成本数据"

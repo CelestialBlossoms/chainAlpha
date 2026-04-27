@@ -734,12 +734,12 @@ def analyze_snapshot_change(
     window_pool_stats = pool_change(current_summary or {}, (recent_history[-1].get("summary") if recent_history else None) or {})
 
     if not current_holders or not recent_history:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["need history snapshots"], "history_count": len(recent_history), **pool_stats}
+        return {"score": 0, "signal_type": "baseline", "reasons": ["需要历史快照"], "history_count": len(recent_history), **pool_stats}
 
     previous_holders = recent_history[0].get("holders") or []
     earliest_holders = recent_history[-1].get("holders") or []
     if not previous_holders:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["previous snapshot empty"], "history_count": len(recent_history), **pool_stats}
+        return {"score": 0, "signal_type": "baseline", "reasons": ["上一轮快照为空"], "history_count": len(recent_history), **pool_stats}
 
     last_change = compare_holder_sets(current_holders, previous_holders)
     window_change = compare_holder_sets(current_holders, earliest_holders) if earliest_holders else last_change
@@ -758,54 +758,54 @@ def analyze_snapshot_change(
 
     if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
         score += 30
-        reasons.append(f"current top100 accumulation {accumulated_delta:.2%}")
+        reasons.append(f"本轮Top100增持{accumulated_delta:.2%}")
     if netflow_delta >= MIN_NETFLOW_USD:
         score += 25
-        reasons.append(f"current net buy ${netflow_delta:,.0f}")
+        reasons.append(f"本轮净买入${netflow_delta:,.0f}")
     if tagged_delta >= 0.005:
         score += 15
-        reasons.append(f"tagged wallets accumulation {tagged_delta:.2%}")
+        reasons.append(f"标签钱包增持{tagged_delta:.2%}")
     if window_change["accumulation_pct_delta"] >= MIN_ACCUMULATED_PCT_DELTA * 2:
         score += 20
-        reasons.append(f"last {len(recent_history)} snapshots accumulation {window_change['accumulation_pct_delta']:.2%}")
+        reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
     if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
         score += 15
-        reasons.append(f"last {len(recent_history)} snapshots net buy ${window_change['netflow_usd']:,.0f}")
+        reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
 
     if pool_stats["pool_mcap_ratio"] >= 0.12:
         score += 15
-        reasons.append(f"pool/mcap {pool_stats['pool_mcap_ratio']:.1%}({pool_stats['pool_mcap_ratio_text']})")
+        reasons.append(f"池/市值{pool_stats['pool_mcap_ratio']:.1%}({pool_stats['pool_mcap_ratio_text']})")
     elif pool_stats["pool_mcap_ratio"] >= 0.08:
         score += 8
-        reasons.append(f"pool/mcap near 1:10 ({pool_stats['pool_mcap_ratio']:.1%})")
+        reasons.append(f"池/市值接近1:10({pool_stats['pool_mcap_ratio']:.1%})")
     elif 0 < pool_stats["pool_mcap_ratio"] < 0.03:
         score = max(score - 15, 0)
-        reasons.append(f"thin pool {pool_stats['pool_mcap_ratio']:.1%}")
+        reasons.append(f"池子偏薄{pool_stats['pool_mcap_ratio']:.1%}")
     if pool_stats["pool_liquidity_delta_pct"] >= 0.2 and pool_stats["pool_liquidity_delta"] >= 5000:
         score += 15
-        reasons.append(f"current pool liquidity added ${pool_stats['pool_liquidity_delta']:,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
+        reasons.append(f"本轮池子增厚${pool_stats['pool_liquidity_delta']:,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
     if window_pool_stats["pool_liquidity_delta_pct"] >= 0.3 and window_pool_stats["pool_liquidity_delta"] >= 8000:
         score += 15
-        reasons.append(f"last {len(recent_history)} snapshots pool liquidity added ${window_pool_stats['pool_liquidity_delta']:,.0f}/{window_pool_stats['pool_liquidity_delta_pct']:.1%}")
+        reasons.append(f"近{len(recent_history)}次池子增厚${window_pool_stats['pool_liquidity_delta']:,.0f}/{window_pool_stats['pool_liquidity_delta_pct']:.1%}")
     if pool_stats["pool_liquidity_delta_pct"] <= -0.25 and abs(pool_stats["pool_liquidity_delta"]) >= 5000:
         score = max(score - 25, 0)
-        reasons.append(f"pool liquidity removed ${abs(pool_stats['pool_liquidity_delta']):,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
+        reasons.append(f"池子抽离${abs(pool_stats['pool_liquidity_delta']):,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
 
     if accumulation_hits >= 2:
         score += 10
-        reasons.append(f"historical accumulation/rotation {accumulation_hits} times")
+        reasons.append(f"历史连续吸筹/换筹{accumulation_hits}次")
     if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8:
         score += 20
         signal_type = "rotation"
-        reasons.append(f"rotation {turnover_pct:.2%}")
+        reasons.append(f"换筹{turnover_pct:.2%}")
     if distributed_delta >= MIN_DISTRIBUTED_PCT_DELTA and distributed_delta > accumulated_delta * 1.3:
         signal_type = "distribution"
         score = max(score - 30, 0)
-        reasons.append(f"distribution {distributed_delta:.2%}")
+        reasons.append(f"派发{distributed_delta:.2%}")
     if distribution_hits >= 2:
         signal_type = "distribution"
         score = max(score - 20, 0)
-        reasons.append(f"historical distribution {distribution_hits} times")
+        reasons.append(f"历史派发{distribution_hits}次")
     elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation":
         signal_type = "accumulation"
 
@@ -883,22 +883,34 @@ def send_tg(text: str) -> None:
 
 
 
+
+def signal_type_text(signal_type: str) -> str:
+    mapping = {
+        "baseline": "基线",
+        "watch": "观察",
+        "accumulation": "吸筹",
+        "rotation": "换筹",
+        "distribution": "派发",
+    }
+    return mapping.get(signal_type, signal_type or "未知")
+
+
 def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
     return (
-        f"Top100 chip signal | ${token.get('symbol') or 'UNKNOWN'}\n"
-        f"type: {analysis['signal_type']} | score: {analysis['score']}\n"
+        f"Top100 筹码异动 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"类型: {signal_type_text(analysis['signal_type'])} | 分数: {analysis['score']}\n"
         f"CA: {address}\n"
-        f"mcap: ${calc_mcap(token):,.0f} | price: {to_float(token.get('price')):.12f}\n"
-        f"pool: ${analysis.get('pool_total_liquidity', 0):,.0f} | pool/mcap: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | "
-        f"pool delta: ${analysis.get('pool_liquidity_delta', 0):,.0f}/{analysis.get('pool_liquidity_delta_pct', 0):.1%}\n"
-        f"main pool: {analysis.get('pool_main_exchange') or 'unknown'} | main share: {analysis.get('pool_main_share', 0):.1%}\n"
-        f"acc: {analysis['accumulation_pct_delta']:.2%} | dist: {analysis['distribution_pct_delta']:.2%}\n"
-        f"new: {analysis['new_holder_pct']:.2%} | exited: {analysis['exited_holder_pct']:.2%}\n"
-        f"rotation: {analysis['rotation_score']:.2f} | net buy: ${analysis['netflow_usd']:,.0f}\n"
-        f"last {analysis.get('history_count', 0)}: acc {analysis.get('window_accumulation_pct_delta', 0):.2%} | "
-        f"dist {analysis.get('window_distribution_pct_delta', 0):.2%} | net ${analysis.get('window_netflow_usd', 0):,.0f}\n"
-        f"reason: {', '.join(analysis['reasons']) or 'none'}\n"
+        f"市值: ${calc_mcap(token):,.0f} | 价格: {to_float(token.get('price')):.12f}\n"
+        f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | "
+        f"本轮池变动: ${analysis.get('pool_liquidity_delta', 0):,.0f}/{analysis.get('pool_liquidity_delta_pct', 0):.1%}\n"
+        f"主池: {analysis.get('pool_main_exchange') or '未知'} | 主池占比: {analysis.get('pool_main_share', 0):.1%}\n"
+        f"增持: {analysis['accumulation_pct_delta']:.2%} | 减持: {analysis['distribution_pct_delta']:.2%}\n"
+        f"新进: {analysis['new_holder_pct']:.2%} | 退出: {analysis['exited_holder_pct']:.2%}\n"
+        f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
+        f"近{analysis.get('history_count', 0)}次: 增持{analysis.get('window_accumulation_pct_delta', 0):.2%} | "
+        f"减持{analysis.get('window_distribution_pct_delta', 0):.2%} | 净买入${analysis.get('window_netflow_usd', 0):,.0f}\n"
+        f"理由: {', '.join(analysis['reasons']) or '无'}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
 
