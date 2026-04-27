@@ -1,21 +1,6 @@
 #!/usr/bin/env python3
 """
-Monitor watched token contracts for bottom accumulation followed by price expansion.
-
-Default source table: tokens.ca
-
-Pipeline:
-1. Read token CAs from a source table.
-2. Cache 5m GMGN klines in Postgres. First run backfills history; later runs only
-   fetch the missing tail.
-3. Detect "flat base then spike":
-   - 1h close/open change >= 30% after a quiet base.
-   - 4h close/open change >= 100% after a quiet base.
-4. Snapshot Top100 holders and compare with the previous snapshot to detect
-   accumulation, distribution, and rotation.
-5. Store signals once per token/window/type to avoid duplicate alerts.
-
-Run bottom_detection/init_bottom_accumulation_db.py once before starting this monitor.
+Monitor 1h trending tokens by storing each processed Top100 holder snapshot as JSON.
 """
 
 from __future__ import annotations
@@ -28,14 +13,13 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import requests
-from psycopg2 import sql
-from psycopg2.extras import Json, execute_values
+from psycopg2.extras import Json
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -46,35 +30,23 @@ from db_client import db_op
 
 
 CHAIN = "sol"
-RESOLUTION = "5m"
-DEFAULT_SOURCE_TABLE = os.getenv("BOTTOM_SOURCE_TABLE", "tokens")
-DEFAULT_SOURCE_CA_COLUMN = os.getenv("BOTTOM_SOURCE_CA_COLUMN", "ca")
-DEFAULT_SOURCE_CHAIN_COLUMN = os.getenv("BOTTOM_SOURCE_CHAIN_COLUMN", "")
-DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "60"))
-DEFAULT_BACKFILL_HOURS = int(os.getenv("BOTTOM_BACKFILL_HOURS", "48"))
-DEFAULT_HOLDER_REFRESH_SEC = int(os.getenv("BOTTOM_HOLDER_REFRESH_SEC", "900"))
+TREND_INTERVAL = os.getenv("BOTTOM_TREND_INTERVAL", "1h")
+TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
+DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "3600"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
+RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "10"))
+MIN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_MIN_SNAPSHOT_INTERVAL_SEC", "3000"))
+MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
+MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", str(5 * 3600)))
+MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "10"))
 
-ONE_HOUR_SPIKE = float(os.getenv("BOTTOM_ONE_HOUR_SPIKE", "0.30"))
-FOUR_HOUR_SPIKE = float(os.getenv("BOTTOM_FOUR_HOUR_SPIKE", "1.00"))
-BASE_MAX_RANGE = float(os.getenv("BOTTOM_BASE_MAX_RANGE", "0.22"))
-BASE_MAX_DRIFT = float(os.getenv("BOTTOM_BASE_MAX_DRIFT", "0.12"))
 MIN_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_ACCUM_PCT_DELTA", "0.015"))
+MIN_DISTRIBUTED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_DISTRIB_PCT_DELTA", "0.015"))
+MIN_ROTATION_PCT = float(os.getenv("BOTTOM_MIN_ROTATION_PCT", "0.02"))
 MIN_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_NETFLOW_USD", "5000"))
+MIN_SIGNAL_SCORE = int(os.getenv("BOTTOM_MIN_SIGNAL_SCORE", "60"))
 
-SOL_CA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
-
-
-@dataclass
-class Candle:
-    ts: int
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    amount: float
-    raw: dict[str, Any]
+SOL_CA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,50}$")
 
 
 def now_ts() -> int:
@@ -112,16 +84,10 @@ def gmgn_command_prefix() -> list[str]:
     return [executable]
 
 
-def run_gmgn(args: list[str], timeout: int = 60) -> dict[str, Any] | list[Any] | None:
+def run_gmgn(args: list[str], timeout: int = 75) -> dict[str, Any] | list[Any] | None:
     cmd = [*gmgn_command_prefix(), *args, "--raw"]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=timeout,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except Exception as exc:
         print(f"gmgn exception: {' '.join(cmd)} -> {exc}")
         return None
@@ -138,279 +104,110 @@ def run_gmgn(args: list[str], timeout: int = 60) -> dict[str, Any] | list[Any] |
         return None
 
 
-def fetch_source_tokens(table: str, ca_column: str, chain_column: str = "") -> list[str]:
-    def _op(conn):
-        cur = conn.cursor()
-        if chain_column:
-            query = sql.SQL("SELECT DISTINCT {ca} FROM {tbl} WHERE {ca} IS NOT NULL AND {chain} = %s").format(
-                ca=sql.Identifier(ca_column),
-                tbl=sql.Identifier(table),
-                chain=sql.Identifier(chain_column),
-            )
-            cur.execute(query, (CHAIN,))
-        else:
-            query = sql.SQL("SELECT DISTINCT {ca} FROM {tbl} WHERE {ca} IS NOT NULL").format(
-                ca=sql.Identifier(ca_column),
-                tbl=sql.Identifier(table),
-            )
-            cur.execute(query)
-        return [str(row[0]).strip() for row in cur.fetchall()]
-
-    tokens = db_op(_op)
-    return [addr for addr in tokens if valid_sol_ca(addr)]
-
-
-def last_cached_ts(address: str) -> int | None:
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT MAX(bucket_ts)
-            FROM bottom_kline_cache
-            WHERE chain=%s AND address=%s AND resolution=%s
-            """,
-            (CHAIN, address, RESOLUTION),
-        )
-        row = cur.fetchone()
-        return int(row[0]) if row and row[0] is not None else None
-
-    return db_op(_op)
-
-
-def extract_candles(data: dict[str, Any] | list[Any] | None) -> list[Candle]:
-    if not data:
-        return []
-    rows: Any
-    if isinstance(data, list):
-        rows = data
-    else:
-        rows = data.get("list") or data.get("data", {}).get("list") or data.get("data") or []
-    candles: list[Candle] = []
-    for row in rows if isinstance(rows, list) else []:
-        if not isinstance(row, dict):
-            continue
-        raw_ts = to_int(row.get("time") or row.get("timestamp") or row.get("t"))
-        ts = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
-        close = to_float(row.get("close") or row.get("c"))
-        if ts <= 0 or close <= 0:
-            continue
-        candles.append(
-            Candle(
-                ts=ts,
-                open=to_float(row.get("open") or row.get("o"), close),
-                high=to_float(row.get("high") or row.get("h"), close),
-                low=to_float(row.get("low") or row.get("l"), close),
-                close=close,
-                volume=to_float(row.get("volume") or row.get("v")),
-                amount=to_float(row.get("amount") or row.get("a")),
-                raw=row,
-            )
-        )
-    candles.sort(key=lambda c: c.ts)
-    return candles
-
-
-def fetch_and_cache_klines(address: str, backfill_hours: int) -> int:
-    end_ts = now_ts()
-    last_ts = last_cached_ts(address)
-    start_ts = (last_ts + 300) if last_ts else end_ts - backfill_hours * 3600
-    if start_ts >= end_ts - 60:
-        return 0
-    data = run_gmgn(
-        [
-            "market",
-            "kline",
-            "--chain",
-            CHAIN,
-            "--address",
-            address,
-            "--resolution",
-            RESOLUTION,
-            "--from",
-            str(start_ts),
-            "--to",
-            str(end_ts),
-        ],
-        timeout=75,
-    )
-    candles = extract_candles(data)
-    if not candles:
-        return 0
-
-    def _op(conn):
-        cur = conn.cursor()
-        execute_values(
-            cur,
-            """
-            INSERT INTO bottom_kline_cache (
-                chain, address, resolution, bucket_ts, open, high, low, close,
-                volume, amount, raw
-            ) VALUES %s
-            ON CONFLICT (chain, address, resolution, bucket_ts) DO UPDATE SET
-                open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
-                close = EXCLUDED.close,
-                volume = EXCLUDED.volume,
-                amount = EXCLUDED.amount,
-                raw = EXCLUDED.raw
-            """,
-            [
-                (
-                    CHAIN,
-                    address,
-                    RESOLUTION,
-                    c.ts,
-                    c.open,
-                    c.high,
-                    c.low,
-                    c.close,
-                    c.volume,
-                    c.amount,
-                    Json(c.raw),
-                )
-                for c in candles
-            ],
-        )
-
-    db_op(_op)
-    return len(candles)
-
-
-def load_recent_candles(address: str, hours: int = 12) -> list[Candle]:
-    min_ts = now_ts() - hours * 3600
-
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT bucket_ts, open, high, low, close, volume, amount, raw
-            FROM bottom_kline_cache
-            WHERE chain=%s AND address=%s AND resolution=%s AND bucket_ts >= %s
-            ORDER BY bucket_ts ASC
-            """,
-            (CHAIN, address, RESOLUTION, min_ts),
-        )
-        return cur.fetchall()
-
-    rows = db_op(_op)
-    return [
-        Candle(
-            ts=int(row[0]),
-            open=to_float(row[1]),
-            high=to_float(row[2]),
-            low=to_float(row[3]),
-            close=to_float(row[4]),
-            volume=to_float(row[5]),
-            amount=to_float(row[6]),
-            raw=row[7] or {},
-        )
-        for row in rows
-    ]
-
-
-def pct_change(start: float, end: float) -> float:
-    return (end - start) / start if start > 0 else 0.0
-
-
-def slice_since(candles: list[Candle], seconds: int) -> list[Candle]:
-    if not candles:
-        return []
-    cutoff = candles[-1].ts - seconds
-    return [c for c in candles if c.ts >= cutoff]
-
-
-def base_stats(base: list[Candle]) -> tuple[float, float]:
-    if len(base) < 6:
-        return 0.0, 0.0
-    lows = [c.low for c in base if c.low > 0]
-    highs = [c.high for c in base if c.high > 0]
-    if not lows or not highs:
-        return 0.0, 0.0
-    low = min(lows)
-    high = max(highs)
-    range_pct = (high - low) / low if low > 0 else 0.0
-    drift_pct = abs(pct_change(base[0].close, base[-1].close))
-    return range_pct, drift_pct
-
-
-def detect_price_setup(candles: list[Candle]) -> list[dict[str, Any]]:
-    signals: list[dict[str, Any]] = []
-    if len(candles) < 24:
-        return signals
-
-    windows = [
-        ("spike_1h", 60, ONE_HOUR_SPIKE, 3 * 3600),
-        ("spike_4h", 240, FOUR_HOUR_SPIKE, 8 * 3600),
-    ]
-    for signal_type, minutes, min_spike, base_seconds in windows:
-        spike = slice_since(candles, minutes * 60)
-        if len(spike) < max(6, minutes // 5):
-            continue
-        base_end_ts = spike[0].ts - 1
-        base_start_ts = base_end_ts - base_seconds
-        base = [c for c in candles if base_start_ts <= c.ts <= base_end_ts]
-        range_pct, drift_pct = base_stats(base)
-        spike_pct = pct_change(spike[0].open, spike[-1].close)
-        quiet_base = range_pct > 0 and range_pct <= BASE_MAX_RANGE and drift_pct <= BASE_MAX_DRIFT
-        if spike_pct >= min_spike and quiet_base:
-            signals.append(
-                {
-                    "signal_type": signal_type,
-                    "window_minutes": minutes,
-                    "signal_bucket_ts": spike[-1].ts,
-                    "spike_pct": spike_pct,
-                    "base_range_pct": range_pct,
-                    "base_drift_pct": drift_pct,
-                    "base_start_ts": base_start_ts,
-                    "base_end_ts": base_end_ts,
-                }
-            )
-    return signals
-
-
-def is_pool_holder(holder: dict[str, Any]) -> bool:
-    return to_int(holder.get("addr_type")) == 2 or "pool" in str(holder.get("exchange") or "").lower()
+def token_address(row: dict[str, Any]) -> str:
+    return str(row.get("address") or row.get("token_address") or row.get("ca") or "").strip()
 
 
 def holder_key(holder: dict[str, Any]) -> str:
     return str(holder.get("address") or holder.get("wallet_address") or "").strip()
 
 
-def summarize_holders(holders: list[dict[str, Any]]) -> dict[str, Any]:
-    non_pool = [h for h in holders if holder_key(h) and not is_pool_holder(h)]
-    buy_volume = sum(to_float(h.get("buy_volume_cur")) for h in non_pool)
-    sell_volume = sum(to_float(h.get("sell_volume_cur")) for h in non_pool)
-    netflow = sum(to_float(h.get("netflow_usd")) for h in non_pool)
-    return {
-        "holder_count": len(holders),
-        "non_pool_count": len(non_pool),
-        "top10_pct": sum(to_float(h.get("amount_percentage")) for h in holders[:10]),
-        "top100_pct": sum(to_float(h.get("amount_percentage")) for h in holders),
-        "non_pool_pct": sum(to_float(h.get("amount_percentage")) for h in non_pool),
-        "buy_volume": buy_volume,
-        "sell_volume": sell_volume,
-        "netflow": netflow,
-        "top_buyers": sorted(
-            [
-                {
-                    "wallet": holder_key(h),
-                    "pct": to_float(h.get("amount_percentage")),
-                    "usd": to_float(h.get("usd_value")),
-                    "netflow": to_float(h.get("netflow_usd")),
-                    "buy": to_float(h.get("buy_volume_cur")),
-                    "sell": to_float(h.get("sell_volume_cur")),
-                    "tags": h.get("maker_token_tags") or h.get("tags") or [],
-                }
-                for h in non_pool
-            ],
-            key=lambda x: to_float(x["netflow"]),
-            reverse=True,
-        )[:5],
-    }
+def is_pool_holder(holder: dict[str, Any]) -> bool:
+    return to_int(holder.get("addr_type")) == 2 or "pool" in str(holder.get("exchange") or "").lower()
 
 
-def fetch_holder_snapshot(address: str) -> list[dict[str, Any]]:
+def calc_mcap(row: dict[str, Any]) -> float:
+    for key in ("market_cap", "usd_market_cap", "mcap", "fdv", "fully_diluted_valuation"):
+        value = to_float(row.get(key))
+        if value > 0:
+            return value
+    price = to_float(row.get("price"))
+    supply = to_float(row.get("circulating_supply") or row.get("total_supply") or row.get("supply"))
+    return price * supply if price > 0 and supply > 0 else 0.0
+
+
+def first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def token_created_ts(row: dict[str, Any]) -> int:
+    value = first_value(
+        row,
+        (
+            "created_at",
+            "creation_timestamp",
+            "created_timestamp",
+            "create_timestamp",
+            "open_timestamp",
+            "launch_timestamp",
+            "pool_creation_timestamp",
+            "pair_created_at",
+        ),
+    )
+    ts = to_int(value)
+    return ts // 1000 if ts > 10_000_000_000 else ts
+
+
+def token_age_sec(row: dict[str, Any]) -> int:
+    created_ts = token_created_ts(row)
+    return now_ts() - created_ts if created_ts > 0 else 0
+
+
+def fee_sol(row: dict[str, Any]) -> float:
+    value = first_value(
+        row,
+        (
+            "fee_sol",
+            "fees_sol",
+            "total_fee_sol",
+            "fee",
+            "fees",
+            "total_fee",
+            "tx_fee_sol",
+        ),
+    )
+    fee = to_float(value)
+    return fee / 1_000_000_000 if fee > 1_000_000 else fee
+
+
+def token_filter_reason(row: dict[str, Any]) -> str | None:
+    mcap = calc_mcap(row)
+    if mcap < MIN_MCAP_USD:
+        return f"市值${mcap:,.0f}<{MIN_MCAP_USD:,.0f}"
+    age = token_age_sec(row)
+    if age and age < MIN_TOKEN_AGE_SEC:
+        return f"创建{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
+    fee = fee_sol(row)
+    if fee < MIN_FEE_SOL:
+        return f"手续费{fee:.2f}SOL<{MIN_FEE_SOL:.2f}SOL"
+    return None
+
+
+def fetch_trending_tokens() -> list[dict[str, Any]]:
+    data = run_gmgn(
+        ["market", "trending", "--chain", CHAIN, "--interval", TREND_INTERVAL, "--limit", str(TREND_LIMIT)]
+    )
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("data", {}).get("rank") or data.get("rank") or data.get("list") or []
+    tokens = []
+    seen = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        address = token_address(row)
+        if not valid_sol_ca(address) or address in seen:
+            continue
+        seen.add(address)
+        tokens.append(row)
+    return tokens
+
+
+def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
     data = run_gmgn(
         [
             "token",
@@ -426,7 +223,7 @@ def fetch_holder_snapshot(address: str) -> list[dict[str, Any]]:
             "--direction",
             "desc",
         ],
-        timeout=75,
+        timeout=90,
     )
     if not isinstance(data, dict):
         return []
@@ -434,14 +231,86 @@ def fetch_holder_snapshot(address: str) -> list[dict[str, Any]]:
     return holders if isinstance(holders, list) else []
 
 
-def latest_holder_snapshot_ts(address: str) -> int | None:
+def normalize_holder(holder: dict[str, Any], rank_no: int) -> dict[str, Any] | None:
+    wallet = holder_key(holder)
+    if not wallet or is_pool_holder(holder):
+        return None
+    return {
+        "rank": rank_no,
+        "wallet": wallet,
+        "hold_pct": to_float(holder.get("amount_percentage")),
+        "usd_value": to_float(holder.get("usd_value")),
+        "buy_volume": to_float(holder.get("buy_volume_cur")),
+        "sell_volume": to_float(holder.get("sell_volume_cur")),
+        "netflow": to_float(holder.get("netflow_usd")),
+        "avg_cost": to_float(holder.get("avg_cost")),
+        "profit": to_float(holder.get("profit")),
+        "buy_count": to_int(holder.get("buy_tx_count_cur")),
+        "sell_count": to_int(holder.get("sell_tx_count_cur")),
+        "start_holding_at": to_int(holder.get("start_holding_at")),
+        "last_active_at": to_int(holder.get("last_active_timestamp")),
+        "tags": holder.get("maker_token_tags") or holder.get("tags") or [],
+    }
+
+
+def build_snapshot_json(token: dict[str, Any], raw_holders: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    holders = []
+    for rank_no, holder in enumerate(raw_holders, start=1):
+        normalized = normalize_holder(holder, rank_no)
+        if normalized:
+            holders.append(normalized)
+
+    summary = {
+        "holder_count": len(raw_holders),
+        "non_pool_count": len(holders),
+        "top10_pct": sum(h["hold_pct"] for h in holders[:10]),
+        "top20_pct": sum(h["hold_pct"] for h in holders[:20]),
+        "top50_pct": sum(h["hold_pct"] for h in holders[:50]),
+        "top100_pct": sum(h["hold_pct"] for h in holders[:100]),
+        "buy_volume": sum(h["buy_volume"] for h in holders),
+        "sell_volume": sum(h["sell_volume"] for h in holders),
+        "netflow": sum(h["netflow"] for h in holders),
+        "mcap": calc_mcap(token),
+        "price": to_float(token.get("price")),
+        "liquidity": to_float(token.get("liquidity") or token.get("pool_liquidity")),
+        "created_ts": token_created_ts(token),
+        "age_sec": token_age_sec(token),
+        "fee_sol": fee_sol(token),
+    }
+    return summary, holders
+
+
+def recent_snapshots(address: str, limit: int = RECENT_COMPARE_LIMIT) -> list[dict[str, Any]]:
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT MAX(snapshot_ts)
-            FROM bottom_holder_snapshots
+            SELECT id, summary, holders, analysis
+            FROM bottom_top100_snapshots
             WHERE chain=%s AND address=%s
+            ORDER BY snapshot_ts DESC
+            LIMIT %s
+            """,
+            (CHAIN, address, limit),
+        )
+        return [
+            {"id": row[0], "summary": row[1] or {}, "holders": row[2] or [], "analysis": row[3] or {}}
+            for row in cur.fetchall()
+        ]
+
+    return db_op(_op)
+
+
+def latest_snapshot_ts(address: str) -> int | None:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT snapshot_ts
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s
+            ORDER BY snapshot_ts DESC
+            LIMIT 1
             """,
             (CHAIN, address),
         )
@@ -451,244 +320,175 @@ def latest_holder_snapshot_ts(address: str) -> int | None:
     return db_op(_op)
 
 
-def save_holder_snapshot(address: str, holders: list[dict[str, Any]]) -> int | None:
-    if not holders:
+def recent_snapshot_skip_reason(address: str) -> str | None:
+    latest_ts = latest_snapshot_ts(address)
+    if not latest_ts:
         return None
-    snapshot_ts = now_ts()
-    summary = summarize_holders(holders)
+    age = now_ts() - latest_ts
+    if age < MIN_SNAPSHOT_INTERVAL_SEC:
+        return f"最近快照{age / 60:.1f}m<{MIN_SNAPSHOT_INTERVAL_SEC / 60:.1f}m"
+    return None
+
+
+def compare_holder_sets(current_holders: list[dict[str, Any]], previous_holders: list[dict[str, Any]]) -> dict[str, Any]:
+    current = {h["wallet"]: h for h in current_holders}
+    previous = {h["wallet"]: h for h in previous_holders}
+
+    accumulated_delta = 0.0
+    distributed_delta = 0.0
+    new_holder_pct = 0.0
+    exited_holder_pct = 0.0
+    netflow_delta = 0.0
+    tagged_delta = 0.0
+    top_buyers = []
+    top_sellers = []
+
+    for wallet, cur in current.items():
+        old = previous.get(wallet)
+        old_pct = to_float(old.get("hold_pct")) if old else 0.0
+        delta = cur["hold_pct"] - old_pct
+        buy_delta = cur["buy_volume"] - (to_float(old.get("buy_volume")) if old else 0.0)
+        sell_delta = cur["sell_volume"] - (to_float(old.get("sell_volume")) if old else 0.0)
+        net_delta = buy_delta - sell_delta
+        netflow_delta += net_delta
+        if delta > 0:
+            accumulated_delta += delta
+            top_buyers.append({"wallet": wallet, "pct_delta": delta, "netflow": net_delta, "tags": cur.get("tags", [])})
+        elif delta < 0:
+            distributed_delta += abs(delta)
+            top_sellers.append({"wallet": wallet, "pct_delta": delta, "netflow": net_delta, "tags": cur.get("tags", [])})
+        if not old:
+            new_holder_pct += cur["hold_pct"]
+        if delta > 0 and any(str(tag) in {"smart_degen", "renowned", "bundler", "rat_trader", "fresh_wallet"} for tag in cur.get("tags", [])):
+            tagged_delta += delta
+
+    for wallet, old in previous.items():
+        if wallet not in current:
+            exited_holder_pct += old["hold_pct"]
+
+    rotation_score = accumulated_delta / max(distributed_delta, 0.000001)
+    return {
+        "accumulation_pct_delta": accumulated_delta,
+        "distribution_pct_delta": distributed_delta,
+        "rotation_score": rotation_score,
+        "new_holder_pct": new_holder_pct,
+        "exited_holder_pct": exited_holder_pct,
+        "turnover_pct": new_holder_pct + exited_holder_pct,
+        "netflow_usd": netflow_delta,
+        "tagged_delta": tagged_delta,
+        "top_buyers": sorted(top_buyers, key=lambda item: item["pct_delta"], reverse=True)[:8],
+        "top_sellers": sorted(top_sellers, key=lambda item: item["pct_delta"])[:8],
+    }
+
+
+def analyze_snapshot_change(current_holders: list[dict[str, Any]], recent_history: list[dict[str, Any]]) -> dict[str, Any]:
+    if not current_holders or not recent_history:
+        return {"score": 0, "signal_type": "baseline", "reasons": ["需要历史快照"], "history_count": len(recent_history)}
+
+    previous_holders = recent_history[0].get("holders") or []
+    earliest_holders = recent_history[-1].get("holders") or []
+    if not previous_holders:
+        return {"score": 0, "signal_type": "baseline", "reasons": ["上一轮快照为空"], "history_count": len(recent_history)}
+
+    last_change = compare_holder_sets(current_holders, previous_holders)
+    window_change = compare_holder_sets(current_holders, earliest_holders) if earliest_holders else last_change
+    historical_analyses = [snap.get("analysis") or {} for snap in recent_history]
+    accumulation_hits = sum(1 for item in historical_analyses if item.get("signal_type") in {"accumulation", "rotation"})
+    distribution_hits = sum(1 for item in historical_analyses if item.get("signal_type") == "distribution")
+
+    accumulated_delta = last_change["accumulation_pct_delta"]
+    distributed_delta = last_change["distribution_pct_delta"]
+    turnover_pct = last_change["turnover_pct"]
+    tagged_delta = last_change["tagged_delta"]
+    netflow_delta = last_change["netflow_usd"]
+    score = 0
+    reasons = []
+    signal_type = "watch"
+
+    if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
+        score += 30
+        reasons.append(f"本轮Top100增持{accumulated_delta:.2%}")
+    if netflow_delta >= MIN_NETFLOW_USD:
+        score += 25
+        reasons.append(f"本轮净买入${netflow_delta:,.0f}")
+    if tagged_delta >= 0.005:
+        score += 15
+        reasons.append(f"标签钱包增持{tagged_delta:.2%}")
+    if window_change["accumulation_pct_delta"] >= MIN_ACCUMULATED_PCT_DELTA * 2:
+        score += 20
+        reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
+    if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
+        score += 15
+        reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
+    if accumulation_hits >= 2:
+        score += 10
+        reasons.append(f"历史连续吸筹/换筹{accumulation_hits}次")
+    if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8:
+        score += 20
+        signal_type = "rotation"
+        reasons.append(f"换筹{turnover_pct:.2%}")
+    if distributed_delta >= MIN_DISTRIBUTED_PCT_DELTA and distributed_delta > accumulated_delta * 1.3:
+        signal_type = "distribution"
+        score = max(score - 30, 0)
+        reasons.append(f"派发{distributed_delta:.2%}")
+    if distribution_hits >= 2:
+        signal_type = "distribution"
+        score = max(score - 20, 0)
+        reasons.append(f"历史派发{distribution_hits}次")
+    elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation":
+        signal_type = "accumulation"
+
+    return {
+        "score": min(score, 100),
+        "signal_type": signal_type,
+        "reasons": reasons,
+        "history_count": len(recent_history),
+        "accumulation_pct_delta": last_change["accumulation_pct_delta"],
+        "distribution_pct_delta": last_change["distribution_pct_delta"],
+        "rotation_score": last_change["rotation_score"],
+        "new_holder_pct": last_change["new_holder_pct"],
+        "exited_holder_pct": last_change["exited_holder_pct"],
+        "netflow_usd": last_change["netflow_usd"],
+        "window_accumulation_pct_delta": window_change["accumulation_pct_delta"],
+        "window_distribution_pct_delta": window_change["distribution_pct_delta"],
+        "window_netflow_usd": window_change["netflow_usd"],
+        "accumulation_hits": accumulation_hits,
+        "distribution_hits": distribution_hits,
+        "top_buyers": last_change["top_buyers"],
+        "top_sellers": last_change["top_sellers"],
+    }
+
+
+def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
+    address = token_address(token)
 
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO bottom_holder_snapshots (
-                chain, address, snapshot_ts, holder_count, non_pool_count,
-                top10_pct, top100_pct, non_pool_pct, buy_volume, sell_volume,
-                netflow, raw_summary
+            INSERT INTO bottom_top100_snapshots (
+                scan_id, chain, trend_interval, address, symbol, snapshot_ts,
+                signal_type, signal_score, summary, holders, analysis, raw_token
             )
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id
             """,
             (
+                scan_id,
                 CHAIN,
+                TREND_INTERVAL,
                 address,
-                snapshot_ts,
-                summary["holder_count"],
-                summary["non_pool_count"],
-                summary["top10_pct"],
-                summary["top100_pct"],
-                summary["non_pool_pct"],
-                summary["buy_volume"],
-                summary["sell_volume"],
-                summary["netflow"],
+                token.get("symbol"),
+                now_ts(),
+                analysis.get("signal_type"),
+                analysis.get("score", 0),
                 Json(summary),
+                Json(holders),
+                Json(analysis),
+                Json(token),
             ),
         )
-        snapshot_id = int(cur.fetchone()[0])
-        wallet_rows = [
-            (
-                snapshot_id,
-                address,
-                holder_key(h),
-                to_float(h.get("amount_percentage")),
-                to_float(h.get("usd_value")),
-                to_float(h.get("buy_volume_cur")),
-                to_float(h.get("sell_volume_cur")),
-                to_float(h.get("netflow_usd")),
-                to_int(h.get("start_holding_at")) or None,
-                Json(h.get("maker_token_tags") or h.get("tags") or []),
-                Json(h),
-            )
-            for h in holders
-            if holder_key(h)
-        ]
-        if wallet_rows:
-            execute_values(
-                cur,
-                """
-                INSERT INTO bottom_holder_wallets (
-                    snapshot_id, address, wallet, amount_percentage, usd_value,
-                    buy_volume_cur, sell_volume_cur, netflow_usd, start_holding_at,
-                    tags, raw
-                ) VALUES %s
-                ON CONFLICT (snapshot_id, wallet) DO NOTHING
-                """,
-                wallet_rows,
-            )
-        return snapshot_id
-
-    return db_op(_op)
-
-
-def maybe_refresh_holders(address: str, refresh_sec: int) -> int | None:
-    last_ts = latest_holder_snapshot_ts(address)
-    if last_ts and now_ts() - last_ts < refresh_sec:
-        return None
-    holders = fetch_holder_snapshot(address)
-    return save_holder_snapshot(address, holders)
-
-
-def load_last_two_holder_snapshots(address: str) -> tuple[int | None, int | None]:
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id
-            FROM bottom_holder_snapshots
-            WHERE chain=%s AND address=%s
-            ORDER BY snapshot_ts DESC
-            LIMIT 2
-            """,
-            (CHAIN, address),
-        )
-        rows = cur.fetchall()
-        ids = [int(row[0]) for row in rows]
-        return (ids[0] if len(ids) > 0 else None, ids[1] if len(ids) > 1 else None)
-
-    return db_op(_op)
-
-
-def load_snapshot_wallets(snapshot_id: int | None) -> dict[str, dict[str, Any]]:
-    if not snapshot_id:
-        return {}
-
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT wallet, amount_percentage, usd_value, buy_volume_cur, sell_volume_cur,
-                   netflow_usd, start_holding_at, tags
-            FROM bottom_holder_wallets
-            WHERE snapshot_id=%s
-            """,
-            (snapshot_id,),
-        )
-        return cur.fetchall()
-
-    rows = db_op(_op)
-    return {
-        row[0]: {
-            "amount_percentage": to_float(row[1]),
-            "usd_value": to_float(row[2]),
-            "buy_volume_cur": to_float(row[3]),
-            "sell_volume_cur": to_float(row[4]),
-            "netflow_usd": to_float(row[5]),
-            "start_holding_at": to_int(row[6]),
-            "tags": row[7] or [],
-        }
-        for row in rows
-    }
-
-
-def analyze_accumulation(address: str) -> dict[str, Any]:
-    latest_id, previous_id = load_last_two_holder_snapshots(address)
-    latest = load_snapshot_wallets(latest_id)
-    previous = load_snapshot_wallets(previous_id)
-    accumulated_delta = 0.0
-    distributed_delta = 0.0
-    new_holder_pct = 0.0
-    netflow = 0.0
-    smart_or_tagged = 0
-    top_buyers = sorted(
-        [
-            {
-                "wallet": wallet,
-                "pct": to_float(cur.get("amount_percentage")),
-                "usd": to_float(cur.get("usd_value")),
-                "netflow": to_float(cur.get("netflow_usd")),
-                "buy": to_float(cur.get("buy_volume_cur")),
-                "sell": to_float(cur.get("sell_volume_cur")),
-                "tags": cur.get("tags") if isinstance(cur.get("tags"), list) else [],
-            }
-            for wallet, cur in latest.items()
-        ],
-        key=lambda x: to_float(x["netflow"]),
-        reverse=True,
-    )[:5]
-
-    for wallet, cur in latest.items():
-        cur_pct = to_float(cur.get("amount_percentage"))
-        old_pct = to_float(previous.get(wallet, {}).get("amount_percentage"))
-        delta = cur_pct - old_pct
-        if delta > 0:
-            accumulated_delta += delta
-        elif delta < 0:
-            distributed_delta += abs(delta)
-        if wallet not in previous:
-            new_holder_pct += cur_pct
-        netflow += to_float(cur.get("netflow_usd"))
-        tags = cur.get("tags") if isinstance(cur.get("tags"), list) else []
-        if any(str(tag) in {"smart_degen", "renowned", "bundler", "rat_trader"} for tag in tags):
-            smart_or_tagged += 1
-
-    rotation_score = accumulated_delta / max(distributed_delta, 0.000001)
-    score = 0
-    reasons: list[str] = []
-    if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
-        score += 30
-        reasons.append(f"top holders +{accumulated_delta:.2%}")
-    if netflow >= MIN_NETFLOW_USD:
-        score += 25
-        reasons.append(f"netflow ${netflow:,.0f}")
-    if rotation_score >= 1.5 and accumulated_delta > distributed_delta:
-        score += 20
-        reasons.append(f"rotation {rotation_score:.1f}x")
-    if new_holder_pct >= MIN_ACCUMULATED_PCT_DELTA:
-        score += 15
-        reasons.append(f"new holders +{new_holder_pct:.2%}")
-    if smart_or_tagged > 0:
-        score += 10
-        reasons.append(f"tagged wallets {smart_or_tagged}")
-
-    return {
-        "score": min(score, 100),
-        "reasons": reasons,
-        "accumulation_pct_delta": accumulated_delta,
-        "distribution_pct_delta": distributed_delta,
-        "new_holder_pct": new_holder_pct,
-        "rotation_score": rotation_score,
-        "netflow_usd": netflow,
-        "top_buyers": top_buyers,
-    }
-
-
-def save_signal(address: str, price_signal: dict[str, Any], accumulation: dict[str, Any]) -> bool:
-    raw = {"price": price_signal, "accumulation": accumulation}
-
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO bottom_accumulation_signals (
-                chain, address, signal_type, window_minutes, signal_bucket_ts,
-                spike_pct, base_range_pct, base_drift_pct, accumulation_score,
-                accumulation_pct_delta, distribution_pct_delta, rotation_score,
-                netflow_usd, top_buyers, raw_analysis
-            )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (chain, address, signal_type, window_minutes, signal_bucket_ts)
-            DO NOTHING
-            RETURNING id
-            """,
-            (
-                CHAIN,
-                address,
-                price_signal["signal_type"],
-                price_signal["window_minutes"],
-                price_signal["signal_bucket_ts"],
-                price_signal["spike_pct"],
-                price_signal["base_range_pct"],
-                price_signal["base_drift_pct"],
-                accumulation["score"],
-                accumulation["accumulation_pct_delta"],
-                accumulation["distribution_pct_delta"],
-                accumulation["rotation_score"],
-                accumulation["netflow_usd"],
-                Json(accumulation.get("top_buyers", [])),
-                Json(raw),
-            ),
-        )
-        return cur.fetchone() is not None
+        return int(cur.fetchone()[0])
 
     return db_op(_op)
 
@@ -699,7 +499,7 @@ def send_tg(text: str) -> None:
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": text},
+            json={"chat_id": TG_CHAT_ID, "text": text, "disable_web_page_preview": True},
             timeout=15,
         )
         if not resp.ok:
@@ -708,71 +508,97 @@ def send_tg(text: str) -> None:
         print(f"tg exception: {exc}")
 
 
-def handle_token(address: str, args: argparse.Namespace) -> None:
-    cached = fetch_and_cache_klines(address, args.backfill_hours)
-    maybe_refresh_holders(address, args.holder_refresh_sec)
-    candles = load_recent_candles(address, hours=max(12, args.backfill_hours))
-    price_signals = detect_price_setup(candles)
-    if not price_signals:
-        print(f"{address[:8]} cached={cached} no setup")
-        return
-    accumulation = analyze_accumulation(address)
-    for price_signal in price_signals:
-        inserted = save_signal(address, price_signal, accumulation)
-        if not inserted:
-            continue
-        text = (
-            "Bottom accumulation signal\n"
-            f"CA: {address}\n"
-            f"type: {price_signal['signal_type']} window={price_signal['window_minutes']}m\n"
-            f"spike: {price_signal['spike_pct']:.1%} | "
-            f"base_range: {price_signal['base_range_pct']:.1%} | "
-            f"base_drift: {price_signal['base_drift_pct']:.1%}\n"
-            f"accum_score: {accumulation['score']} | "
-            f"accum_delta: {accumulation['accumulation_pct_delta']:.2%} | "
-            f"distribution_delta: {accumulation['distribution_pct_delta']:.2%} | "
-            f"netflow: ${accumulation['netflow_usd']:,.0f}\n"
-            f"reasons: {', '.join(accumulation['reasons']) or 'price setup only'}\n"
-            f"https://gmgn.ai/sol/token/{address}"
-        )
-        print(text)
-        if args.notify:
-            send_tg(text)
+def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
+    address = token_address(token)
+    return (
+        f"Top100筹码异动 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"类型: {analysis['signal_type']} | 分数: {analysis['score']}\n"
+        f"CA: {address}\n"
+        f"市值: ${calc_mcap(token):,.0f} | 价格: {to_float(token.get('price')):.12f}\n"
+        f"增持: {analysis['accumulation_pct_delta']:.2%} | 减持: {analysis['distribution_pct_delta']:.2%}\n"
+        f"新进: {analysis['new_holder_pct']:.2%} | 退出: {analysis['exited_holder_pct']:.2%}\n"
+        f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
+        f"近{analysis.get('history_count', 0)}次: 增持{analysis.get('window_accumulation_pct_delta', 0):.2%} | "
+        f"减持{analysis.get('window_distribution_pct_delta', 0):.2%} | 净买入${analysis.get('window_netflow_usd', 0):,.0f}\n"
+        f"理由: {', '.join(analysis['reasons']) or '无'}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def should_notify(analysis: dict[str, Any]) -> bool:
+    return analysis.get("score", 0) >= MIN_SIGNAL_SCORE or analysis.get("signal_type") == "distribution"
+
+
+def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
+    address = token_address(token)
+    raw_holders = fetch_top100_holders(address)
+    if not raw_holders:
+        print(f"{address[:8]} no holders")
+        return False
+    summary, holders = build_snapshot_json(token, raw_holders)
+    history = recent_snapshots(address)
+    analysis = analyze_snapshot_change(holders, history)
+    snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
+    print(
+        f"{address[:8]} snapshot={snapshot_id} history={len(history)} "
+        f"type={analysis.get('signal_type')} score={analysis.get('score')} "
+        f"acc={analysis.get('accumulation_pct_delta', 0):.2%} "
+        f"dist={analysis.get('distribution_pct_delta', 0):.2%} "
+        f"win_acc={analysis.get('window_accumulation_pct_delta', 0):.2%}"
+    )
+    if notify and should_notify(analysis):
+        send_tg(signal_text(token, analysis))
+    return True
 
 
 def scan_once(args: argparse.Namespace) -> None:
-    try:
-        tokens = fetch_source_tokens(args.source_table, args.source_ca_column, args.source_chain_column)
-    except Exception as exc:
-        print(
-            "source token query failed. Set --source-table/--source-ca-column "
-            f"to match your DB schema. error={exc}"
-        )
-        return
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] source_tokens={len(tokens)}")
-    for address in tokens[: args.max_tokens]:
-        handle_token(address, args)
+    scan_id = str(uuid.uuid4())
+    tokens = fetch_trending_tokens()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} trending={len(tokens)}")
+    processed = 0
+    skipped = 0
+    for token in tokens[: args.max_tokens]:
+        try:
+            skip_reason = token_filter_reason(token)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_address(token)[:8]} skip {skip_reason}")
+                continue
+            skip_reason = recent_snapshot_skip_reason(token_address(token))
+            if skip_reason:
+                skipped += 1
+                print(f"{token_address(token)[:8]} skip {skip_reason}")
+                continue
+            if handle_token(scan_id, token, args.notify):
+                processed += 1
+        except Exception as exc:
+            print(f"{token_address(token)[:8]} failed: {exc}")
         time.sleep(args.token_delay)
+    print(f"scan_id={scan_id} processed={processed}/{len(tokens)} skipped={skipped}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Monitor bottom accumulation tokens from DB CA list.")
+    parser = argparse.ArgumentParser(description="Monitor 1h trending tokens with one JSON snapshot table.")
     parser.add_argument("--once", action="store_true", help="Run once and exit.")
     parser.add_argument("--watch", action="store_true", help="Run forever.")
     parser.add_argument("--notify", action="store_true", help="Send Telegram messages for new signals.")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC, help="Watch interval seconds.")
-    parser.add_argument("--source-table", default=DEFAULT_SOURCE_TABLE, help="Source table containing token CAs.")
-    parser.add_argument("--source-ca-column", default=DEFAULT_SOURCE_CA_COLUMN, help="CA column in source table.")
-    parser.add_argument("--source-chain-column", default=DEFAULT_SOURCE_CHAIN_COLUMN, help="Optional chain column.")
-    parser.add_argument("--backfill-hours", type=int, default=DEFAULT_BACKFILL_HOURS, help="Initial kline backfill hours.")
-    parser.add_argument("--holder-refresh-sec", type=int, default=DEFAULT_HOLDER_REFRESH_SEC)
-    parser.add_argument("--max-tokens", type=int, default=500)
-    parser.add_argument("--token-delay", type=float, default=0.25, help="Delay between tokens to avoid rate limits.")
+    parser.add_argument("--max-tokens", type=int, default=TREND_LIMIT)
+    parser.add_argument("--token-delay", type=float, default=0.5, help="Delay between holder calls.")
+    parser.add_argument("--min-snapshot-minutes", type=float, default=MIN_SNAPSHOT_INTERVAL_SEC / 60, help="Skip same CA if latest snapshot is newer than this many minutes.")
+    parser.add_argument("--min-mcap", type=float, default=MIN_MCAP_USD, help="Skip tokens below this market cap in USD.")
+    parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
+    parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
     return parser
 
 
 def main() -> None:
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_SNAPSHOT_INTERVAL_SEC
     args = build_parser().parse_args()
+    MIN_SNAPSHOT_INTERVAL_SEC = int(args.min_snapshot_minutes * 60)
+    MIN_MCAP_USD = args.min_mcap
+    MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
+    MIN_FEE_SOL = args.min_fee_sol
     while True:
         scan_once(args)
         if args.once or not args.watch:

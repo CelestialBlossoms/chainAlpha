@@ -1,0 +1,32 @@
+services:
+  bottom-top100-monitor:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-bottom-top100
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    environment:
+      BOTTOM_SCAN_INTERVAL: "3600"
+      BOTTOM_TREND_INTERVAL: "1h"
+      BOTTOM_TREND_LIMIT: "100"
+      BOTTOM_TOP_HOLDER_LIMIT: "100"
+      BOTTOM_RECENT_COMPARE_LIMIT: "10"
+      BOTTOM_MIN_SNAPSHOT_INTERVAL_SEC: "3000"
+      BOTTOM_MIN_MCAP_USD: "40000"
+      BOTTOM_MIN_TOKEN_AGE_SEC: "18000"
+      BOTTOM_MIN_FEE_SOL: "10"
+    command:
+      - python
+      - bottom_detection/bottom_accumulation_monitor.py
+      - --watch
+      - --notify
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
