@@ -15,8 +15,8 @@ CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
 MIN_MCAP_USD = 5_000
 MIN_FEE_SOL = 1
-MIN_LOW_MCAP_FEE_SOL = 0.5
-MIN_FEE_MCAP_USD = 20_000
+HIGH_VOLUME_USD_THRESHOLD = 100_000
+MIN_HIGH_VOLUME_FEE_SOL = 5
 DUMP_PROGRESS_THRESHOLD = 20
 MIN_DUMP_ASSOCIATED_SUPPLY = 10
 MIN_DUMP_SOLD_SUPPLY = 2
@@ -313,6 +313,40 @@ def extract_fee_sol(*sources):
         ),
     )
 
+def extract_trade_volume_usd(*sources):
+    volume = first_float(
+        *sources,
+        keys=(
+            "volume",
+            "volume_usd",
+            "trade_volume",
+            "trade_volume_usd",
+            "swap_volume",
+            "swap_volume_usd",
+            "tx_volume",
+            "tx_volume_usd",
+            "total_volume",
+            "total_volume_usd",
+            "volume_1m",
+            "volume_1m_usd",
+            "volume_5m",
+            "volume_5m_usd",
+            "volume_h24",
+            "volume_24h",
+        ),
+    )
+    if volume > 0:
+        return volume
+    buy_volume = first_float(
+        *sources,
+        keys=("buy_volume", "buy_volume_usd", "buy_volume_1m", "buy_volume_1m_usd", "buy_volume_5m", "buy_volume_5m_usd"),
+    )
+    sell_volume = first_float(
+        *sources,
+        keys=("sell_volume", "sell_volume_usd", "sell_volume_1m", "sell_volume_1m_usd", "sell_volume_5m", "sell_volume_5m_usd"),
+    )
+    return buy_volume + sell_volume
+
 def extract_pool_label(*sources):
     value = first_value(
         *sources,
@@ -379,10 +413,9 @@ def normalize_ratio(value):
         ratio = ratio / 100
     return max(0.0, ratio)
 
-def extract_dev_risk(info, sec, trend_row, holders_list):
+def extract_dev_risk(info, trend_row, holders_list):
     creator_address = first_nested_value(
         info,
-        sec,
         trend_row,
         paths=(
             ("dev", "creator_address"),
@@ -394,7 +427,6 @@ def extract_dev_risk(info, sec, trend_row, holders_list):
     )
     dev_team_hold_rate = first_nested_float(
         info,
-        sec,
         trend_row,
         paths=(
             ("stat", "dev_team_hold_rate"),
@@ -404,7 +436,6 @@ def extract_dev_risk(info, sec, trend_row, holders_list):
     )
     creator_hold_rate = first_nested_float(
         info,
-        sec,
         trend_row,
         paths=(
             ("stat", "creator_hold_rate"),
@@ -416,7 +447,6 @@ def extract_dev_risk(info, sec, trend_row, holders_list):
     )
     dev_buy_usd = first_nested_float(
         info,
-        sec,
         trend_row,
         paths=(
             ("dev", "buy_volume_cur"),
@@ -1265,17 +1295,13 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     if not info_raw: return None
     info = json.loads(info_raw)
     
-    # 2. 获取安全数据
-    sec_raw = run_command(f"gmgn-cli token security --chain {chain} --address {address} --raw")
-    sec = json.loads(sec_raw) if sec_raw else {}
-    
-    # 3. 获取前100持币者
+    # 2. 获取前100持币者
     holders_raw = run_command(f"gmgn-cli token holders --chain {chain} --address {address} --limit 100 --raw")
     holders_data = json.loads(holders_raw) if holders_raw else {"list": []}
     holders_list = holders_data.get("list", [])
     non_pool_holder_count = sum(1 for holder in holders_list if not is_pool_holder(holder))
 
-    dev_risk = extract_dev_risk(info, sec, trend_row, holders_list)
+    dev_risk = extract_dev_risk(info, trend_row, holders_list)
     if enforce_dev_risk and dev_risk["should_skip"]:
         print(f"  [跳过] dev风险 {address}: {', '.join(dev_risk['reasons'])}")
         return None
@@ -1287,20 +1313,22 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     current_price = safe_float(info.get("price") or trend_row.get("price"))
     holder_tags_costs = analyze_holder_tags_and_costs(holders_list, current_price)
     wallet_creation = analyze_wallet_creation_clusters(holders_list)
-    mcap = calc_mcap(info, trend_row)
+    trend_mcap = calc_mcap(trend_row)
+    info_mcap = calc_mcap(info)
+    mcap = trend_mcap or info_mcap
+    mcap_source = "trending" if trend_mcap > 0 else "token_info"
     holder_count = first_float(
         info,
-        sec,
         trend_row,
         keys=("holder_count", "holders_count", "holder_num", "holders", "holder"),
         default=non_pool_holder_count,
     )
-    fee_sol = extract_fee_sol(info, sec, trend_row)
-    pool_label, pool_liquidity = extract_pool_label(info, trend_row, sec)
+    fee_sol = extract_fee_sol(info, trend_row)
+    trade_volume_usd = extract_trade_volume_usd(trend_row, info)
+    pool_label, pool_liquidity = extract_pool_label(info, trend_row)
     created_at = first_value(
         info,
         trend_row,
-        sec,
         keys=(
             "created_at",
             "creation_timestamp",
@@ -1320,8 +1348,12 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     stats = {
         "symbol": info.get("symbol"),
         "mcap": mcap,
+        "trend_mcap": trend_mcap,
+        "info_mcap": info_mcap,
+        "mcap_source": mcap_source,
         "holder_count": int(holder_count),
         "fee_sol": fee_sol,
+        "trade_volume_usd": trade_volume_usd,
         "pool_label": pool_label,
         "pool_liquidity": pool_liquidity,
         "price": current_price,
@@ -1331,9 +1363,9 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "token_age_type": token_type,
         "sm_count": info.get("wallet_tags_stat", {}).get("smart_wallets", 0),
         "kol_count": info.get("wallet_tags_stat", {}).get("renowned_wallets", 0),
-        "top10_rate": safe_float(sec.get("top_10_holder_rate")) * 100,
-        "snipers": sec.get("sniper_count", 0),
-        "rug_ratio": sec.get("rug_ratio", "0"),
+        "top10_rate": first_float(info, trend_row, keys=("top_10_holder_rate", "top10_holder_rate", "top10_rate")) * 100,
+        "snipers": int(first_float(info, trend_row, keys=("sniper_count", "snipers"), default=0)),
+        "rug_ratio": first_value(info, trend_row, keys=("rug_ratio", "risk_score", "risk_level")) or "0",
         "creator_address": dev_risk.get("creator_address"),
         "dev_buy_usd": dev_risk.get("dev_buy_usd", 0),
         "dev_hold_rate": dev_risk.get("dev_hold_rate", 0),
@@ -1404,8 +1436,15 @@ def scan_pro():
                     age_seconds = token_age_seconds(s.get("created_at"))
                     if age_seconds is not None and age_seconds > MAX_TOKEN_AGE_SEC:
                         continue
-                    required_fee_sol = MIN_LOW_MCAP_FEE_SOL if s["mcap"] < MIN_FEE_MCAP_USD else MIN_FEE_SOL
-                    if s["fee_sol"] < required_fee_sol:
+                    if s["fee_sol"] < MIN_FEE_SOL:
+                        print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{MIN_FEE_SOL:.2f} SOL")
+                        continue
+                    if s["trade_volume_usd"] >= HIGH_VOLUME_USD_THRESHOLD and s["fee_sol"] < MIN_HIGH_VOLUME_FEE_SOL:
+                        print(
+                            f"  [跳过] 高交易量低手续费 ${s['symbol']} {addr}: "
+                            f"volume=${s['trade_volume_usd']:,.0f}>={HIGH_VOLUME_USD_THRESHOLD:,.0f}, "
+                            f"fee={s['fee_sol']:.2f} SOL<{MIN_HIGH_VOLUME_FEE_SOL:.2f} SOL"
+                        )
                         continue
                     if s["is_dumping"]:
                         continue
@@ -1424,7 +1463,6 @@ def scan_pro():
                             f"卖出进度={s['dump_progress']:.2f}% | "
                             f"前排净流={s['front_holder_netflow']:.0f}U | Top100净流={s['holder_flow_netflow']:.0f}U | "
                             f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | "
-                            f"可买分={s['buy_score']} | 理由={', '.join(s['buy_reasons'])}"
                         )
 
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
@@ -1434,12 +1472,7 @@ def scan_pro():
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
-                            f"🧭 *市场结构*: {s['market_structure']} | 风险: {s['market_structure_risk']}\n"
-                            f"- {s['market_structure_reason']}\n\n"
-                            f"✅ *可买评分*: {s['buy_score']} 分\n"
-                            f"- 理由: {', '.join(s['buy_reasons'])}\n"
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']}\n\n"
-                            f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 同资金/Token来源: {s['source_cluster_desc']}\n"
                             f"- 同源持仓: {s['source_cluster_supply']:.2f}% | ${s['source_cluster_usd_value']:,.0f} | Token数量 {s['source_cluster_amount']:,.0f}\n"

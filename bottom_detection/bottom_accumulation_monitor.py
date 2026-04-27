@@ -34,7 +34,7 @@ TREND_INTERVAL = os.getenv("BOTTOM_TREND_INTERVAL", "1h")
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
-RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "10"))
+RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "30"))
 NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
@@ -46,6 +46,8 @@ MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", str(5 * 3600)))
 MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "10"))
 
 MIN_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_ACCUM_PCT_DELTA", "0.015"))
+MIN_WINDOW_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_WINDOW_ACCUM_PCT_DELTA", "0.10"))
+MIN_SIGNAL_HISTORY_COUNT = int(os.getenv("BOTTOM_MIN_SIGNAL_HISTORY_COUNT", str(RECENT_COMPARE_LIMIT)))
 MIN_DISTRIBUTED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_DISTRIB_PCT_DELTA", "0.015"))
 MIN_ROTATION_PCT = float(os.getenv("BOTTOM_MIN_ROTATION_PCT", "0.02"))
 MIN_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_NETFLOW_USD", "5000"))
@@ -746,6 +748,11 @@ def analyze_snapshot_change(
     historical_analyses = [snap.get("analysis") or {} for snap in recent_history]
     accumulation_hits = sum(1 for item in historical_analyses if item.get("signal_type") in {"accumulation", "rotation"})
     distribution_hits = sum(1 for item in historical_analyses if item.get("signal_type") == "distribution")
+    history_ready = len(recent_history) >= MIN_SIGNAL_HISTORY_COUNT
+    window_accumulation_ready = (
+        history_ready
+        and window_change["accumulation_pct_delta"] >= MIN_WINDOW_ACCUMULATED_PCT_DELTA
+    )
 
     accumulated_delta = last_change["accumulation_pct_delta"]
     distributed_delta = last_change["distribution_pct_delta"]
@@ -765,9 +772,14 @@ def analyze_snapshot_change(
     if tagged_delta >= 0.005:
         score += 15
         reasons.append(f"标签钱包增持{tagged_delta:.2%}")
-    if window_change["accumulation_pct_delta"] >= MIN_ACCUMULATED_PCT_DELTA * 2:
-        score += 20
+    if window_accumulation_ready:
+        score += 40
         reasons.append(f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}")
+    else:
+        reasons.append(
+            f"近{len(recent_history)}次累计增持{window_change['accumulation_pct_delta']:.2%}"
+            f"<{MIN_WINDOW_ACCUMULATED_PCT_DELTA:.0%}"
+        )
     if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
         score += 15
         reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
@@ -794,7 +806,7 @@ def analyze_snapshot_change(
     if accumulation_hits >= 2:
         score += 10
         reasons.append(f"历史连续吸筹/换筹{accumulation_hits}次")
-    if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8:
+    if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8 and window_accumulation_ready:
         score += 20
         signal_type = "rotation"
         reasons.append(f"换筹{turnover_pct:.2%}")
@@ -806,14 +818,21 @@ def analyze_snapshot_change(
         signal_type = "distribution"
         score = max(score - 20, 0)
         reasons.append(f"历史派发{distribution_hits}次")
-    elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation":
+    elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation" and window_accumulation_ready:
         signal_type = "accumulation"
+    elif signal_type != "distribution" and not window_accumulation_ready:
+        signal_type = "watch"
+        score = min(score, MIN_SIGNAL_SCORE - 1)
 
     return {
         "score": min(score, 100),
         "signal_type": signal_type,
         "reasons": reasons,
         "history_count": len(recent_history),
+        "history_ready": history_ready,
+        "min_signal_history_count": MIN_SIGNAL_HISTORY_COUNT,
+        "window_accumulation_ready": window_accumulation_ready,
+        "min_window_accumulation_pct_delta": MIN_WINDOW_ACCUMULATED_PCT_DELTA,
         **pool_stats,
         "window_pool_liquidity_delta": window_pool_stats["pool_liquidity_delta"],
         "window_pool_liquidity_delta_pct": window_pool_stats["pool_liquidity_delta_pct"],
