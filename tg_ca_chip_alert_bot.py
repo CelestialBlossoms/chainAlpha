@@ -25,6 +25,7 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 DEEPSEEK_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "45"))
 DEEPSEEK_MAX_HISTORY = int(os.getenv("DEEPSEEK_MAX_HISTORY", "100"))
+DEEPSEEK_KLINE_CANDLES_PER_SNAPSHOT = int(os.getenv("DEEPSEEK_KLINE_CANDLES_PER_SNAPSHOT", "12"))
 DEEPSEEK_ENABLED = os.getenv("DEEPSEEK_ENABLED", "1") != "0"
 DEEPSEEK_THINKING = os.getenv("DEEPSEEK_THINKING", "enabled")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
@@ -101,6 +102,35 @@ def compact_holder(holder, include_wallet=True):
     return item
 
 
+def compact_candle(candle):
+    return {
+        "ts": candle.get("ts"),
+        "o": candle.get("open"),
+        "h": candle.get("high"),
+        "l": candle.get("low"),
+        "c": candle.get("close"),
+        "v": round_float(candle.get("volume"), 2),
+        "a": round_float(candle.get("amount"), 2),
+    }
+
+
+def compact_kline_summary(summary):
+    summary = summary or {}
+    return {
+        "resolution": summary.get("resolution"),
+        "count": summary.get("count"),
+        "from_ts": summary.get("from_ts"),
+        "to_ts": summary.get("to_ts"),
+        "open": summary.get("open"),
+        "close": summary.get("close"),
+        "change_pct": round_float(summary.get("change_pct"), 2),
+        "high": summary.get("high"),
+        "low": summary.get("low"),
+        "volume_usd": round_float(summary.get("volume_usd"), 2),
+        "last_volume_usd": round_float(summary.get("last_volume_usd"), 2),
+    }
+
+
 def clean_holder_tag_desc(desc):
     desc = str(desc or "未发现重点标签钱包")
     replacements = {
@@ -140,17 +170,30 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
         "created_at": (stats or {}).get("created_at"),
         "fee_sol": (stats or {}).get("fee_sol"),
     }
-    summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders)
+    kline_resolution = bottom_monitor.token_kline_resolution(token)
+    candles = bottom_monitor.fetch_kline(address, kline_resolution)
+    summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders, candles, kline_resolution)
     history = bottom_monitor.recent_snapshots(address, limit=limit)
     analysis = bottom_monitor.analyze_snapshot_change(holders, history, summary)
     analysis["snapshot_count"] = len(history)
     analysis["current_holder_count"] = len(holders)
     analysis["current_snapshot_ts"] = int(time.time())
     analysis["latest_history_snapshot_ts"] = history[0].get("snapshot_ts") if history else None
+    analysis["current_kline"] = {
+        "summary": compact_kline_summary(summary.get("kline")),
+        "candles": [compact_candle(candle) for candle in (summary.get("kline_candles") or [])],
+    }
     analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:100]]
     analysis["history_top100_holders"] = [
         {
             "snapshot_ts": snap.get("snapshot_ts"),
+            "kline": {
+                "summary": compact_kline_summary((snap.get("summary") or {}).get("kline")),
+                "candles": [
+                    compact_candle(candle)
+                    for candle in ((snap.get("summary") or {}).get("kline_candles") or [])[-DEEPSEEK_KLINE_CANDLES_PER_SNAPSHOT:]
+                ],
+            },
             "holders": [compact_holder(holder) for holder in (snap.get("holders") or [])[:100]],
         }
         for snap in history[:DEEPSEEK_MAX_HISTORY]
@@ -200,7 +243,8 @@ def build_deepseek_payload(chain, address, stats, bottom_analysis):
             "associated_supply": stats.get("associated_supply"),
             "dump_progress": stats.get("dump_progress"),
         },
-        "data_note": "Only raw compressed Top100 holder snapshots are provided. No local signal conclusion, score, reasons, or precomputed wallet behavior labels are included.",
+        "data_note": "Only raw compressed current/historical Top100 holder snapshots and K-line data are provided. No local signal conclusion, score, reasons, or precomputed wallet behavior labels are included.",
+        "current_kline": (bottom_analysis or {}).get("current_kline") or {},
         "current_top100_holders": (bottom_analysis or {}).get("current_top_holders") or [],
         "history_top100_snapshots": (bottom_analysis or {}).get("history_top100_holders") or [],
     }
@@ -211,10 +255,13 @@ def call_deepseek_chip_analysis(chain, address, stats, bottom_analysis):
         return ""
     payload = build_deepseek_payload(chain, address, stats, bottom_analysis)
     prompt = (
-        "你是链上筹码操纵分析助手。输入只包含当前实时Top100持仓和最近历史Top100持仓快照，"
-        "没有本地预计算结论。请你自己基于钱包持仓占比、买入/卖出、净流、排名变化、成本、标签和进出Top100情况，"
-        "识别该CA最近是否存在吸筹、换筹、出货、早期钱包持续卖出或砸盘风险。"
-        "请用中文输出，限制在10行内。必须包含：总体结论、吸筹钱包、出货钱包、换筹证据、风险点、后续观察条件。"
+        "你是链上筹码操纵分析助手。输入只包含当前实时Top100持仓、最近历史Top100持仓快照、当前K线和历史K线数据，"
+        "没有本地预计算结论。请你自己基于K线阶段和Top100钱包轨迹分析。"
+        "重点判断：1 当前处于拉升、下跌、横盘吸筹、派发还是洗盘阶段；"
+        "2 下跌阶段是哪些钱包在出货或砸盘；3 横盘阶段是哪些钱包在吸筹；"
+        "4 当前Top100总持仓占比、前排持仓、买卖净流、排名变化是如何变化的；"
+        "5 当前更偏吸筹、换筹、出货还是观察。"
+        "请用中文输出，限制在12行内。必须包含：阶段结论、K线证据、Top100持仓变化、吸筹钱包、出货钱包、换筹证据、风险点、后续观察条件。"
         "不要给出买入建议，不要编造输入里没有的数据。\n\n"
         f"数据JSON:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
