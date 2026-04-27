@@ -622,170 +622,34 @@ def analyze_wallet_creation_clusters(holders_list):
         "conspiracy_wallet_score": min(conspiracy_score, 100),
     }
 
+
+# K-line analysis is disabled in deep_alpha_pro.
+# This scanner is now for new-token chip/holder analysis only, so K-line fetching stays disabled here.
 def parse_kline_rows(raw):
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return []
-    rows = data if isinstance(data, list) else data.get("list") or data.get("data", {}).get("list") or []
-    candles = []
-    for row in rows if isinstance(rows, list) else []:
-        if not isinstance(row, dict):
-            continue
-        ts = safe_float(row.get("time") or row.get("timestamp") or row.get("t"))
-        if ts > 10_000_000_000:
-            ts = ts / 1000
-        close = safe_float(row.get("close") or row.get("c"))
-        if ts <= 0 or close <= 0:
-            continue
-        candles.append({
-            "time": int(ts),
-            "open": safe_float(row.get("open") or row.get("o"), close),
-            "high": safe_float(row.get("high") or row.get("h"), close),
-            "low": safe_float(row.get("low") or row.get("l"), close),
-            "close": close,
-            "volume": safe_float(row.get("volume") or row.get("v")),
-            "amount": safe_float(row.get("amount") or row.get("a")),
-        })
-    return sorted(candles, key=lambda x: x["time"])
+    return []
 
 def fetch_5m_klines(chain, address, lookback_sec):
-    end_ts = int(time.time())
-    start_ts = end_ts - lookback_sec
-    raw = run_command(
-        f"gmgn-cli market kline --chain {chain} --address {address} "
-        f"--resolution 5m --from {start_ts} --to {end_ts} --raw"
-    )
-    return parse_kline_rows(raw)
+    return []
 
 def max_drawdown(candles):
-    peak = 0.0
-    drawdown = 0.0
-    for candle in candles:
-        peak = max(peak, safe_float(candle.get("high")))
-        low = safe_float(candle.get("low"))
-        if peak > 0 and low > 0:
-            drawdown = min(drawdown, (low - peak) / peak)
-    return drawdown
+    return 0.0
 
 def analyze_kline_health(chain, address, age_seconds):
-    age_type = token_age_type(age_seconds)
-    lookback_sec = 60 * 60 if age_type == "新币" else KLINE_LOOKBACK_SEC
-    candles = fetch_5m_klines(chain, address, lookback_sec)
-    if len(candles) < 3:
-        return {
-            "token_age_type": age_type,
-            "kline_candle_count": len(candles),
-            "kline_verdict": "K线不足",
-            "kline_volume_ratio": 0,
-            "kline_score": 0,
-            "spike_high": 0,
-            "retreat_low": 0,
-            "current_price": 0,
-            "spike_retreat_pct": 0,
-            "recovery_from_low_pct": 0,
-        }
-
-    # ---- 冲高回落分析 ----
-    # 找历史最高点
-    highest_idx = 0
-    highest_high = 0
-    for i, c in enumerate(candles):
-        h = safe_float(c.get("high"))
-        if h > highest_high:
-            highest_high = h
-            highest_idx = i
-
-    # 找最高点之后的最低点（冲高回落的低点）
-    retreat_low = highest_high
-    for c in candles[highest_idx:]:
-        low = safe_float(c.get("low"))
-        if low > 0 and low < retreat_low:
-            retreat_low = low
-
-    current_price = safe_float(candles[-1].get("close"))
-
-    # 冲高回落幅度 = (回落低点 - 最高点) / 最高点 * 100
-    spike_retreat_pct = (retreat_low - highest_high) / highest_high * 100 if highest_high > 0 else 0
-
-    # 从低点到当前价的涨跌百分比
-    recovery_from_low_pct = (current_price - retreat_low) / retreat_low * 100 if retreat_low > 0 else 0
-
-    # ---- 量价分析 ----
-    recent = candles[-6:] if len(candles) >= 6 else candles
-    previous = candles[:-6] if len(candles) > 6 else candles
-    recent_open = safe_float(recent[0].get("open"))
-    recent_close = safe_float(recent[-1].get("close"))
-    recent_change = (recent_close - recent_open) / recent_open if recent_open > 0 else 0
-    recent_volume = sum(safe_float(c.get("volume")) for c in recent) / max(1, len(recent))
-    previous_volume = sum(safe_float(c.get("volume")) for c in previous) / max(1, len(previous))
-    volume_ratio = recent_volume / previous_volume if previous_volume > 0 else 0
-
-    score = 50
-    verdict = "价量震荡"
-    if abs(recent_change) >= 0.25 and 0 < volume_ratio <= 0.75:
-        verdict = "缩量大涨" if recent_change > 0 else "缩量大跌"
-        score -= 25
-    elif volume_ratio >= 1.8 and abs(recent_change) <= 0.08:
-        verdict = "放量横盘-换筹"
-        score += 5
-    elif volume_ratio >= 1.3 and recent_change >= 0.10:
-        verdict = "放量上涨-健康"
-        score += 25
-    elif volume_ratio >= 1.3 and recent_change <= -0.10:
-        verdict = "放量下跌-出货压力"
-        score -= 30
-    elif recent_change >= 0.10:
-        verdict = "温和上涨"
-        score += 10
-    elif recent_change <= -0.10:
-        verdict = "缩量回落" if volume_ratio <= 0.9 else "走弱"
-        score -= 15
-
-    if spike_retreat_pct <= -50 and recovery_from_low_pct < 20:
-        verdict = f"{verdict}/高位回落"
-        score -= 20
-
     return {
-        "token_age_type": age_type,
-        "kline_candle_count": len(candles),
-        "kline_verdict": verdict,
-        "kline_volume_ratio": volume_ratio,
-        "kline_score": max(0, min(100, score)),
-        "kline_recent_change_pct": recent_change * 100,
-        "spike_high": highest_high,
-        "retreat_low": retreat_low,
-        "current_price": current_price,
-        "spike_retreat_pct": spike_retreat_pct,
-        "recovery_from_low_pct": recovery_from_low_pct,
+        "token_age_type": token_age_type(age_seconds),
+        "kline_verdict": "disabled",
+        "kline_score": 0,
+        "kline_recent_change_pct": 0,
+        "spike_high": 0,
+        "retreat_low": 0,
+        "current_price": 0,
+        "spike_retreat_pct": 0,
+        "recovery_from_low_pct": 0,
     }
 
-def refine_kline_with_holder_flow(stats):
-    verdict = str(stats.get("kline_verdict") or "")
-    if "放量横盘" not in verdict:
-        return
-    has_absorption = (
-        stats.get("front_holder_netflow", 0) >= MIN_FRONT_HOLDER_NETFLOW_USD
-        or stats.get("holder_flow_netflow", 0) >= MIN_TOP_HOLDER_NETFLOW_USD
-        or stats.get("accumulation_score", 0) >= 45
-        or stats.get("low_sell_supply", 0) >= 5
-    )
-    has_distribution = (
-        stats.get("front_holder_netflow", 0) <= -MIN_FRONT_HOLDER_NETFLOW_USD
-        or stats.get("holder_flow_netflow", 0) <= -MIN_TOP_HOLDER_NETFLOW_USD
-        or stats.get("distribution_score", 0) >= 45
-    )
-    if has_absorption and not has_distribution:
-        stats["kline_verdict"] = "放量横盘-吸筹"
-        stats["kline_score"] = min(100, stats.get("kline_score", 0) + 20)
-    elif has_distribution and not has_absorption:
-        stats["kline_verdict"] = "放量横盘-派发"
-        stats["kline_score"] = max(0, stats.get("kline_score", 0) - 20)
+    return None
 
 def derive_market_structure(stats):
-    kline = str(stats.get("kline_verdict") or "")
     front_flow = stats.get("front_holder_netflow", 0)
     top_flow = stats.get("holder_flow_netflow", 0)
     accumulation = stats.get("accumulation_score", 0)
@@ -795,84 +659,23 @@ def derive_market_structure(stats):
     source_supply = stats.get("source_cluster_supply", 0)
     source_netflow = stats.get("source_cluster_netflow", 0)
     conspiracy = stats.get("conspiracy_wallet_score", 0)
-
-    if "放量横盘-吸筹" in kline and accumulation >= 45 and front_flow >= 0:
-        return {
-            "market_structure": "横盘吸筹",
-            "market_structure_score": 25,
-            "market_structure_reason": "放量横盘且前排/Top100净流入，低卖出钱包支撑",
-            "market_structure_risk": "低",
-        }
-    if "放量横盘" in kline and source_supply >= 8 and source_netflow > 0:
-        return {
-            "market_structure": "同源吸筹",
-            "market_structure_score": 20,
-            "market_structure_reason": "放量横盘叠加同源钱包净买入",
-            "market_structure_risk": "中",
-        }
-    if "放量上涨-健康" in kline and accumulation >= 35 and distribution < 45:
-        return {
-            "market_structure": "健康上涨",
-            "market_structure_score": 20,
-            "market_structure_reason": "放量上涨且筹码未出现明显派发",
-            "market_structure_risk": "低",
-        }
-    if ("缩量大涨" in kline or "缩量大跌" in kline) and (source_supply >= 8 or stats.get("control_ratio", 0) >= 30):
-        return {
-            "market_structure": "高控盘波动",
-            "market_structure_score": -35,
-            "market_structure_reason": "缩量大幅波动叠加筹码/同源集中，价格易被少量资金推动",
-            "market_structure_risk": "高",
-        }
-    if "放量下跌" in kline and (distribution >= 45 or front_flow < 0 or top_flow < 0):
-        return {
-            "market_structure": "放量派发",
-            "market_structure_score": -40,
-            "market_structure_reason": "放量下跌叠加前排/Top100流出",
-            "market_structure_risk": "高",
-        }
-    if "放量横盘-派发" in kline or (distribution >= 45 and high_sell_supply >= 5):
-        return {
-            "market_structure": "横盘派发",
-            "market_structure_score": -35,
-            "market_structure_reason": "价格横住但高卖出钱包和出货模型偏强",
-            "market_structure_risk": "高",
-        }
-    if "拉高回落" in kline:
-        return {
-            "market_structure": "拉高回落",
-            "market_structure_score": -30,
-            "market_structure_reason": "当前价从高位明显回撤，追高风险大",
-            "market_structure_risk": "高",
-        }
     if conspiracy >= 50 and source_supply >= 5:
-        return {
-            "market_structure": "批量钱包控盘",
-            "market_structure_score": -25,
-            "market_structure_reason": "新/同批钱包风险高且同源持仓明显",
-            "market_structure_risk": "高",
-        }
+        return {"market_structure": "batch_wallet_control", "market_structure_score": -25, "market_structure_reason": "same-batch wallet risk and same-source holding are both high", "market_structure_risk": "high"}
+    if distribution >= 45 and (high_sell_supply >= 5 or front_flow < 0 or top_flow < 0):
+        return {"market_structure": "distribution_pressure", "market_structure_score": -35, "market_structure_reason": "front/top100 holders show sell pressure", "market_structure_risk": "high"}
     if accumulation >= 45 and low_sell_supply >= 5:
-        return {
-            "market_structure": "筹码吸筹",
-            "market_structure_score": 15,
-            "market_structure_reason": "Top100低卖出钱包和吸筹模型较强",
-            "market_structure_risk": "中",
-        }
-    return {
-        "market_structure": "观察",
-        "market_structure_score": 0,
-        "market_structure_reason": "量价和筹码方向尚未形成明确共振",
-        "market_structure_risk": "中",
-    }
+        return {"market_structure": "holder_accumulation", "market_structure_score": 15, "market_structure_reason": "top holders show net inflow and low sell ratio", "market_structure_risk": "mid"}
+    if source_supply >= 8 and source_netflow > 0:
+        return {"market_structure": "same_source_accumulation", "market_structure_score": 10, "market_structure_reason": "same-source wallets have positive netflow", "market_structure_risk": "mid"}
+    return {"market_structure": "watch", "market_structure_score": 0, "market_structure_reason": "holder flow has no clear accumulation/distribution edge", "market_structure_risk": "mid"}
 
 def inflow_status_text(stats):
     streak = int(stats.get("inflow_streak", 0))
     if streak >= MIN_INFLOW_STREAK:
-        return f"已确认({streak}轮)"
+        return f"confirmed {streak} rounds"
     if streak > 0:
-        return f"未确认({streak}轮)"
-    return "无"
+        return f"unconfirmed {streak} rounds"
+    return "none"
 
 def analyze_holder_flow(holders_list):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
@@ -1300,16 +1103,6 @@ def calc_buy_score(stats):
     elif stats.get("conspiracy_wallet_score", 0) >= 25:
         score -= 10
         reasons.append(f"疑似同批钱包{stats['wallet_creation_cluster_size']}个")
-    if stats.get("kline_score", 0) >= 70:
-        add_score = 5 if stats.get("token_age_type") == "老币" else 15
-        score += add_score
-        reasons.append(f"K线健康{stats['kline_score']}({stats['kline_verdict']})")
-    elif "放量横盘-吸筹" in str(stats.get("kline_verdict") or ""):
-        score += 12
-        reasons.append("放量横盘吸筹")
-    elif stats.get("kline_score", 0) > 0 and stats.get("kline_score", 0) <= 35:
-        score -= 20
-        reasons.append(f"K线弱{stats['kline_score']}({stats['kline_verdict']})")
     structure_score = stats.get("market_structure_score", 0)
     if structure_score:
         score += structure_score
@@ -1479,7 +1272,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         ),
     )
     age_seconds = token_age_seconds(created_at)
-    kline_health = analyze_kline_health(chain, address, age_seconds)
+    token_type = token_age_type(age_seconds)
     flow = analyze_5m_flow(address, trend_row)
     
     # 组装数据
@@ -1494,7 +1287,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "created_at": created_at,
         "created_age": format_age(created_at),
         "created_time": format_created_time(created_at),
-        "token_age_type": kline_health.get("token_age_type", "未知"),
+        "token_age_type": token_type,
         "sm_count": info.get("wallet_tags_stat", {}).get("smart_wallets", 0),
         "kol_count": info.get("wallet_tags_stat", {}).get("renowned_wallets", 0),
         "top10_rate": safe_float(sec.get("top_10_holder_rate")) * 100,
@@ -1527,8 +1320,6 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     stats.update(top10_holders)
     stats.update(holder_tags_costs)
     stats.update(wallet_creation)
-    stats.update(kline_health)
-    refine_kline_with_holder_flow(stats)
     stats.update(derive_market_structure(stats))
     stats["inflow_status"] = inflow_status_text(stats)
     buy_score, buy_reasons = calc_buy_score(stats)
@@ -1586,7 +1377,6 @@ def scan_pro():
                             f"  [候选] ${s['symbol']} | CA={addr} | "
                             f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
                             f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
-                            f"类型={s['token_age_type']} | 量价={s['kline_verdict']} | 冲高回落={s['spike_retreat_pct']:.1f}% | 低点反弹={s['recovery_from_low_pct']:.1f}% | "
                             f"结构={s['market_structure']} | "
                             f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
                             f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
@@ -1608,11 +1398,6 @@ def scan_pro():
                             f"✅ *可买评分*: {s['buy_score']} 分\n"
                             f"- 理由: {', '.join(s['buy_reasons'])}\n"
                             f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']}\n\n"
-                            f"📈 *K线量价分析*\n"
-                            f"- K线数: {s['kline_candle_count']} | 类型: {s['token_age_type']}\n"
-                            f"- 量价判定: {s['kline_verdict']} | 尾段量能: {s['kline_volume_ratio']:.2f}x\n"
-                            f"- 冲高回落: {s['spike_retreat_pct']:.1f}% (最高点 → 回落低点)\n"
-                            f"- 低点反弹: {s['recovery_from_low_pct']:.1f}% (回落低点 → 当前价)\n\n"
                             f"🧬 *资金关联分析 (Top 100)*\n"
                             f"- 疑似关联总控盘: {s['control_ratio']:.1f}%\n"
                             f"- 同资金/Token来源: {s['source_cluster_desc']}\n"
