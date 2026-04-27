@@ -1,0 +1,20 @@
+services:
+  tg-ca-chip-bot:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-tg-ca-bot
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    command:
+      - python
+      - tg_ca_chip_alert_bot.py
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

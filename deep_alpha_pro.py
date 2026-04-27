@@ -1421,7 +1421,7 @@ def analyze_control_and_dump(holders_list, debug=False):
         "verdict": "砸盘中" if is_dumping else ("高度控盘" if control_ratio > 40 else "筹码分散")
     }
 
-def perform_deep_analysis(chain, address, trend_row=None):
+def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True):
     trend_row = trend_row or {}
     # 1. 获取基本信息
     info_raw = run_command(f"gmgn-cli token info --chain {chain} --address {address} --raw")
@@ -1439,7 +1439,7 @@ def perform_deep_analysis(chain, address, trend_row=None):
     non_pool_holder_count = sum(1 for holder in holders_list if not is_pool_holder(holder))
 
     dev_risk = extract_dev_risk(info, sec, trend_row, holders_list)
-    if dev_risk["should_skip"]:
+    if enforce_dev_risk and dev_risk["should_skip"]:
         print(f"  [跳过] dev风险 {address}: {', '.join(dev_risk['reasons'])}")
         return None
     
