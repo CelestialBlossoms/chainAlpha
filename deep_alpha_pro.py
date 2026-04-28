@@ -272,6 +272,7 @@ def get_candidate_snapshot(address):
         "alert_count": int(row[2] or 0),
         "price": safe_float(raw_stats.get("price")),
         "mcap_alert_history": raw_stats.get("mcap_alert_history") or [],
+        "price_alert_history": raw_stats.get("price_alert_history") or [],
     }
     cache_candidate_snapshot(
         address,
@@ -281,6 +282,7 @@ def get_candidate_snapshot(address):
             "price": snapshot["price"],
             "alert_sequence_no": snapshot["alert_count"],
             "mcap_alert_history": snapshot["mcap_alert_history"],
+            "price_alert_history": snapshot["price_alert_history"],
         },
     )
     return snapshot
@@ -323,6 +325,11 @@ def normalize_candidate_snapshot(data):
         "mcap_alert_history": [
             safe_float(value)
             for value in (data.get("mcap_alert_history") or [])
+            if safe_float(value) > 0
+        ],
+        "price_alert_history": [
+            safe_float(value)
+            for value in (data.get("price_alert_history") or [])
             if safe_float(value) > 0
         ],
     }
@@ -369,6 +376,7 @@ def cache_candidate_snapshot(address, stats):
         "alert_count": stats.get("alert_sequence_no") or stats.get("previous_alert_count", 0) + 1,
         "price": stats.get("price"),
         "mcap_alert_history": stats.get("mcap_alert_history") or [stats.get("mcap")],
+        "price_alert_history": stats.get("price_alert_history") or [stats.get("price")],
         "updated_at": int(time.time()),
     }
     try:
@@ -1830,6 +1838,19 @@ def scan_pro():
                                 f"{price_observation.get('change_pct', 0):.1%}<{MIN_REPEAT_PRICE_UP_PCT:.0%}"
                             )
                             continue
+                        previous_price_history = [
+                            safe_float(value)
+                            for value in (existing_candidate.get("price_alert_history") or [])
+                            if safe_float(value) > 0
+                        ]
+                        previous_price = previous_price_history[-1] if previous_price_history else safe_float(existing_candidate.get("price"))
+                        current_price = safe_float(s.get("price") or price_observation.get("current_price"))
+                        if previous_price <= 0 or current_price <= previous_price:
+                            print(
+                                f"  [观察跳过] 已推送代币复推价格低于上次推送 ${s['symbol']} {addr}: "
+                                f"current={current_price:.12g} <= previous={previous_price:.12g}"
+                            )
+                            continue
                         previous_holders = int(existing_candidate.get("holder_count") or 0)
                         observation_holder_delta = int(price_observation.get("holder_count_delta") or 0)
                         db_holder_delta = int(s["holder_count"]) - previous_holders
@@ -1863,6 +1884,16 @@ def scan_pro():
                             previous_mcap_history = [safe_float(existing_candidate.get("mcap"))]
                     s["mcap_alert_history"] = [*previous_mcap_history, safe_float(s["mcap"])]
                     s["mcap_alert_history_text"] = format_mcap_history(s["mcap_alert_history"])
+                    previous_price_history = []
+                    if existing_candidate:
+                        previous_price_history = [
+                            safe_float(value)
+                            for value in (existing_candidate.get("price_alert_history") or [])
+                            if safe_float(value) > 0
+                        ]
+                        if not previous_price_history and existing_candidate.get("price"):
+                            previous_price_history = [safe_float(existing_candidate.get("price"))]
+                    s["price_alert_history"] = [*previous_price_history, safe_float(s.get("price"))]
                     s["alert_sequence_no"] = int((existing_candidate or {}).get("alert_count") or 0) + 1
 
                     
