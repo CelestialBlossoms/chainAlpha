@@ -1669,6 +1669,13 @@ def scan_pro():
                     if s["is_dumping"]:
                         continue
                     if existing_candidate:
+                        if not price_observation.get("continuous_up"):
+                            prices_text = " -> ".join(f"{safe_float(price):.12g}" for price in price_observation.get("prices", []))
+                            print(
+                                f"  [观察跳过] 已推送代币复推价格未连续上涨 ${t.get('symbol') or 'UNKNOWN'} {addr}: "
+                                f"{prices_text}"
+                            )
+                            continue
                         if float(price_observation.get("change_pct") or 0) < MIN_REPEAT_PRICE_UP_PCT:
                             print(
                                 f"  [观察跳过] 已推送代币复推涨幅不足 ${t.get('symbol') or 'UNKNOWN'} {addr}: "
@@ -1718,7 +1725,7 @@ def scan_pro():
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
-                            f"复推条件: 三次价格上涨>=10% | 变化 {s['price_observation_change_pct']:+.1f}% | "
+                            f"复推条件: 三次价格连续上涨且涨幅>=10% | 变化 {s['price_observation_change_pct']:+.1f}% | "
                             f"三次观察持有人 +{s['holder_count_delta']} "
                             f"({s.get('observation_first_holder_count', 0)} -> {s.get('observation_current_holder_count', 0)}) | "
                             f"库内对比 {s['db_holder_count_delta']:+d} ({s['previous_holder_count']} -> {s['holder_count']}) | "

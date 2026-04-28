@@ -11,6 +11,7 @@ services:
       - .:/app
       - ./data:/app/data
     environment:
+      TZ: Asia/Shanghai
       BOTTOM_SCAN_INTERVAL: "300"
       BOTTOM_TREND_INTERVAL: "1h"
       BOTTOM_TREND_LIMIT: "100"
