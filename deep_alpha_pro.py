@@ -54,6 +54,8 @@ MIN_REPEAT_PRICE_UP_PCT = 0.20
 SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
 REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
+ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:alert_candidate")
+ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(4 * 60 * 60)))
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -159,6 +161,7 @@ def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
                 milestone = EXCLUDED.milestone
         """, (address, chain, stats.get("symbol"), stats.get("mcap"), f"DeepControl_{interval}"))
     db_op(_op)
+    cache_candidate_snapshot(address, stats)
 
 def run_command(cmd):
     try:
@@ -236,16 +239,13 @@ def get_existing_tg_alert(address):
     return row[0], row[1]
 
 def candidate_exists(address):
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM alpha_token_candidates WHERE address=%s",
-            (address,),
-        )
-        return cur.fetchone() is not None
-    return db_op(_op)
+    return get_candidate_snapshot(address) is not None
 
 def get_candidate_snapshot(address):
+    cached = load_candidate_snapshot_from_redis(address)
+    if cached:
+        return cached
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
@@ -261,17 +261,93 @@ def get_candidate_snapshot(address):
     if not row:
         return None
     raw_stats = row[3] if isinstance(row[3], dict) else {}
-    return {
+    snapshot = {
         "holder_count": int(row[0] or 0),
         "mcap": safe_float(row[1]),
         "alert_count": int(row[2] or 0),
         "price": safe_float(raw_stats.get("price")),
+        "mcap_alert_history": raw_stats.get("mcap_alert_history") or [],
     }
+    cache_candidate_snapshot(
+        address,
+        {
+            "holder_count": snapshot["holder_count"],
+            "mcap": snapshot["mcap"],
+            "price": snapshot["price"],
+            "alert_sequence_no": snapshot["alert_count"],
+            "mcap_alert_history": snapshot["mcap_alert_history"],
+        },
+    )
+    return snapshot
 
-def upsert_tg_alert(address, msg, allow_repeat=False):
-    if candidate_exists(address) and not allow_repeat:
+_SNAPSHOT_NOT_PROVIDED = object()
+
+def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSHOT_NOT_PROVIDED):
+    if existing_candidate is _SNAPSHOT_NOT_PROVIDED:
+        existing_candidate = get_candidate_snapshot(address)
+    if existing_candidate and not allow_repeat:
         return None
     return send_tg_alert(msg)
+
+def format_mcap_short(value):
+    value = safe_float(value)
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.0f}K"
+    return f"{value:.0f}"
+
+def format_mcap_history(values):
+    cleaned = [safe_float(value) for value in values if safe_float(value) > 0]
+    return " -> ".join(format_mcap_short(value) for value in cleaned) if cleaned else "N/A"
+
+def alert_candidate_redis_key(address):
+    return redis_key(ALERT_REDIS_KEY_PREFIX, address)
+
+def normalize_candidate_snapshot(data):
+    if not isinstance(data, dict):
+        return None
+    return {
+        "holder_count": int(safe_float(data.get("holder_count"))),
+        "mcap": safe_float(data.get("mcap")),
+        "alert_count": int(safe_float(data.get("alert_count"))),
+        "price": safe_float(data.get("price")),
+        "mcap_alert_history": [
+            safe_float(value)
+            for value in (data.get("mcap_alert_history") or [])
+            if safe_float(value) > 0
+        ],
+    }
+
+def load_candidate_snapshot_from_redis(address):
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(alert_candidate_redis_key(address))
+        if not raw:
+            return None
+        return normalize_candidate_snapshot(json.loads(raw))
+    except Exception as exc:
+        print(f"  [Redis] 读取复推快照失败 {address[:8]}: {exc}")
+        return None
+
+def cache_candidate_snapshot(address, stats):
+    client = get_redis_client()
+    if client is None:
+        return
+    payload = {
+        "holder_count": stats.get("holder_count"),
+        "mcap": stats.get("mcap"),
+        "alert_count": stats.get("alert_sequence_no") or stats.get("previous_alert_count", 0) + 1,
+        "price": stats.get("price"),
+        "mcap_alert_history": stats.get("mcap_alert_history") or [stats.get("mcap")],
+        "updated_at": int(time.time()),
+    }
+    try:
+        client.setex(alert_candidate_redis_key(address), ALERT_REDIS_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+    except Exception as exc:
+        print(f"  [Redis] 写入复推快照失败 {address[:8]}: {exc}")
 
 def safe_float(value, default=0.0):
     try:
@@ -1748,6 +1824,18 @@ def scan_pro():
                         s["previous_holder_count"] = 0
                         s["holder_count_delta"] = 0
                         s["db_holder_count_delta"] = 0
+                    previous_mcap_history = []
+                    if existing_candidate:
+                        previous_mcap_history = [
+                            safe_float(value)
+                            for value in (existing_candidate.get("mcap_alert_history") or [])
+                            if safe_float(value) > 0
+                        ]
+                        if not previous_mcap_history and existing_candidate.get("mcap"):
+                            previous_mcap_history = [safe_float(existing_candidate.get("mcap"))]
+                    s["mcap_alert_history"] = [*previous_mcap_history, safe_float(s["mcap"])]
+                    s["mcap_alert_history_text"] = format_mcap_history(s["mcap_alert_history"])
+                    s["alert_sequence_no"] = int((existing_candidate or {}).get("alert_count") or 0) + 1
 
                     
                     # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
@@ -1769,6 +1857,7 @@ def scan_pro():
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
+                            f"复推次数: 第{s.get('alert_sequence_no', 1)}次 | 市值路径: {s.get('mcap_alert_history_text', 'N/A')}\n"
                             f"持有人变化: +{s['holder_count_delta']} "
                             f"({s.get('observation_first_holder_count', 0)} -> {s.get('observation_current_holder_count', 0)}) | "
                             f"库内对比 {s['db_holder_count_delta']:+d}\n"
@@ -1819,7 +1908,12 @@ def scan_pro():
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
-                        tg_message_id = upsert_tg_alert(addr, msg, allow_repeat=s.get("repeat_alert", False))
+                        tg_message_id = upsert_tg_alert(
+                            addr,
+                            msg,
+                            allow_repeat=s.get("repeat_alert", False),
+                            existing_candidate=existing_candidate,
+                        )
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         reset_price_observation(addr)
                     
