@@ -607,6 +607,25 @@ def first_nested_value(*sources, paths=()):
                 return value
     return None
 
+def extract_token_narrative(info, trend_row):
+    value = first_nested_value(
+        info,
+        trend_row,
+        paths=(
+            ("link", "description"),
+            ("description",),
+            ("trans_name_zhcn",),
+            ("name",),
+            ("link", "twitter_username"),
+            ("twitter_username",),
+            ("link", "website"),
+            ("website",),
+            ("link", "telegram"),
+            ("telegram",),
+        ),
+    )
+    return str(value or "").strip()[:180]
+
 def calc_mcap(*sources):
     price = first_float(*sources, keys=("price",))
     circulating_supply = first_float(*sources, keys=("circulating_supply",))
@@ -1257,12 +1276,13 @@ def analyze_top10_holders(holders_list):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     buckets = {}
     lines = []
-    for size in (10, 20, 30, 50, 100):
+    for size in (10, 100):
         wallets = non_pool[:size]
         supply = sum(safe_float(h.get("amount_percentage")) * 100 for h in wallets)
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
         profit = sum(safe_float(h.get("profit")) for h in wallets)
+        profit_pct = (profit / buy_volume * 100) if buy_volume > 0 else 0
         buy_tx = sum(safe_float(h.get("buy_tx_count_cur")) for h in wallets)
         sell_tx = sum(safe_float(h.get("sell_tx_count_cur")) for h in wallets)
         netflow = sum(holder_net_buy_usd(h) for h in wallets)
@@ -1271,13 +1291,19 @@ def analyze_top10_holders(holders_list):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "profit": profit,
+            "profit_pct": profit_pct,
             "buy_tx": int(buy_tx),
             "sell_tx": int(sell_tx),
             "netflow": netflow,
         }
-        lines.append(
-            f"Top{size}: 持仓{supply:.1f}% | 买${buy_volume:,.0f} | 卖${sell_volume:,.0f} | 盈亏${profit:,.0f} | 次数{int(buy_tx)}/{int(sell_tx)}"
+    lines = [
+        (
+            f"Top{size}: 持仓{buckets[size]['supply']:.1f}% | "
+            f"盈利{buckets[size]['profit_pct']:+.1f}% | "
+            f"次数{buckets[size]['buy_tx']}/{buckets[size]['sell_tx']}"
         )
+        for size in (10, 100)
+    ]
     top10 = buckets[10]
     return {
         "rank_bucket_stats": buckets,
@@ -1368,6 +1394,8 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
         netflow = sum(holder_net_buy_usd(h) for h in wallets)
+        profit = sum(safe_float(h.get("profit")) for h in wallets)
+        profit_pct = (profit / buy_volume * 100) if buy_volume > 0 else 0
         position_value = sum(holder_position_value_usd(h) for h in wallets)
         avg_cost = weighted_avg_cost(wallets)
         mid_cost = median_cost(wallets)
@@ -1378,15 +1406,15 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": buy_volume,
             "sell_volume": sell_volume,
             "netflow": netflow,
+            "profit": profit,
+            "profit_pct": profit_pct,
             "position_value": position_value,
             "avg_cost": avg_cost,
             "median_cost": mid_cost,
         }
         if wallets:
             tag_lines.append(
-                f"{label}{len(wallets)}个/{supply:.1f}% 持仓${position_value:,.0f} "
-                f"买${buy_volume:,.0f} 卖${sell_volume:,.0f} 净${netflow:,.0f} "
-                f"均{format_chain_price(avg_cost)} 中{format_chain_price(mid_cost)}"
+                f"{label}{len(wallets)}个 持仓{supply:.1f}%/${position_value:,.0f} 盈利{profit_pct:+.1f}%"
             )
 
     creation_clusters = find_creation_clusters(non_pool, min_wallets=2, max_clusters=5)
@@ -1425,11 +1453,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "cost_range": cost_range,
         }
         tag_lines.append(
-            f"同批创建簇汇总 {len(creation_clusters)}簇/{cluster_count}个 "
-            f"持仓{cluster_supply:.1f}%/${cluster_position_value:,.0f} "
-            f"买${cluster_buy_volume:,.0f} 卖${cluster_sell_volume:,.0f} 净${cluster_netflow:,.0f} "
-            f"均{format_chain_price(cluster_avg_cost)} 中{format_chain_price(cluster_median_cost)} "
-            f"区间{cost_range} 盈亏{format_pnl_pct(current_price, cluster_avg_cost)}"
+            f"同批创建簇汇总{len(creation_clusters)}簇/{cluster_count}个 持仓{cluster_supply:.1f}%/${cluster_position_value:,.0f} 盈利{format_pnl_pct(current_price, cluster_avg_cost)}"
         )
 
     top20 = non_pool[:20]
@@ -1730,6 +1754,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     current_price = safe_float(info.get("price") or trend_row.get("price"))
     holder_tags_costs = analyze_holder_tags_and_costs(holders_list, current_price)
     wallet_creation = analyze_wallet_creation_clusters(holders_list)
+    narrative = extract_token_narrative(info, trend_row)
     trend_mcap = calc_mcap(trend_row)
     info_mcap = calc_mcap(info)
     mcap = calc_mcap(trend_row, info)
@@ -1767,6 +1792,8 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     # 组装数据
     stats = {
         "symbol": info.get("symbol"),
+        "name": info.get("name") or trend_row.get("name"),
+        "narrative": narrative,
         "mcap": mcap,
         "trend_mcap": trend_mcap,
         "info_mcap": info_mcap,
@@ -2015,14 +2042,12 @@ def scan_pro():
                         sm_stats = s.get('holder_tag_stats', {}).get('smart_degen', {})
                         kol_stats = s.get('holder_tag_stats', {}).get('renowned', {})
                         sm_detail = (
-                            f"聪明钱{sm_stats['count']}个/{sm_stats['supply']:.1f}% "
-                            f"持仓${sm_stats['position_value']:,.0f} "
-                            f"买${sm_stats['buy_volume']:,.0f} 卖${sm_stats['sell_volume']:,.0f} 净${sm_stats['netflow']:,.0f}"
+                            f"聪明钱{sm_stats['count']}个 持仓{sm_stats['supply']:.1f}%/${sm_stats['position_value']:,.0f} "
+                            f"盈利{sm_stats.get('profit_pct', 0):+.1f}%"
                         ) if sm_stats.get('count', 0) > 0 else "聪明钱0个"
                         kol_detail = (
-                            f"KOL{kol_stats['count']}个/{kol_stats['supply']:.1f}% "
-                            f"持仓${kol_stats['position_value']:,.0f} "
-                            f"买${kol_stats['buy_volume']:,.0f} 卖${kol_stats['sell_volume']:,.0f} 净${kol_stats['netflow']:,.0f}"
+                            f"KOL{kol_stats['count']}个 持仓{kol_stats['supply']:.1f}%/${kol_stats['position_value']:,.0f} "
+                            f"盈利{kol_stats.get('profit_pct', 0):+.1f}%"
                         ) if kol_stats.get('count', 0) > 0 else "KOL0个"
 
                         dev_address = short_addr(s.get("creator_address")) if s.get("creator_address") else "未知"
@@ -2031,40 +2056,29 @@ def scan_pro():
                             f"{format_usd_short(s.get('dev_hold_value_usd'))} | "
                             f"买{format_usd_short(s.get('dev_buy_usd'))} 卖{format_usd_short(s.get('dev_sell_usd'))} "
                             f"净{format_usd_short(s.get('dev_netflow_usd'))} | "
-                            f"已卖{s.get('dev_sell_amount_rate', 0) * 100:.1f}%\n"
-                            f"- Dev发币: open {int(s.get('creator_open_count') or 0)} | "
-                            f"created {int(s.get('creator_created_count') or 0)} | "
-                            f"状态 {s.get('creator_token_status') or '未知'}"
+                            f"已卖{s.get('dev_sell_amount_rate', 0) * 100:.1f}%"
                         )
+                        narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
                         msg = (
                             f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{repeat_line}"
-                            f"*Dev数据*\n"
-                            f"{dev_detail}\n\n"
+                            f"{narrative_line}"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
-                            f"👥 *共识强度*\n"
-                            f"- Smart Money: {s['sm_count']} | KOL: {s['kol_count']}\n\n"
-                            f"- 5m买/卖: {s['buys_5m']}/{s['sells_5m']}\n\n"
                             f"🏷️ *标签钱包分析*\n"
                             f"{sm_detail}\n"
                             f"{kol_detail}\n"
                             f"{s['holder_tag_desc']}\n\n"
-                            f"📐 *成本线分析*\n"
-                            f"- 链上价格: {format_chain_price(s['price'])}\n"
-                            f"- Top20成本: {format_chain_price(s['top20_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top20_avg_cost'])}\n"
-                            f"- Top50成本: {format_chain_price(s['top50_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top50_avg_cost'])}\n"
-                            f"- Top100成本: {format_chain_price(s['top100_avg_cost'])} | 盈亏 {format_pnl_pct(s['price'], s['top100_avg_cost'])}\n"
-                            f"- 主成本区: {s['dominant_cost_band']} {s['dominant_cost_band_count']}个/{s['dominant_cost_band_supply']:.1f}%\n"
-                            f"- 区间分布:\n{s['cost_band_desc']}\n\n"
                             f"📊 *基础结构*\n"
                             f"{s['rank_bucket_desc']}\n"
                             f"- 捆绑持仓: {s['associated_supply']:.1f}% | 钱包 {s['associated_count']}个 | 卖出进度 {s['dump_progress']:.1f}%\n"
                             f"- 狙击手数量: {s['snipers']}\n"
                             f"- 风险分数: {s['rug_ratio']}\n\n"
+                            f"*Dev数据*\n"
+                            f"{dev_detail}\n\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
