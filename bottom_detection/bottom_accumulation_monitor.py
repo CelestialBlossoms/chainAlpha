@@ -57,6 +57,9 @@ MIN_DISTRIBUTED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_DISTRIB_PCT_DELTA", "0.0
 MIN_ROTATION_PCT = float(os.getenv("BOTTOM_MIN_ROTATION_PCT", "0.02"))
 MIN_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_NETFLOW_USD", "5000"))
 MIN_SIGNAL_SCORE = int(os.getenv("BOTTOM_MIN_SIGNAL_SCORE", "60"))
+NEW_TOKEN_NOTIFY_PRICE_UP_PCT = float(os.getenv("BOTTOM_NEW_TOKEN_NOTIFY_PRICE_UP_PCT", "10"))
+OLD_TOKEN_NOTIFY_PRICE_UP_PCT = float(os.getenv("BOTTOM_OLD_TOKEN_NOTIFY_PRICE_UP_PCT", "5"))
+ACCUMULATION_ENDING_RATIO = float(os.getenv("BOTTOM_ACCUM_ENDING_RATIO", "0.45"))
 
 SOL_CA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,50}$")
 
@@ -978,6 +981,18 @@ def analyze_snapshot_change(
     score = 0
     reasons = []
     signal_type = "watch"
+    kline_summary = (current_summary or {}).get("kline") or {}
+    kline_price_change_pct = to_float(kline_summary.get("change_pct"))
+    age_sec = to_int((current_summary or {}).get("age_sec"))
+    token_is_new = age_sec > 0 and age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC
+    required_price_change_pct = NEW_TOKEN_NOTIFY_PRICE_UP_PCT if token_is_new else OLD_TOKEN_NOTIFY_PRICE_UP_PCT
+    accumulation_ending_ready = (
+        window_accumulation_ready
+        and accumulated_delta >= 0
+        and accumulated_delta <= max(window_accumulation_pct * ACCUMULATION_ENDING_RATIO, MIN_ACCUMULATED_PCT_DELTA)
+        and window_distribution_pct < window_accumulation_pct * 0.5
+    )
+    price_confirmation_ready = kline_price_change_pct >= required_price_change_pct
 
     if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
         score += 30
@@ -1074,6 +1089,13 @@ def analyze_snapshot_change(
         "enough_history_for_window": enough_history_for_window,
         "min_signal_history_count": MIN_SIGNAL_HISTORY_COUNT,
         "window_accumulation_ready": window_accumulation_ready,
+        "accumulation_ending_ready": accumulation_ending_ready,
+        "accumulation_ending_ratio": ACCUMULATION_ENDING_RATIO,
+        "price_confirmation_ready": price_confirmation_ready,
+        "price_change_pct": kline_price_change_pct,
+        "required_price_change_pct": required_price_change_pct,
+        "token_age_sec": age_sec,
+        "token_is_new": token_is_new,
         "min_window_accumulation_pct_delta": MIN_WINDOW_ACCUMULATED_PCT_DELTA,
         "early_distribution_dominates": early_distribution_dominates,
         **pool_stats,
@@ -1241,6 +1263,8 @@ def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
         f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | "
         f"本轮池变动: ${analysis.get('pool_liquidity_delta', 0):,.0f}/{analysis.get('pool_liquidity_delta_pct', 0):.1%}\n"
         f"主池: {analysis.get('pool_main_exchange') or '未知'} | 主池占比: {analysis.get('pool_main_share', 0):.1%}\n"
+        f"价格确认: {analysis.get('price_change_pct', 0):.1f}% / 要求{analysis.get('required_price_change_pct', 0):.1f}% | "
+        f"吸筹末段: {'是' if analysis.get('accumulation_ending_ready') else '否'}\n"
         f"增持: {analysis['accumulation_pct_delta']:.2%} | 减持: {analysis['distribution_pct_delta']:.2%}\n"
         f"新进: {analysis['new_holder_pct']:.2%} | 退出: {analysis['exited_holder_pct']:.2%}\n"
         f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
@@ -1252,7 +1276,34 @@ def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     )
 
 def should_notify(analysis: dict[str, Any]) -> bool:
-    return analysis.get("score", 0) >= MIN_SIGNAL_SCORE or analysis.get("signal_type") == "distribution"
+    return (
+        analysis.get("signal_type") == "accumulation"
+        and analysis.get("score", 0) > MIN_SIGNAL_SCORE
+        and bool(analysis.get("window_accumulation_ready"))
+        and bool(analysis.get("accumulation_ending_ready"))
+        and bool(analysis.get("price_confirmation_ready"))
+        and to_float(analysis.get("window_distribution_pct_delta")) < to_float(analysis.get("window_accumulation_pct_delta")) * 0.5
+    )
+
+
+def notify_skip_reason(analysis: dict[str, Any]) -> str:
+    if analysis.get("signal_type") != "accumulation":
+        return f"非吸筹类型({signal_type_text(analysis.get('signal_type'))})"
+    if analysis.get("score", 0) <= MIN_SIGNAL_SCORE:
+        return f"分数{analysis.get('score', 0)}<={MIN_SIGNAL_SCORE}"
+    if not analysis.get("window_accumulation_ready"):
+        return f"窗口吸筹未达标{analysis.get('window_accumulation_pct_delta', 0):.2%}"
+    if not analysis.get("accumulation_ending_ready"):
+        return (
+            f"吸筹未到末段，本轮{analysis.get('accumulation_pct_delta', 0):.2%}/"
+            f"窗口{analysis.get('window_accumulation_pct_delta', 0):.2%}"
+        )
+    if not analysis.get("price_confirmation_ready"):
+        return (
+            f"涨幅{analysis.get('price_change_pct', 0):.1f}%"
+            f"<{analysis.get('required_price_change_pct', 0):.1f}%"
+        )
+    return "派发占比过高"
 
 
 def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
@@ -1273,11 +1324,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
         f"acc={analysis.get('accumulation_pct_delta', 0):.2%} "
         f"dist={analysis.get('distribution_pct_delta', 0):.2%} "
         f"win_acc={analysis.get('window_accumulation_pct_delta', 0):.2%} "
+        f"price={analysis.get('price_change_pct', 0):.1f}%/{analysis.get('required_price_change_pct', 0):.1f}% "
+        f"ending={analysis.get('accumulation_ending_ready')} "
         f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis):
         send_tg(signal_text(token, analysis))
+    elif notify and analysis.get("score", 0) > MIN_SIGNAL_SCORE:
+        print(f"{token_label(token)} no notify: {notify_skip_reason(analysis)}")
     return True
 
 
