@@ -136,13 +136,15 @@ def is_pool_holder(holder: dict[str, Any]) -> bool:
 
 
 def calc_mcap(row: dict[str, Any]) -> float:
+    price = to_float(row.get("price"))
+    circulating_supply = to_float(row.get("circulating_supply"))
+    if price > 0 and circulating_supply > 0:
+        return price * circulating_supply
     for key in ("market_cap", "usd_market_cap", "mcap", "fdv", "fully_diluted_valuation"):
         value = to_float(row.get(key))
         if value > 0:
             return value
-    price = to_float(row.get("price"))
-    supply = to_float(row.get("circulating_supply") or row.get("total_supply") or row.get("supply"))
-    return price * supply if price > 0 and supply > 0 else 0.0
+    return 0.0
 
 
 def first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:

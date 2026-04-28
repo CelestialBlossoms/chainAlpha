@@ -276,6 +276,20 @@ def fetch_top_holders(address: str) -> list[dict[str, Any]]:
     return holders if isinstance(holders, list) else []
 
 
+def calc_mcap(row: dict[str, Any]) -> float:
+    price = to_float(row.get("price"))
+    circulating_supply = to_float(row.get("circulating_supply"))
+    if price > 0 and circulating_supply > 0:
+        return price * circulating_supply
+    return to_float(
+        row.get("market_cap")
+        or row.get("usd_market_cap")
+        or row.get("mcap")
+        or row.get("fdv")
+        or row.get("fully_diluted_valuation")
+    )
+
+
 @dataclass
 class TokenView:
     address: str
@@ -324,7 +338,7 @@ def normalize_token(raw: dict[str, Any]) -> TokenView:
         address=str(raw.get("address") or ""),
         symbol=symbol,
         name=name,
-        market_cap=to_float(raw.get("market_cap") or raw.get("usd_market_cap")),
+        market_cap=calc_mcap(raw),
         price=to_float(raw.get("price")),
         liquidity=to_float(raw.get("liquidity")),
         volume=to_float(raw.get("volume") or raw.get("volume_24h")),

@@ -628,6 +628,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
         "symbol": (stats or {}).get("symbol"),
         "market_cap": (stats or {}).get("mcap"),
         "price": (stats or {}).get("price"),
+        "circulating_supply": (stats or {}).get("circulating_supply"),
         "liquidity": (stats or {}).get("pool_liquidity"),
         "created_at": (stats or {}).get("created_at"),
         "fee_sol": (stats or {}).get("fee_sol"),

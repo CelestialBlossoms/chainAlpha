@@ -287,15 +287,13 @@ def first_nested_value(*sources, paths=()):
     return None
 
 def calc_mcap(*sources):
-    mcap = first_float(
+    price = first_float(*sources, keys=("price",))
+    circulating_supply = first_float(*sources, keys=("circulating_supply",))
+    if price > 0 and circulating_supply > 0:
+        return price * circulating_supply
+    return first_float(
         *sources,
         keys=("market_cap", "usd_market_cap", "mcap", "fdv", "fully_diluted_valuation"),
-    )
-    if mcap > 0:
-        return mcap
-    info = sources[0] if sources and isinstance(sources[0], dict) else {}
-    return safe_float(info.get("price")) * safe_float(
-        first_value(info, keys=("circulating_supply", "total_supply", "supply"))
     )
 
 def extract_fee_sol(*sources):
@@ -1343,8 +1341,11 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     wallet_creation = analyze_wallet_creation_clusters(holders_list)
     trend_mcap = calc_mcap(trend_row)
     info_mcap = calc_mcap(info)
-    mcap = trend_mcap or info_mcap
-    mcap_source = "trending" if trend_mcap > 0 else "token_info"
+    mcap = calc_mcap(trend_row, info)
+    if first_float(trend_row, info, keys=("price",)) > 0 and first_float(trend_row, info, keys=("circulating_supply",)) > 0:
+        mcap_source = "price_x_circulating_supply"
+    else:
+        mcap_source = "fallback_returned_field"
     holder_count = first_float(
         info,
         trend_row,
@@ -1379,6 +1380,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "trend_mcap": trend_mcap,
         "info_mcap": info_mcap,
         "mcap_source": mcap_source,
+        "circulating_supply": first_float(trend_row, info, keys=("circulating_supply",)),
         "holder_count": int(holder_count),
         "fee_sol": fee_sol,
         "trade_volume_usd": trade_volume_usd,
