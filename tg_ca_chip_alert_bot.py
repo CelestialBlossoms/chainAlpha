@@ -387,6 +387,237 @@ def clean_holder_tag_desc(desc):
     return desc
 
 
+def raw_wallet_address(row):
+    return str(row.get("address") or row.get("wallet_address") or row.get("account_address") or "").strip()
+
+
+def short_addr(value):
+    value = str(value or "")
+    return f"{value[:6]}...{value[-4:]}" if len(value) > 12 else value
+
+
+def raw_tags(row):
+    tags = []
+    for key in ("maker_token_tags", "tags"):
+        value = row.get(key)
+        if isinstance(value, list):
+            tags.extend(str(item) for item in value if item)
+        elif value:
+            tags.append(str(value))
+    tag_v2 = row.get("wallet_tag_v2")
+    if tag_v2:
+        tags.append(str(tag_v2))
+    seen = set()
+    result = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            result.append(tag)
+    return result
+
+
+def transfer_source(row, key):
+    data = row.get(key)
+    if not isinstance(data, dict):
+        return ""
+    for source_key in ("from_address", "src_address", "source", "address", "from"):
+        value = str(data.get(source_key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def transfer_token_name(row, key):
+    data = row.get(key)
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("name") or data.get("symbol") or data.get("type") or "").strip()
+
+
+def normalize_raw_wallet(row, rank_no=0, role="holder"):
+    wallet = raw_wallet_address(row)
+    if not wallet or bottom_monitor.is_pool_holder(row):
+        return None
+    buy = float(row.get("buy_volume_cur") or 0)
+    sell = float(row.get("sell_volume_cur") or 0)
+    net = float(row.get("netflow_usd") or (buy - sell))
+    return {
+        "wallet": wallet,
+        "rank": rank_no,
+        "roles": {role},
+        "hold_pct": float(row.get("amount_percentage") or 0),
+        "usd_value": float(row.get("usd_value") or 0),
+        "buy_volume": buy,
+        "sell_volume": sell,
+        "netflow": net,
+        "buy_count": int(float(row.get("buy_tx_count_cur") or 0)),
+        "sell_count": int(float(row.get("sell_tx_count_cur") or 0)),
+        "profit": float(row.get("profit") or 0),
+        "realized_profit": float(row.get("realized_profit") or 0),
+        "unrealized_profit": float(row.get("unrealized_profit") or 0),
+        "avg_cost": float(row.get("avg_cost") or row.get("cost_cur") or row.get("cost") or 0),
+        "avg_sold": float(row.get("avg_sold") or 0),
+        "sell_amount_pct": float(row.get("sell_amount_percentage") or 0),
+        "start_holding_at": int(float(row.get("start_holding_at") or 0)),
+        "end_holding_at": int(float(row.get("end_holding_at") or 0)),
+        "last_active_at": int(float(row.get("last_active_timestamp") or 0)),
+        "created_at": int(float(row.get("created_at") or 0)),
+        "tags": raw_tags(row),
+        "native_source": transfer_source(row, "native_transfer"),
+        "token_source": transfer_source(row, "token_transfer_in") or transfer_source(row, "token_transfer"),
+        "token_source_name": transfer_token_name(row, "token_transfer_in") or transfer_token_name(row, "token_transfer"),
+        "transfer_in_count": int(float(row.get("transfer_in_count") or 0)),
+        "transfer_out_count": int(float(row.get("transfer_out_count") or 0)),
+    }
+
+
+def fetch_token_traders(address, chain="sol", limit=100):
+    rows = []
+    seen = set()
+    for order_by in ("sell_volume_cur", "buy_volume_cur"):
+        data = bottom_monitor.run_gmgn(
+            [
+                "token",
+                "traders",
+                "--chain",
+                chain,
+                "--address",
+                address,
+                "--limit",
+                str(limit),
+                "--order-by",
+                order_by,
+                "--direction",
+                "desc",
+            ],
+            timeout=90,
+        )
+        if not isinstance(data, dict):
+            continue
+        traders = data.get("list") or data.get("data", {}).get("list") or []
+        for row in traders if isinstance(traders, list) else []:
+            wallet = raw_wallet_address(row)
+            if not wallet or wallet in seen:
+                continue
+            seen.add(wallet)
+            rows.append(row)
+    return rows
+
+
+def merge_wallet_record(target, item):
+    wallet = item.get("wallet")
+    existing = target.get(wallet)
+    if not existing:
+        target[wallet] = item
+        return
+    existing["roles"].update(item.get("roles") or set())
+    for key in ("hold_pct", "usd_value", "buy_volume", "sell_volume", "buy_count", "sell_count", "profit", "realized_profit", "unrealized_profit", "sell_amount_pct"):
+        existing[key] = max(float(existing.get(key) or 0), float(item.get(key) or 0))
+    existing["netflow"] = existing.get("buy_volume", 0) - existing.get("sell_volume", 0)
+    for key in ("native_source", "token_source", "token_source_name"):
+        if not existing.get(key) and item.get(key):
+            existing[key] = item.get(key)
+    existing["tags"] = sorted(set(existing.get("tags") or []) | set(item.get("tags") or []))
+    if not existing.get("rank") or (item.get("rank") and item.get("rank") < existing.get("rank")):
+        existing["rank"] = item.get("rank")
+    for key in ("start_holding_at", "end_holding_at", "last_active_at", "created_at"):
+        if not existing.get(key) and item.get(key):
+            existing[key] = item.get(key)
+
+
+def group_wallet_sources(records, source_key):
+    groups = {}
+    for row in records:
+        source = str(row.get(source_key) or "").strip()
+        if not source:
+            continue
+        item = groups.setdefault(
+            source,
+            {
+                "source": source,
+                "wallet_count": 0,
+                "hold_pct": 0.0,
+                "usd_value": 0.0,
+                "buy_volume": 0.0,
+                "sell_volume": 0.0,
+                "netflow": 0.0,
+                "profit": 0.0,
+                "wallets": [],
+                "token_name": row.get("token_source_name") if source_key == "token_source" else "",
+            },
+        )
+        item["wallet_count"] += 1
+        item["hold_pct"] += float(row.get("hold_pct") or 0)
+        item["usd_value"] += float(row.get("usd_value") or 0)
+        item["buy_volume"] += float(row.get("buy_volume") or 0)
+        item["sell_volume"] += float(row.get("sell_volume") or 0)
+        item["netflow"] += float(row.get("netflow") or 0)
+        item["profit"] += float(row.get("profit") or 0)
+        if len(item["wallets"]) < 4:
+            item["wallets"].append(row.get("wallet"))
+    return sorted(groups.values(), key=lambda x: (x["hold_pct"], x["wallet_count"], x["netflow"]), reverse=True)
+
+
+def analyze_traders_and_sources(raw_holders, raw_traders):
+    holder_records = []
+    for rank_no, row in enumerate(raw_holders or [], start=1):
+        item = normalize_raw_wallet(row, rank_no, "top100")
+        if item:
+            holder_records.append(item)
+
+    trader_records = []
+    for rank_no, row in enumerate(raw_traders or [], start=1):
+        item = normalize_raw_wallet(row, rank_no, "trader")
+        if item:
+            trader_records.append(item)
+
+    merged = {}
+    for item in holder_records + trader_records:
+        merge_wallet_record(merged, item)
+    records = list(merged.values())
+    top100_wallets = {item["wallet"] for item in holder_records}
+    traders_in_top100 = [item for item in trader_records if item["wallet"] in top100_wallets]
+    traders_out_top100 = [item for item in trader_records if item["wallet"] not in top100_wallets]
+    top_buyers = sorted(records, key=lambda x: (x["buy_volume"], x["hold_pct"]), reverse=True)[:5]
+    top_sellers = sorted(records, key=lambda x: (x["sell_volume"], x["sell_amount_pct"]), reverse=True)[:5]
+    exited_sellers = [
+        item for item in trader_records
+        if item["wallet"] not in top100_wallets and (item.get("end_holding_at") or item.get("sell_volume", 0) > 0)
+    ]
+    exited_sellers = sorted(exited_sellers, key=lambda x: (x["sell_volume"], x["sell_amount_pct"]), reverse=True)[:5]
+    tagged = [item for item in records if item.get("tags")]
+    native_sources = group_wallet_sources(records, "native_source")[:3]
+    token_sources = group_wallet_sources(records, "token_source")[:3]
+
+    def public_wallets(items):
+        result = []
+        for item in items:
+            row = dict(item)
+            row["roles"] = sorted(row.get("roles") or [])
+            result.append(row)
+        return result
+
+    return {
+        "holder_count": len(holder_records),
+        "trader_count": len(trader_records),
+        "merged_wallet_count": len(records),
+        "traders_in_top100": len(traders_in_top100),
+        "traders_out_top100": len(traders_out_top100),
+        "top100_buy": sum(item["buy_volume"] for item in holder_records),
+        "top100_sell": sum(item["sell_volume"] for item in holder_records),
+        "trader_buy": sum(item["buy_volume"] for item in trader_records),
+        "trader_sell": sum(item["sell_volume"] for item in trader_records),
+        "trader_net": sum(item["netflow"] for item in trader_records),
+        "tagged_wallet_count": len(tagged),
+        "tagged_hold_pct": sum(item["hold_pct"] for item in tagged),
+        "top_buyers": public_wallets(top_buyers),
+        "top_sellers": public_wallets(top_sellers),
+        "exited_sellers": public_wallets(exited_sellers),
+        "native_sources": native_sources,
+        "token_sources": token_sources,
+    }
+
+
 def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     raw_holders = bottom_monitor.fetch_top100_holders(address)
     if not raw_holders:
@@ -404,6 +635,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     kline_resolution = bottom_monitor.token_kline_resolution(token)
     candles = bottom_monitor.fetch_kline(address, kline_resolution)
     summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders, candles, kline_resolution)
+    raw_traders = fetch_token_traders(address, chain=chain, limit=100)
     history = bottom_monitor.recent_snapshots(address, limit=limit)
     analysis = bottom_monitor.analyze_snapshot_change(holders, history, summary)
     analysis["snapshot_count"] = len(history)
@@ -415,6 +647,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
         "candles": [compact_candle(candle) for candle in (summary.get("kline_candles") or [])[-24:]],
     }
     analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:100]]
+    analysis["trader_source_analysis"] = analyze_traders_and_sources(raw_holders, raw_traders)
     analysis["phase_wallet_flows"] = analyze_phase_wallet_flows(summary, holders, history[:DEEPSEEK_MAX_HISTORY])
     return analysis
 
@@ -555,6 +788,55 @@ def local_phase_rule_text(analysis):
     )
 
 
+def trader_wallet_brief(items, mode="buy", limit=3):
+    parts = []
+    for item in (items or [])[:limit]:
+        tags = item.get("tags") or []
+        tags_text = ",".join(str(tag) for tag in tags[:2]) if isinstance(tags, list) else str(tags)
+        suffix = f" {tags_text}" if tags_text else ""
+        metric = f"卖{compact_money(item.get('sell_volume'))}" if mode == "sell" else f"买{compact_money(item.get('buy_volume'))}"
+        hold = float(item.get("hold_pct") or 0)
+        profit = float(item.get("profit") or 0)
+        parts.append(f"{short_addr(item.get('wallet'))} {metric} 持{hold:.2%} 盈亏{compact_money(profit)}{suffix}")
+    return " | ".join(parts) if parts else "暂无明显钱包"
+
+
+def source_group_brief(groups, label):
+    parts = []
+    for group in (groups or [])[:3]:
+        token_name = f"/{group.get('token_name')}" if group.get("token_name") else ""
+        wallets = ",".join(short_addr(wallet) for wallet in (group.get("wallets") or [])[:2])
+        parts.append(
+            f"{short_addr(group.get('source'))}{token_name} "
+            f"{int(group.get('wallet_count') or 0)}个/持{float(group.get('hold_pct') or 0):.2%}/"
+            f"买{compact_money(group.get('buy_volume'))}/卖{compact_money(group.get('sell_volume'))}/"
+            f"净{compact_money(group.get('netflow'))}"
+            f"({wallets})"
+        )
+    return f"- {label}: " + (" | ".join(parts) if parts else "暂无明显同源簇")
+
+
+def trader_source_text(analysis):
+    data = (analysis or {}).get("trader_source_analysis") or {}
+    if not data:
+        return ""
+    return (
+        "Traders + 来源聚合分析\n"
+        f"- 数据覆盖: Top100 {data.get('holder_count', 0)}个 | Traders {data.get('trader_count', 0)}个 | "
+        f"合并钱包 {data.get('merged_wallet_count', 0)}个 | Traders仍在Top100 {data.get('traders_in_top100', 0)}个 | "
+        f"已离开Top100 {data.get('traders_out_top100', 0)}个。\n"
+        f"- Top100买卖: 买{compact_money(data.get('top100_buy'))} | 卖{compact_money(data.get('top100_sell'))}；"
+        f"Traders买卖: 买{compact_money(data.get('trader_buy'))} | 卖{compact_money(data.get('trader_sell'))} | "
+        f"净{compact_money(data.get('trader_net'))}。\n"
+        f"- 标签钱包聚合: {data.get('tagged_wallet_count', 0)}个 | 持仓{float(data.get('tagged_hold_pct') or 0):.2%}。\n"
+        f"- 主要买入钱包: {trader_wallet_brief(data.get('top_buyers'), 'buy')}。\n"
+        f"- 主要卖出钱包: {trader_wallet_brief(data.get('top_sellers'), 'sell')}。\n"
+        f"- 已退出/不在Top100卖出: {trader_wallet_brief(data.get('exited_sellers'), 'sell')}。\n"
+        f"{source_group_brief(data.get('native_sources'), 'SOL资金来源簇')}。\n"
+        f"{source_group_brief(data.get('token_sources'), 'Token转入来源簇')}。"
+    )
+
+
 def bottom_chip_history_text(analysis):
     if not analysis:
         return "最近100次筹码轨迹\n- 暂无 bottom_top100_snapshots 历史数据"
@@ -566,7 +848,8 @@ def bottom_chip_history_text(analysis):
         f"实时Top100 + 最近100次筹码轨迹\n"
         f"- 当前查询: {current_time} | 当前Top100: {analysis.get('current_holder_count', 0)}个 | 历史快照: {analysis.get('snapshot_count', 0)}条\n"
         f"- 最近历史: {history_time}\n"
-        f"{local_phase_rule_text(analysis)}"
+        f"{local_phase_rule_text(analysis)}\n\n"
+        f"{trader_source_text(analysis)}"
     )
 
 
@@ -592,6 +875,7 @@ def build_deepseek_payload(chain, address, stats, bottom_analysis):
         "current_kline": (bottom_analysis or {}).get("current_kline") or {},
         "current_top_holders": ((bottom_analysis or {}).get("current_top_holders") or [])[:30],
         "phase_wallet_flows": (bottom_analysis or {}).get("phase_wallet_flows") or {},
+        "trader_source_analysis": (bottom_analysis or {}).get("trader_source_analysis") or {},
     }
 
 
