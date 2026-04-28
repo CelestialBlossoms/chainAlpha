@@ -19,6 +19,7 @@ from bottom_detection import bottom_accumulation_monitor as bottom_monitor
 POLL_TIMEOUT = 25
 POLL_INTERVAL = 1
 REQUEST_TIMEOUT = 30
+TG_MESSAGE_LIMIT = 3900
 ADDRESS_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,50}\b")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-b9fa593d50ce4e469d7645f530de2623")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -59,6 +60,41 @@ def send_message(chat_id, text, reply_to_message_id=None):
     if reply_to_message_id:
         payload["reply_to_message_id"] = reply_to_message_id
     return tg_api("sendMessage", payload)
+
+
+def split_long_text(text, limit=TG_MESSAGE_LIMIT):
+    text = str(text or "")
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if len(line) > limit:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            for start in range(0, len(line), limit):
+                chunks.append(line[start:start + limit].rstrip())
+            continue
+        if len(current) + len(line) > limit:
+            chunks.append(current.rstrip())
+            current = line
+        else:
+            current += line
+    if current:
+        chunks.append(current.rstrip())
+    return chunks
+
+
+def send_long_message(chat_id, text, reply_to_message_id=None):
+    chunks = split_long_text(text)
+    if len(chunks) == 1:
+        send_message(chat_id, chunks[0], reply_to_message_id)
+        return
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        prefix = f"({index}/{total})\n"
+        send_message(chat_id, prefix + chunk, reply_to_message_id if index == 1 else None)
 
 
 def extract_addresses(text):
@@ -985,9 +1021,8 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
         bottom_analysis=bottom_analysis,
         deepseek_analysis=deepseek_analysis,
     )
-    if len(msg) <= 4000:
-        send_message(chat_id, msg, message_id)
-        return
+    send_long_message(chat_id, msg, message_id)
+    return
 
     send_message(chat_id, msg[:3900] + "\n\n内容过长，已截断。", message_id)
 
