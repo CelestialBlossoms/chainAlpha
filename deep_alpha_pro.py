@@ -44,6 +44,7 @@ INFLOW_STATE = {}
 PRICE_OBSERVATION_STATE = {}
 MIN_PRICE_OBSERVATION_SCANS = 3
 MAX_PRICE_DROP_PCT = 0.30
+MIN_REPEAT_PRICE_UP_PCT = 0.10
 SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
 REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
@@ -343,8 +344,9 @@ def save_price_observation_state(address, state):
     except Exception as exc:
         print(f"  [Redis] 写入观察状态失败 {address[:8]}: {exc}")
 
-def update_price_observation(address, price, scan_round, symbol=None):
+def update_price_observation(address, price, scan_round, symbol=None, holder_count=None):
     price = safe_float(price)
+    holder_count = int(safe_float(holder_count))
     if price <= 0:
         return {
             "ready": False,
@@ -353,6 +355,7 @@ def update_price_observation(address, price, scan_round, symbol=None):
             "count": 0,
             "change_pct": 0.0,
             "drop_pct": 0.0,
+            "holder_count_delta": 0,
         }
 
     state = load_price_observation_state(address)
@@ -361,22 +364,30 @@ def update_price_observation(address, price, scan_round, symbol=None):
             "first_round": scan_round,
             "last_round": scan_round,
             "prices": [price],
+            "holder_counts": [holder_count],
             "symbol": symbol,
         }
     else:
         prices = list(state.get("prices") or [])
+        holder_counts = list(state.get("holder_counts") or [])
         prices.append(price)
+        holder_counts.append(holder_count)
         state["prices"] = prices[-MIN_PRICE_OBSERVATION_SCANS:]
+        state["holder_counts"] = holder_counts[-MIN_PRICE_OBSERVATION_SCANS:]
         state["last_round"] = scan_round
         state["symbol"] = symbol or state.get("symbol")
 
     save_price_observation_state(address, state)
     prices = list(state.get("prices") or [])
+    holder_counts = list(state.get("holder_counts") or [])
     count = len(prices)
     first_price = safe_float(prices[0])
     current_price = safe_float(prices[-1])
     change_pct = (current_price - first_price) / first_price if first_price > 0 else 0.0
     drop_pct = (first_price - current_price) / first_price if first_price > 0 and current_price < first_price else 0.0
+    first_holder_count = int(safe_float(holder_counts[0])) if holder_counts else 0
+    current_holder_count = int(safe_float(holder_counts[-1])) if holder_counts else 0
+    holder_count_delta = current_holder_count - first_holder_count if first_holder_count > 0 and current_holder_count > 0 else 0
     continuous_up = count >= MIN_PRICE_OBSERVATION_SCANS and all(
         prices[idx] >= prices[idx - 1] for idx in range(1, len(prices))
     )
@@ -399,6 +410,10 @@ def update_price_observation(address, price, scan_round, symbol=None):
         "first_price": first_price,
         "current_price": current_price,
         "prices": prices,
+        "holder_counts": holder_counts,
+        "first_holder_count": first_holder_count,
+        "current_holder_count": current_holder_count,
+        "holder_count_delta": holder_count_delta,
         "continuous_up": continuous_up,
     }
 
@@ -1602,17 +1617,22 @@ def scan_pro():
                         continue
                     existing_candidate = get_candidate_snapshot(addr)
                     trend_price = first_float(t, keys=("price",))
+                    trend_holder_count = first_float(
+                        t,
+                        keys=("holder_count", "holders_count", "holder_num", "holders", "holder"),
+                    )
                     price_observation = update_price_observation(
                         addr,
                         trend_price,
                         scan_round,
                         symbol=t.get("symbol") or t.get("name"),
+                        holder_count=trend_holder_count,
                     )
                     if not price_observation["ready"]:
                         print(
                             f"  [观察] {token_observation_label(addr, t.get('symbol'))} "
                             f"{price_observation['count']}/{MIN_PRICE_OBSERVATION_SCANS} "
-                            f"price={trend_price:.12f}"
+                            f"price={trend_price:.12f} holders={int(trend_holder_count)}"
                         )
                         continue
                     if not price_observation["allowed"]:
@@ -1649,22 +1669,34 @@ def scan_pro():
                     if s["is_dumping"]:
                         continue
                     if existing_candidate:
-                        previous_holders = int(existing_candidate.get("holder_count") or 0)
-                        holder_delta = int(s["holder_count"]) - previous_holders
-                        if holder_delta <= 0:
+                        if float(price_observation.get("change_pct") or 0) < MIN_REPEAT_PRICE_UP_PCT:
                             print(
-                                f"  [观察跳过] 已推送代币持有人未上升 ${s['symbol']} {addr}: "
-                                f"{s['holder_count']} <= {previous_holders}"
+                                f"  [观察跳过] 已推送代币复推涨幅不足 ${t.get('symbol') or 'UNKNOWN'} {addr}: "
+                                f"{price_observation.get('change_pct', 0):.1%}<{MIN_REPEAT_PRICE_UP_PCT:.0%}"
+                            )
+                            continue
+                        previous_holders = int(existing_candidate.get("holder_count") or 0)
+                        observation_holder_delta = int(price_observation.get("holder_count_delta") or 0)
+                        db_holder_delta = int(s["holder_count"]) - previous_holders
+                        if observation_holder_delta <= 0:
+                            print(
+                                f"  [观察跳过] 已推送代币三次观察持有人未上升 ${s['symbol']} {addr}: "
+                                f"{price_observation.get('current_holder_count', 0)} <= {price_observation.get('first_holder_count', 0)} "
+                                f"(上次推送库内持有人={previous_holders}, 当前深度查询={s['holder_count']})"
                             )
                             continue
                         s["repeat_alert"] = True
                         s["previous_holder_count"] = previous_holders
-                        s["holder_count_delta"] = holder_delta
+                        s["holder_count_delta"] = observation_holder_delta
+                        s["db_holder_count_delta"] = db_holder_delta
+                        s["observation_first_holder_count"] = price_observation.get("first_holder_count", 0)
+                        s["observation_current_holder_count"] = price_observation.get("current_holder_count", 0)
                         s["previous_alert_count"] = existing_candidate.get("alert_count", 0)
                     else:
                         s["repeat_alert"] = False
                         s["previous_holder_count"] = 0
                         s["holder_count_delta"] = 0
+                        s["db_holder_count_delta"] = 0
 
                     
                     # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
@@ -1686,8 +1718,10 @@ def scan_pro():
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
-                            f"复推条件: 三次价格回撤未超30% | 变化 {s['price_observation_change_pct']:+.1f}% | "
-                            f"持有人 +{s['holder_count_delta']} ({s['previous_holder_count']} -> {s['holder_count']}) | "
+                            f"复推条件: 三次价格上涨>=10% | 变化 {s['price_observation_change_pct']:+.1f}% | "
+                            f"三次观察持有人 +{s['holder_count_delta']} "
+                            f"({s.get('observation_first_holder_count', 0)} -> {s.get('observation_current_holder_count', 0)}) | "
+                            f"库内对比 {s['db_holder_count_delta']:+d} ({s['previous_holder_count']} -> {s['holder_count']}) | "
                             f"历史推送 {s.get('previous_alert_count', 0)} 次\n"
                             if s.get("repeat_alert")
                             else ""
