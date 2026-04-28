@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -33,6 +34,8 @@ CURRENT_NODE_MIN_AGE_SEC = int(os.getenv("TG_CA_CURRENT_NODE_MIN_AGE_SEC", "900"
 DEEPSEEK_ENABLED = os.getenv("DEEPSEEK_ENABLED", "1") != "0"
 DEEPSEEK_THINKING = os.getenv("DEEPSEEK_THINKING", "enabled")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
+PACKAGE_WALLET_MAP_PATH = os.getenv("PACKAGE_WALLET_MAP_PATH", "gmgn_outputs/package_wallet_map.json")
+PACKAGE_WALLET_MAP_CACHE = None
 
 
 def allowed_chat_ids():
@@ -139,6 +142,38 @@ def compact_holder(holder, include_wallet=True):
     if include_wallet:
         item["wallet"] = holder.get("wallet")
     return item
+
+
+def load_package_wallet_map():
+    global PACKAGE_WALLET_MAP_CACHE
+    if PACKAGE_WALLET_MAP_CACHE is not None:
+        return PACKAGE_WALLET_MAP_CACHE
+    path = Path(PACKAGE_WALLET_MAP_PATH)
+    if not path.exists():
+        PACKAGE_WALLET_MAP_CACHE = {}
+        return PACKAGE_WALLET_MAP_CACHE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"package wallet map load failed: {exc}")
+        PACKAGE_WALLET_MAP_CACHE = {}
+        return PACKAGE_WALLET_MAP_CACHE
+    if not isinstance(data, dict):
+        PACKAGE_WALLET_MAP_CACHE = {}
+        return PACKAGE_WALLET_MAP_CACHE
+    normalized = {}
+    for address, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        groups = meta.get("groups") or []
+        if not isinstance(groups, list):
+            groups = [str(groups)]
+        normalized[str(address).strip()] = {
+            "name": str(meta.get("name") or ""),
+            "groups": [str(group) for group in groups if str(group).strip()],
+        }
+    PACKAGE_WALLET_MAP_CACHE = normalized
+    return PACKAGE_WALLET_MAP_CACHE
 
 
 def compact_candle(candle):
@@ -594,6 +629,87 @@ def group_wallet_sources(records, source_key):
     return sorted(groups.values(), key=lambda x: (x["hold_pct"], x["wallet_count"], x["netflow"]), reverse=True)
 
 
+def weighted_avg_cost(records):
+    weighted = 0.0
+    weight = 0.0
+    for item in records:
+        cost = float(item.get("avg_cost") or 0)
+        hold = float(item.get("hold_pct") or 0)
+        if cost > 0 and hold > 0:
+            weighted += cost * hold
+            weight += hold
+    return weighted / weight if weight > 0 else 0.0
+
+
+def median_cost(records):
+    costs = sorted(float(item.get("avg_cost") or 0) for item in records if float(item.get("avg_cost") or 0) > 0)
+    if not costs:
+        return 0.0
+    mid = len(costs) // 2
+    if len(costs) % 2:
+        return costs[mid]
+    return (costs[mid - 1] + costs[mid]) / 2
+
+
+def summarize_package_wallet_matches(records):
+    wallet_map = load_package_wallet_map()
+    if not wallet_map:
+        return {}
+    matched = []
+    for item in records:
+        meta = wallet_map.get(item.get("wallet"))
+        if not meta:
+            continue
+        row = dict(item)
+        row["package_name"] = meta.get("name") or ""
+        row["package_groups"] = meta.get("groups") or []
+        matched.append(row)
+    if not matched:
+        return {"count": 0, "groups": [], "wallets": []}
+
+    def summarize(items, group_name="all"):
+        return {
+            "group": group_name,
+            "count": len(items),
+            "hold_pct": sum(float(item.get("hold_pct") or 0) for item in items),
+            "usd_value": sum(float(item.get("usd_value") or 0) for item in items),
+            "buy_volume": sum(float(item.get("buy_volume") or 0) for item in items),
+            "sell_volume": sum(float(item.get("sell_volume") or 0) for item in items),
+            "netflow": sum(float(item.get("netflow") or 0) for item in items),
+            "profit": sum(float(item.get("profit") or 0) for item in items),
+            "avg_cost": weighted_avg_cost(items),
+            "median_cost": median_cost(items),
+        }
+
+    grouped = {}
+    for item in matched:
+        groups = item.get("package_groups") or ["未分组"]
+        for group in groups:
+            grouped.setdefault(group or "未分组", []).append(item)
+
+    group_summaries = [summarize(items, group) for group, items in grouped.items()]
+    group_summaries.sort(key=lambda row: (row["hold_pct"], row["usd_value"], row["profit"]), reverse=True)
+    wallet_rows = []
+    for item in sorted(matched, key=lambda row: (float(row.get("hold_pct") or 0), float(row.get("usd_value") or 0)), reverse=True)[:8]:
+        wallet_rows.append(
+            {
+                "wallet": item.get("wallet"),
+                "name": item.get("package_name") or "",
+                "groups": item.get("package_groups") or [],
+                "hold_pct": float(item.get("hold_pct") or 0),
+                "usd_value": float(item.get("usd_value") or 0),
+                "profit": float(item.get("profit") or 0),
+                "avg_cost": float(item.get("avg_cost") or 0),
+                "roles": sorted(item.get("roles") or []),
+            }
+        )
+    return {
+        **summarize(matched, "all"),
+        "groups": group_summaries,
+        "wallets": wallet_rows,
+    }
+
+
 def analyze_traders_and_sources(raw_holders, raw_traders):
     holder_records = []
     for rank_no, row in enumerate(raw_holders or [], start=1):
@@ -624,6 +740,7 @@ def analyze_traders_and_sources(raw_holders, raw_traders):
     tagged = [item for item in records if item.get("tags")]
     native_sources = group_wallet_sources(records, "native_source")[:3]
     token_sources = group_wallet_sources(records, "token_source")[:3]
+    package_wallets = summarize_package_wallet_matches(records)
 
     def public_wallets(items):
         result = []
@@ -651,6 +768,7 @@ def analyze_traders_and_sources(raw_holders, raw_traders):
         "exited_sellers": public_wallets(exited_sellers),
         "native_sources": native_sources,
         "token_sources": token_sources,
+        "package_wallets": package_wallets,
     }
 
 
@@ -853,6 +971,49 @@ def source_group_brief(groups, label):
     return f"- {label}: " + (" | ".join(parts) if parts else "暂无明显同源簇")
 
 
+def package_wallet_group_brief(groups):
+    parts = []
+    for group in (groups or [])[:4]:
+        parts.append(
+            f"{group.get('group')} {int(group.get('count') or 0)}个/"
+            f"持{float(group.get('hold_pct') or 0):.2%}/"
+            f"盈亏{compact_money(group.get('profit'))}/"
+            f"均{format_chain_price(group.get('avg_cost'))}/中{format_chain_price(group.get('median_cost'))}"
+        )
+    return " | ".join(parts) if parts else "暂无分组命中"
+
+
+def package_wallet_brief(wallets):
+    parts = []
+    for item in (wallets or [])[:5]:
+        groups = ",".join(item.get("groups") or [])
+        name = item.get("name") or short_addr(item.get("wallet"))
+        group_text = f"/{groups}" if groups else ""
+        parts.append(
+            f"{name}{group_text} {short_addr(item.get('wallet'))} "
+            f"持{float(item.get('hold_pct') or 0):.2%} "
+            f"盈亏{compact_money(item.get('profit'))} "
+            f"成本{format_chain_price(item.get('avg_cost'))}"
+        )
+    return " | ".join(parts) if parts else "暂无重点命中钱包"
+
+
+def package_wallet_text(analysis):
+    data = ((analysis or {}).get("trader_source_analysis") or {}).get("package_wallets") or {}
+    if not data or int(data.get("count") or 0) <= 0:
+        return "自定义钱包命中分析\n- 暂无 package_wallet_map.json 命中钱包"
+    return (
+        "自定义钱包命中分析\n"
+        f"- 命中汇总: {int(data.get('count') or 0)}个 | 持仓{float(data.get('hold_pct') or 0):.2%} | "
+        f"持仓金额{compact_money(data.get('usd_value'))} | 买{compact_money(data.get('buy_volume'))} | "
+        f"卖{compact_money(data.get('sell_volume'))} | 净{compact_money(data.get('netflow'))} | "
+        f"盈亏{compact_money(data.get('profit'))} | 均{format_chain_price(data.get('avg_cost'))} | "
+        f"中{format_chain_price(data.get('median_cost'))}。\n"
+        f"- 分组聚合: {package_wallet_group_brief(data.get('groups'))}。\n"
+        f"- 重点钱包: {package_wallet_brief(data.get('wallets'))}。"
+    )
+
+
 def trader_source_text(analysis):
     data = (analysis or {}).get("trader_source_analysis") or {}
     if not data:
@@ -870,7 +1031,8 @@ def trader_source_text(analysis):
         f"- 主要卖出钱包: {trader_wallet_brief(data.get('top_sellers'), 'sell')}。\n"
         f"- 已退出/不在Top100卖出: {trader_wallet_brief(data.get('exited_sellers'), 'sell')}。\n"
         f"{source_group_brief(data.get('native_sources'), 'SOL资金来源簇')}。\n"
-        f"{source_group_brief(data.get('token_sources'), 'Token转入来源簇')}。"
+        f"{source_group_brief(data.get('token_sources'), 'Token转入来源簇')}。\n"
+        f"{package_wallet_text(analysis)}"
     )
 
 
