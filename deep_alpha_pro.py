@@ -15,7 +15,11 @@ from redis_client import get_redis_client, redis_key
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
-MIN_MCAP_USD = 5_000
+TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "Pump.fun").split(",") if item.strip()]
+LOW_MCAP_STRICT_USD = 10_000
+MID_MCAP_STRICT_USD = 20_000
+LOW_MCAP_MIN_UP_PCT = 0.30
+MID_MCAP_MIN_UP_PCT = 0.10
 MIN_FEE_SOL = 1
 HIGH_VOLUME_USD_THRESHOLD = 100_000
 MIN_HIGH_VOLUME_FEE_SOL = 5
@@ -167,6 +171,13 @@ def run_command(cmd):
     except Exception as e:
         print(f"Command exception: {cmd} -> {e}")
         return None
+
+def shell_quote(value):
+    value = str(value)
+    return '"' + value.replace('"', '\\"') + '"'
+
+def trend_platform_args():
+    return " ".join(f"--platform {shell_quote(platform)}" for platform in TREND_PLATFORMS)
 
 def send_tg_alert(msg):
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
@@ -416,6 +427,26 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
         "holder_count_delta": holder_count_delta,
         "continuous_up": continuous_up,
     }
+
+def mcap_price_observation_pass(mcap, price_observation):
+    mcap = safe_float(mcap)
+    change_pct = float(price_observation.get("change_pct") or 0)
+    continuous_up = bool(price_observation.get("continuous_up"))
+    drop_pct = float(price_observation.get("drop_pct") or 0)
+    if mcap < LOW_MCAP_STRICT_USD:
+        return (
+            continuous_up and change_pct >= LOW_MCAP_MIN_UP_PCT,
+            f"市值<{LOW_MCAP_STRICT_USD:,.0f}，需要连续上涨{LOW_MCAP_MIN_UP_PCT:.0%}，当前{change_pct:.1%}",
+        )
+    if mcap < MID_MCAP_STRICT_USD:
+        return (
+            continuous_up and change_pct >= MID_MCAP_MIN_UP_PCT,
+            f"市值{LOW_MCAP_STRICT_USD:,.0f}-{MID_MCAP_STRICT_USD:,.0f}，需要连续上涨{MID_MCAP_MIN_UP_PCT:.0%}，当前{change_pct:.1%}",
+        )
+    return (
+        drop_pct <= MAX_PRICE_DROP_PCT,
+        f"市值>={MID_MCAP_STRICT_USD:,.0f}，需要回撤不超{MAX_PRICE_DROP_PCT:.0%}，当前{drop_pct:.1%}",
+    )
 
 def nested_value(source, path):
     current = source
@@ -1599,7 +1630,10 @@ def scan_pro():
         for interval in TREND_INTERVALS:
             scan_round = next_scan_round()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
-            output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 100 --raw")
+            output = run_command(
+                f"gmgn-cli market trending --chain {chain} --interval {interval} "
+                f"--limit 100 {trend_platform_args()} --raw"
+            )
             if not output:
                 print(f"  No trending output for {chain} {interval}")
                 continue
@@ -1649,8 +1683,11 @@ def scan_pro():
                     s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
                     s["price_observation_reason"] = price_observation["reason"]
 
-                    if s["mcap"] < MIN_MCAP_USD:
+                    mcap_ok, mcap_observation_reason = mcap_price_observation_pass(s["mcap"], price_observation)
+                    if not mcap_ok:
+                        print(f"  [跳过] 市值分层价格观察不通过 ${s['symbol']} {addr}: {mcap_observation_reason}")
                         continue
+                    s["mcap_observation_reason"] = mcap_observation_reason
                     if s["mcap"] > MAX_MCAP_USD:
                         continue
                     age_seconds = token_age_seconds(s.get("created_at"))
@@ -1753,6 +1790,7 @@ def scan_pro():
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"三次价格观察: {s['price_observation_count']}次 | 变化 {s['price_observation_change_pct']:+.1f}% | "
                             f"回撤 {s['price_observation_drop_pct']:.1f}% | {s['price_observation_reason']}\n"
+                            f"市值分层条件: {s.get('mcap_observation_reason', '')}\n"
                             f"{repeat_line}"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
