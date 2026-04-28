@@ -308,6 +308,16 @@ def format_mcap_history(values):
     cleaned = [safe_float(value) for value in values if safe_float(value) > 0]
     return " -> ".join(format_mcap_short(value) for value in cleaned) if cleaned else "N/A"
 
+def format_usd_short(value):
+    value = safe_float(value)
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    if value >= 1_000_000:
+        return f"{sign}${value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"{sign}${value / 1_000:.1f}K"
+    return f"{sign}${value:,.0f}"
+
 def alert_candidate_redis_key(address):
     return redis_key(ALERT_REDIS_KEY_PREFIX, address)
 
@@ -769,6 +779,63 @@ def extract_dev_risk(info, trend_row, holders_list):
             ("dev_bought_cost",),
         ),
     )
+    dev_sell_usd = first_nested_float(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "sell_volume_cur"),
+            ("dev", "sell_volume_usd"),
+            ("creator_sell_volume",),
+            ("creator_sell_usd",),
+            ("dev_sell_volume",),
+            ("dev_sell_usd",),
+        ),
+    )
+    dev_hold_value_usd = first_nested_float(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "usd_value"),
+            ("dev", "holding_value"),
+            ("dev", "hold_value_usd"),
+            ("creator_usd_value",),
+            ("creator_hold_value_usd",),
+            ("dev_hold_value_usd",),
+        ),
+    )
+    dev_sell_amount_rate = first_nested_float(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "sell_amount_percentage"),
+            ("creator_sell_amount_percentage",),
+            ("dev_sell_amount_percentage",),
+        ),
+    )
+    creator_open_count = int(first_nested_float(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "creator_open_count"),
+            ("creator_open_count",),
+        ),
+    ))
+    creator_created_count = int(first_nested_float(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "creator_created_count"),
+            ("creator_created_count",),
+        ),
+    ))
+    creator_token_status = first_nested_value(
+        info,
+        trend_row,
+        paths=(
+            ("dev", "creator_token_status"),
+            ("creator_token_status",),
+        ),
+    )
 
     creator_address = str(creator_address or "").strip()
     if creator_address:
@@ -782,9 +849,15 @@ def extract_dev_risk(info, trend_row, holders_list):
                 safe_float(holder.get("buy_volume_cur")),
                 safe_float(holder.get("history_bought_cost")),
             )
+            dev_sell_usd = max(dev_sell_usd, safe_float(holder.get("sell_volume_cur")))
+            dev_hold_value_usd = max(dev_hold_value_usd, safe_float(holder.get("usd_value")))
+            dev_sell_amount_rate = max(dev_sell_amount_rate, normalize_ratio(holder.get("sell_amount_percentage")))
             break
 
     dev_hold_rate = max(normalize_ratio(dev_team_hold_rate), normalize_ratio(creator_hold_rate))
+    if dev_hold_value_usd <= 0:
+        mcap = calc_mcap(trend_row, info)
+        dev_hold_value_usd = mcap * dev_hold_rate if mcap > 0 and dev_hold_rate > 0 else 0
     should_skip = dev_buy_usd > MAX_DEV_BUY_USD or dev_hold_rate > MAX_DEV_HOLD_RATE
     reasons = []
     if dev_buy_usd > MAX_DEV_BUY_USD:
@@ -794,7 +867,14 @@ def extract_dev_risk(info, trend_row, holders_list):
     return {
         "creator_address": creator_address,
         "dev_buy_usd": dev_buy_usd,
+        "dev_sell_usd": dev_sell_usd,
+        "dev_netflow_usd": dev_buy_usd - dev_sell_usd,
         "dev_hold_rate": dev_hold_rate,
+        "dev_hold_value_usd": dev_hold_value_usd,
+        "dev_sell_amount_rate": normalize_ratio(dev_sell_amount_rate),
+        "creator_open_count": creator_open_count,
+        "creator_created_count": creator_created_count,
+        "creator_token_status": str(creator_token_status or ""),
         "should_skip": should_skip,
         "reasons": reasons,
     }
@@ -1709,7 +1789,14 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "rug_ratio": first_value(info, trend_row, keys=("rug_ratio", "risk_score", "risk_level")) or "0",
         "creator_address": dev_risk.get("creator_address"),
         "dev_buy_usd": dev_risk.get("dev_buy_usd", 0),
+        "dev_sell_usd": dev_risk.get("dev_sell_usd", 0),
+        "dev_netflow_usd": dev_risk.get("dev_netflow_usd", 0),
         "dev_hold_rate": dev_risk.get("dev_hold_rate", 0),
+        "dev_hold_value_usd": dev_risk.get("dev_hold_value_usd", 0),
+        "dev_sell_amount_rate": dev_risk.get("dev_sell_amount_rate", 0),
+        "creator_open_count": dev_risk.get("creator_open_count", 0),
+        "creator_created_count": dev_risk.get("creator_created_count", 0),
+        "creator_token_status": dev_risk.get("creator_token_status", ""),
         "control_ratio": ctrl.get("control_ratio", 0),
         "dump_progress": ctrl.get("dump_progress", 0),
         "sold_supply_pct": ctrl.get("sold_supply_pct", 0),
@@ -1938,11 +2025,25 @@ def scan_pro():
                             f"买${kol_stats['buy_volume']:,.0f} 卖${kol_stats['sell_volume']:,.0f} 净${kol_stats['netflow']:,.0f}"
                         ) if kol_stats.get('count', 0) > 0 else "KOL0个"
 
+                        dev_address = short_addr(s.get("creator_address")) if s.get("creator_address") else "未知"
+                        dev_detail = (
+                            f"- Dev: {dev_address} | 持仓{s.get('dev_hold_rate', 0) * 100:.2f}% "
+                            f"{format_usd_short(s.get('dev_hold_value_usd'))} | "
+                            f"买{format_usd_short(s.get('dev_buy_usd'))} 卖{format_usd_short(s.get('dev_sell_usd'))} "
+                            f"净{format_usd_short(s.get('dev_netflow_usd'))} | "
+                            f"已卖{s.get('dev_sell_amount_rate', 0) * 100:.1f}%\n"
+                            f"- Dev发币: open {int(s.get('creator_open_count') or 0)} | "
+                            f"created {int(s.get('creator_created_count') or 0)} | "
+                            f"状态 {s.get('creator_token_status') or '未知'}"
+                        )
+
                         msg = (
                             f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{repeat_line}"
+                            f"*Dev数据*\n"
+                            f"{dev_detail}\n\n"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
                             f"👥 *共识强度*\n"
