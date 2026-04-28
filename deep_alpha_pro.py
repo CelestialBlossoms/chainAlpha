@@ -64,6 +64,7 @@ REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(DEFAU
 ARCHIVE_REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_ARCHIVE_REDIS_PREFIX", "deep_alpha:price_observation_archive")
 ARCHIVE_REDIS_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_ARCHIVE_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 PRICE_OBSERVATION_ARCHIVE_LIMIT = int(os.getenv("PRICE_OBSERVATION_ARCHIVE_LIMIT", "12"))
+CHAIN_PRICE_DISPLAY_SCALE = float(os.getenv("CHAIN_PRICE_DISPLAY_SCALE", "1000000000"))
 ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:alert_candidate")
 ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
@@ -520,7 +521,7 @@ def compact_price_path(prices, limit=6):
     if not cleaned:
         return "N/A"
     trimmed = cleaned[-limit:]
-    return " -> ".join(f"{value:.4g}" for value in trimmed)
+    return " -> ".join(format_chain_price(value) for value in trimmed)
 
 def observation_archive_entry(stats, price_observation):
     return {
@@ -1446,18 +1447,21 @@ def median_cost(holders):
     return (costs[mid - 1] + costs[mid]) / 2
 
 def format_chain_price(value):
-    scaled = safe_float(value) * 1_000_000_000
+    scaled = safe_float(value) * CHAIN_PRICE_DISPLAY_SCALE
     def trunc_1(num):
         return int(num * 10) / 10
+    def trim(num, decimals=1):
+        text = f"{num:.{decimals}f}"
+        return text.rstrip("0").rstrip(".")
     if scaled <= 0:
         return "0"
     if scaled >= 10_000:
-        return f"{trunc_1(scaled / 10_000):.1f}W"
+        return f"{trim(trunc_1(scaled / 10_000))}W"
     if scaled >= 1_000:
-        return f"{trunc_1(scaled / 1_000):.1f}K"
+        return f"{trim(trunc_1(scaled / 1_000))}k"
     if scaled >= 1:
-        return f"{scaled:.1f}"
-    return f"{scaled:.4f}"
+        return trim(scaled)
+    return trim(scaled, 4)
 
 def format_pnl_pct(current_price, avg_cost):
     if safe_float(avg_cost) <= 0:
