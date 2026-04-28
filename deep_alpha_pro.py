@@ -46,16 +46,26 @@ NEW_TOKEN_MAX_AGE_SEC = 60 * 60
 EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
 INFLOW_STATE = {}
 PRICE_OBSERVATION_STATE = {}
+PRICE_OBSERVATION_ARCHIVE_STATE = {}
 MIN_PRICE_OBSERVATION_SCANS = 3
+PRICE_OBSERVATION_HISTORY_LIMIT = int(os.getenv("PRICE_OBSERVATION_HISTORY_LIMIT", "20"))
+PRICE_OBSERVATION_BAND_LIMIT = int(os.getenv("PRICE_OBSERVATION_BAND_LIMIT", "6"))
 FAST_PRICE_OBSERVATION_SCANS = 2
 FAST_PRICE_UP_PCT = 0.15
 MAX_PRICE_DROP_PCT = 0.30
 MIN_REPEAT_PRICE_UP_PCT = 0.20
+REBOUND_LOOKBACK_SCANS = int(os.getenv("REBOUND_LOOKBACK_SCANS", "12"))
+MIN_REBOUND_DRAWDOWN_PCT = float(os.getenv("MIN_REBOUND_DRAWDOWN_PCT", "0.25"))
+MIN_REBOUND_FROM_LOW_PCT = float(os.getenv("MIN_REBOUND_FROM_LOW_PCT", "0.20"))
 SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
-REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
+DEFAULT_BUSINESS_REDIS_TTL_SEC = 4 * 60 * 60
+REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
+ARCHIVE_REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_ARCHIVE_REDIS_PREFIX", "deep_alpha:price_observation_archive")
+ARCHIVE_REDIS_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_ARCHIVE_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
+PRICE_OBSERVATION_ARCHIVE_LIMIT = int(os.getenv("PRICE_OBSERVATION_ARCHIVE_LIMIT", "12"))
 ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:alert_candidate")
-ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(4 * 60 * 60)))
+ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
 ALERT_MISS_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_TTL_SEC", "300"))
 
@@ -431,6 +441,9 @@ def token_observation_label(address, symbol=None):
 def redis_observation_key(address):
     return redis_key(REDIS_KEY_PREFIX, "token", address)
 
+def redis_observation_archive_key(address):
+    return redis_key(ARCHIVE_REDIS_KEY_PREFIX, "token", address)
+
 def redis_scan_round_key():
     return redis_key(REDIS_KEY_PREFIX, "scan_round")
 
@@ -479,6 +492,61 @@ def save_price_observation_state(address, state):
     except Exception as exc:
         print(f"  [Redis] 写入观察状态失败 {address[:8]}: {exc}")
 
+def load_price_observation_archive(address):
+    client = get_redis_client()
+    if client is None:
+        return PRICE_OBSERVATION_ARCHIVE_STATE.get(address, [])
+    try:
+        raw = client.get(redis_observation_archive_key(address))
+        data = json.loads(raw) if raw else []
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        print(f"  [Redis] 读取价格观察归档失败 {address[:8]}: {exc}")
+        return PRICE_OBSERVATION_ARCHIVE_STATE.get(address, [])
+
+def save_price_observation_archive(address, archive):
+    archive = list(archive or [])[-PRICE_OBSERVATION_ARCHIVE_LIMIT:]
+    PRICE_OBSERVATION_ARCHIVE_STATE[address] = archive
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.setex(redis_observation_archive_key(address), ARCHIVE_REDIS_TTL_SEC, json.dumps(archive, ensure_ascii=False))
+    except Exception as exc:
+        print(f"  [Redis] 写入价格观察归档失败 {address[:8]}: {exc}")
+
+def compact_price_path(prices, limit=6):
+    cleaned = [safe_float(value) for value in (prices or []) if safe_float(value) > 0]
+    if not cleaned:
+        return "N/A"
+    trimmed = cleaned[-limit:]
+    return " -> ".join(f"{value:.4g}" for value in trimmed)
+
+def observation_archive_entry(stats, price_observation):
+    return {
+        "ts": int(time.time()),
+        "alert_no": int(stats.get("alert_sequence_no") or 1),
+        "type": stats.get("repeat_alert_type") or ("复推" if stats.get("repeat_alert") else "首推"),
+        "prices": price_observation.get("prices") or [],
+        "band": price_observation.get("change_band_text") or "N/A",
+        "last_change_pct": float(price_observation.get("change_pct") or 0) * 100,
+    }
+
+def format_price_observation_archive(archive, current_entry=None, limit=3):
+    rows = list(archive or [])
+    if current_entry:
+        rows.append(current_entry)
+    rows = rows[-limit:]
+    if not rows:
+        return ""
+    lines = []
+    for item in rows:
+        lines.append(
+            f"第{int(item.get('alert_no') or 0)}次/{item.get('type') or '观察'}: "
+            f"{compact_price_path(item.get('prices'))} | 波段 {item.get('band') or 'N/A'}"
+        )
+    return "价格记录:\n" + "\n".join(lines) + "\n"
+
 def update_price_observation(address, price, scan_round, symbol=None, holder_count=None):
     price = safe_float(price)
     holder_count = int(safe_float(holder_count))
@@ -507,8 +575,8 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
         holder_counts = list(state.get("holder_counts") or [])
         prices.append(price)
         holder_counts.append(holder_count)
-        state["prices"] = prices[-MIN_PRICE_OBSERVATION_SCANS:]
-        state["holder_counts"] = holder_counts[-MIN_PRICE_OBSERVATION_SCANS:]
+        state["prices"] = prices[-PRICE_OBSERVATION_HISTORY_LIMIT:]
+        state["holder_counts"] = holder_counts[-PRICE_OBSERVATION_HISTORY_LIMIT:]
         state["last_round"] = scan_round
         state["symbol"] = symbol or state.get("symbol")
 
@@ -516,22 +584,36 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
     prices = list(state.get("prices") or [])
     holder_counts = list(state.get("holder_counts") or [])
     count = len(prices)
-    first_price = safe_float(prices[0])
+    recent_prices = prices[-MIN_PRICE_OBSERVATION_SCANS:]
+    recent_holder_counts = holder_counts[-MIN_PRICE_OBSERVATION_SCANS:]
+    observation_count = len(recent_prices)
+    first_price = safe_float(recent_prices[0]) if recent_prices else 0.0
+    previous_price = safe_float(prices[-2]) if count >= 2 else 0.0
     current_price = safe_float(prices[-1])
-    change_pct = (current_price - first_price) / first_price if first_price > 0 else 0.0
-    drop_pct = (first_price - current_price) / first_price if first_price > 0 and current_price < first_price else 0.0
-    first_holder_count = int(safe_float(holder_counts[0])) if holder_counts else 0
-    current_holder_count = int(safe_float(holder_counts[-1])) if holder_counts else 0
+    change_pct = (current_price - previous_price) / previous_price if previous_price > 0 else 0.0
+    drop_pct = -change_pct if change_pct < 0 else 0.0
+    segment_changes = [
+        (safe_float(prices[idx]) - safe_float(prices[idx - 1])) / safe_float(prices[idx - 1])
+        for idx in range(1, len(prices))
+        if safe_float(prices[idx - 1]) > 0
+    ]
+    band_changes = segment_changes[-PRICE_OBSERVATION_BAND_LIMIT:]
+    change_band_text = " -> ".join(f"{value:+.1%}" for value in band_changes) if band_changes else "N/A"
+    rebound_prices = [safe_float(value) for value in prices[-REBOUND_LOOKBACK_SCANS:] if safe_float(value) > 0]
+    local_low_price = min(rebound_prices) if rebound_prices else 0.0
+    rebound_from_low_pct = (current_price - local_low_price) / local_low_price if local_low_price > 0 else 0.0
+    first_holder_count = int(safe_float(recent_holder_counts[0])) if recent_holder_counts else 0
+    current_holder_count = int(safe_float(recent_holder_counts[-1])) if recent_holder_counts else 0
     holder_count_delta = current_holder_count - first_holder_count if first_holder_count > 0 and current_holder_count > 0 else 0
-    continuous_up = count >= FAST_PRICE_OBSERVATION_SCANS and all(
-        prices[idx] >= prices[idx - 1] for idx in range(1, len(prices))
+    continuous_up = observation_count >= FAST_PRICE_OBSERVATION_SCANS and all(
+        recent_prices[idx] >= recent_prices[idx - 1] for idx in range(1, len(recent_prices))
     )
-    fast_up = count >= FAST_PRICE_OBSERVATION_SCANS and continuous_up and change_pct >= FAST_PRICE_UP_PCT
-    not_large_drop = count >= MIN_PRICE_OBSERVATION_SCANS and drop_pct <= MAX_PRICE_DROP_PCT
-    ready = count >= MIN_PRICE_OBSERVATION_SCANS or fast_up
-    allowed = fast_up or (count >= MIN_PRICE_OBSERVATION_SCANS and not_large_drop)
+    fast_up = observation_count >= FAST_PRICE_OBSERVATION_SCANS and continuous_up and change_pct >= FAST_PRICE_UP_PCT
+    not_large_drop = observation_count >= MIN_PRICE_OBSERVATION_SCANS and drop_pct <= MAX_PRICE_DROP_PCT
+    ready = observation_count >= MIN_PRICE_OBSERVATION_SCANS or fast_up
+    allowed = fast_up or (observation_count >= MIN_PRICE_OBSERVATION_SCANS and not_large_drop)
     if not ready:
-        reason = f"observe_wait_{count}/{MIN_PRICE_OBSERVATION_SCANS}"
+        reason = f"observe_wait_{observation_count}/{MIN_PRICE_OBSERVATION_SCANS}"
     elif fast_up:
         reason = f"fast_up_{change_pct:.1%}"
     elif not_large_drop:
@@ -542,12 +624,18 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
         "ready": ready,
         "allowed": allowed,
         "reason": reason,
-        "count": count,
+        "count": observation_count,
+        "history_count": count,
         "change_pct": change_pct,
         "drop_pct": drop_pct,
         "first_price": first_price,
+        "previous_price": previous_price,
         "current_price": current_price,
         "prices": prices,
+        "segment_changes": segment_changes,
+        "change_band_text": change_band_text,
+        "local_low_price": local_low_price,
+        "rebound_from_low_pct": rebound_from_low_pct,
         "holder_counts": holder_counts,
         "first_holder_count": first_holder_count,
         "current_holder_count": current_holder_count,
@@ -1283,6 +1371,8 @@ def analyze_top10_holders(holders_list):
         sell_volume = sum(safe_float(h.get("sell_volume_cur")) for h in wallets)
         profit = sum(safe_float(h.get("profit")) for h in wallets)
         profit_pct = (profit / buy_volume * 100) if buy_volume > 0 else 0
+        sell_progress = wallet_sell_progress_pct(wallets)
+        position_value = sum(holder_position_value_usd(h) for h in wallets)
         buy_tx = sum(safe_float(h.get("buy_tx_count_cur")) for h in wallets)
         sell_tx = sum(safe_float(h.get("sell_tx_count_cur")) for h in wallets)
         netflow = sum(holder_net_buy_usd(h) for h in wallets)
@@ -1292,6 +1382,8 @@ def analyze_top10_holders(holders_list):
             "sell_volume": sell_volume,
             "profit": profit,
             "profit_pct": profit_pct,
+            "sell_progress": sell_progress,
+            "position_value": position_value,
             "buy_tx": int(buy_tx),
             "sell_tx": int(sell_tx),
             "netflow": netflow,
@@ -1299,7 +1391,9 @@ def analyze_top10_holders(holders_list):
     lines = [
         (
             f"Top{size}: 持仓{buckets[size]['supply']:.1f}% | "
+            f"${buckets[size]['position_value']:,.0f} | "
             f"盈利{buckets[size]['profit_pct']:+.1f}% | "
+            f"卖出进度{buckets[size]['sell_progress']:.1f}% | "
             f"次数{buckets[size]['buy_tx']}/{buckets[size]['sell_tx']}"
         )
         for size in (10, 100)
@@ -1374,6 +1468,16 @@ def format_pnl_pct(current_price, avg_cost):
 def holder_position_value_usd(holder):
     return safe_float(holder.get("usd_value"))
 
+def wallet_sell_progress_pct(wallets):
+    supply = sum(safe_float(holder.get("amount_percentage")) * 100 for holder in wallets)
+    if supply <= 0:
+        return 0.0
+    sold_supply = sum(
+        safe_float(holder.get("amount_percentage")) * 100 * normalize_ratio(holder.get("sell_amount_percentage"))
+        for holder in wallets
+    )
+    return sold_supply / supply * 100
+
 def analyze_holder_tags_and_costs(holders_list, current_price):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     tag_defs = [
@@ -1414,7 +1518,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         }
         if wallets:
             tag_lines.append(
-                f"{label}{len(wallets)}个 持仓{supply:.1f}%/${position_value:,.0f} 盈利{profit_pct:+.1f}%"
+                f"{label}{len(wallets)}个 持仓{supply:.1f}%/${position_value:,.0f} 盈利{profit_pct:+.1f}% 卖出进度{sell_progress:.1f}%"
             )
 
     creation_clusters = find_creation_clusters(non_pool, min_wallets=2, max_clusters=5)
@@ -1432,6 +1536,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         cluster_buy_volume = sum(safe_float(cluster.get("buy_volume")) for cluster in creation_clusters)
         cluster_sell_volume = sum(safe_float(cluster.get("sell_volume")) for cluster in creation_clusters)
         cluster_netflow = sum(safe_float(cluster.get("netflow")) for cluster in creation_clusters)
+        cluster_sell_progress = wallet_sell_progress_pct(cluster_wallets)
         cluster_avg_cost = weighted_avg_cost(cluster_wallets)
         cluster_median_cost = median_cost(cluster_wallets)
         cost_values = [safe_float(holder.get("avg_cost")) for holder in cluster_wallets if safe_float(holder.get("avg_cost")) > 0]
@@ -1448,12 +1553,13 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "buy_volume": cluster_buy_volume,
             "sell_volume": cluster_sell_volume,
             "netflow": cluster_netflow,
+            "sell_progress": cluster_sell_progress,
             "avg_cost": cluster_avg_cost,
             "median_cost": cluster_median_cost,
             "cost_range": cost_range,
         }
         tag_lines.append(
-            f"同批创建簇汇总{len(creation_clusters)}簇/{cluster_count}个 持仓{cluster_supply:.1f}%/${cluster_position_value:,.0f} 盈利{format_pnl_pct(current_price, cluster_avg_cost)}"
+            f"同批创建簇汇总{len(creation_clusters)}簇/{cluster_count}个 持仓{cluster_supply:.1f}%/${cluster_position_value:,.0f} 盈利{format_pnl_pct(current_price, cluster_avg_cost)} 卖出进度{cluster_sell_progress:.1f}%"
         )
 
     top20 = non_pool[:20]
@@ -1905,7 +2011,7 @@ def scan_pro():
                     if not price_observation["allowed"]:
                         print(
                             f"  [跳过] 三次价格观察失败 {token_observation_label(addr, t.get('symbol'))}: "
-                            f"首价={price_observation['first_price']:.12f}, 现价={price_observation['current_price']:.12f}, "
+                            f"上次={price_observation.get('previous_price', 0):.12f}, 现价={price_observation['current_price']:.12f}, "
                             f"跌幅={price_observation['drop_pct']:.1%}>{MAX_PRICE_DROP_PCT:.0%}"
                         )
                         continue
@@ -1915,6 +2021,7 @@ def scan_pro():
                     s["price_observation_change_pct"] = price_observation["change_pct"] * 100
                     s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
                     s["price_observation_reason"] = price_observation["reason"]
+                    s["price_observation_change_band_text"] = price_observation.get("change_band_text", "N/A")
 
                     mcap_ok, mcap_observation_reason = mcap_price_observation_pass(s["mcap"], price_observation)
                     if not mcap_ok:
@@ -1946,12 +2053,6 @@ def scan_pro():
                                 f"{prices_text}"
                             )
                             continue
-                        if float(price_observation.get("change_pct") or 0) < MIN_REPEAT_PRICE_UP_PCT:
-                            print(
-                                f"  [观察跳过] 已推送代币复推涨幅不足 ${t.get('symbol') or 'UNKNOWN'} {addr}: "
-                                f"{price_observation.get('change_pct', 0):.1%}<{MIN_REPEAT_PRICE_UP_PCT:.0%}"
-                            )
-                            continue
                         previous_price_history = [
                             safe_float(value)
                             for value in (existing_candidate.get("price_alert_history") or [])
@@ -1959,10 +2060,30 @@ def scan_pro():
                         ]
                         previous_price = previous_price_history[-1] if previous_price_history else safe_float(existing_candidate.get("price"))
                         current_price = safe_float(s.get("price") or price_observation.get("current_price"))
-                        if previous_price <= 0 or current_price <= previous_price:
+                        local_low_price = safe_float(price_observation.get("local_low_price"))
+                        rebound_from_low_pct = float(price_observation.get("rebound_from_low_pct") or 0)
+                        drawdown_from_alert_pct = (
+                            (previous_price - local_low_price) / previous_price
+                            if previous_price > 0 and local_low_price > 0 and local_low_price < previous_price
+                            else 0.0
+                        )
+                        breakout_repeat = (
+                            previous_price > 0
+                            and current_price > previous_price
+                            and float(price_observation.get("change_pct") or 0) >= MIN_REPEAT_PRICE_UP_PCT
+                        )
+                        rebound_repeat = (
+                            previous_price > 0
+                            and current_price <= previous_price
+                            and drawdown_from_alert_pct >= MIN_REBOUND_DRAWDOWN_PCT
+                            and rebound_from_low_pct >= MIN_REBOUND_FROM_LOW_PCT
+                        )
+                        if not breakout_repeat and not rebound_repeat:
                             print(
-                                f"  [观察跳过] 已推送代币复推价格低于上次推送 ${s['symbol']} {addr}: "
-                                f"current={current_price:.12g} <= previous={previous_price:.12g}"
+                                f"  [观察跳过] 已推送代币复推条件不足 ${s['symbol']} {addr}: "
+                                f"current={current_price:.12g}, previous_alert={previous_price:.12g}, "
+                                f"last_change={float(price_observation.get('change_pct') or 0):.1%}, "
+                                f"drawdown={drawdown_from_alert_pct:.1%}, rebound={rebound_from_low_pct:.1%}"
                             )
                             continue
                         previous_holders = int(existing_candidate.get("holder_count") or 0)
@@ -1982,11 +2103,19 @@ def scan_pro():
                         s["observation_first_holder_count"] = price_observation.get("first_holder_count", 0)
                         s["observation_current_holder_count"] = price_observation.get("current_holder_count", 0)
                         s["previous_alert_count"] = existing_candidate.get("alert_count", 0)
+                        s["repeat_alert_type"] = "突破复推" if breakout_repeat else "回撤反弹复推"
+                        s["rebound_from_low_pct"] = rebound_from_low_pct * 100
+                        s["drawdown_from_alert_pct"] = drawdown_from_alert_pct * 100
+                        s["local_low_price"] = local_low_price
                     else:
                         s["repeat_alert"] = False
                         s["previous_holder_count"] = 0
                         s["holder_count_delta"] = 0
                         s["db_holder_count_delta"] = 0
+                        s["repeat_alert_type"] = "首推"
+                        s["rebound_from_low_pct"] = 0
+                        s["drawdown_from_alert_pct"] = 0
+                        s["local_low_price"] = 0
                     previous_mcap_history = []
                     if existing_candidate:
                         previous_mcap_history = [
@@ -2037,17 +2166,31 @@ def scan_pro():
                             if s.get("repeat_alert")
                             else ""
                         )
+                        if s.get("repeat_alert"):
+                            repeat_line += f"复推类型: {s.get('repeat_alert_type', '复推')}"
+                            if s.get("repeat_alert_type") == "回撤反弹复推":
+                                repeat_line += (
+                                    f" | 回撤{s.get('drawdown_from_alert_pct', 0):.1f}%"
+                                    f" | 低点反弹{s.get('rebound_from_low_pct', 0):.1f}%"
+                                )
+                            repeat_line += "\n"
+                        price_archive = load_price_observation_archive(addr)
+                        current_price_archive_entry = observation_archive_entry(s, price_observation)
+                        s["price_observation_archive_text"] = format_price_observation_archive(
+                            price_archive,
+                            current_entry=current_price_archive_entry,
+                        )
                         
                         # Build Smart Money / KOL holding details from tag stats
                         sm_stats = s.get('holder_tag_stats', {}).get('smart_degen', {})
                         kol_stats = s.get('holder_tag_stats', {}).get('renowned', {})
                         sm_detail = (
                             f"聪明钱{sm_stats['count']}个 持仓{sm_stats['supply']:.1f}%/${sm_stats['position_value']:,.0f} "
-                            f"盈利{sm_stats.get('profit_pct', 0):+.1f}%"
+                            f"盈利{sm_stats.get('profit_pct', 0):+.1f}% 卖出进度{sm_stats.get('sell_progress', 0):.1f}%"
                         ) if sm_stats.get('count', 0) > 0 else "聪明钱0个"
                         kol_detail = (
                             f"KOL{kol_stats['count']}个 持仓{kol_stats['supply']:.1f}%/${kol_stats['position_value']:,.0f} "
-                            f"盈利{kol_stats.get('profit_pct', 0):+.1f}%"
+                            f"盈利{kol_stats.get('profit_pct', 0):+.1f}% 卖出进度{kol_stats.get('sell_progress', 0):.1f}%"
                         ) if kol_stats.get('count', 0) > 0 else "KOL0个"
 
                         dev_address = short_addr(s.get("creator_address")) if s.get("creator_address") else "未知"
@@ -2063,7 +2206,8 @@ def scan_pro():
                         msg = (
                             f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
-                            f"价格变化: {s['price_observation_change_pct']:+.1f}% | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
+                            f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
+                            f"{s.get('price_observation_archive_text', '')}"
                             f"{repeat_line}"
                             f"{narrative_line}"
                             f"流动性池: {s['pool_label']}\n"
@@ -2074,9 +2218,7 @@ def scan_pro():
                             f"{s['holder_tag_desc']}\n\n"
                             f"📊 *基础结构*\n"
                             f"{s['rank_bucket_desc']}\n"
-                            f"- 捆绑持仓: {s['associated_supply']:.1f}% | 钱包 {s['associated_count']}个 | 卖出进度 {s['dump_progress']:.1f}%\n"
-                            f"- 狙击手数量: {s['snipers']}\n"
-                            f"- 风险分数: {s['rug_ratio']}\n\n"
+                            f"\n"
                             f"*Dev数据*\n"
                             f"{dev_detail}\n\n"
                             f"CA: `{addr}`\n"
@@ -2089,6 +2231,7 @@ def scan_pro():
                             existing_candidate=existing_candidate,
                         )
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
+                        save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
                     
             except Exception as e:
