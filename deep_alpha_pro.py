@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import time
 import requests
@@ -7,6 +8,7 @@ from collections import defaultdict
 from psycopg2.extras import Json
 from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
+from redis_client import get_redis_client, redis_key
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -39,6 +41,13 @@ KLINE_LOOKBACK_SEC = 2 * 60 * 60
 NEW_TOKEN_MAX_AGE_SEC = 60 * 60
 EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
 INFLOW_STATE = {}
+PRICE_OBSERVATION_STATE = {}
+MIN_PRICE_OBSERVATION_SCANS = 3
+MIN_PRICE_UP_PCT = 0.10
+MAX_PRICE_DROP_PCT = 0.30
+SCAN_ROUND = 0
+REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
+REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -223,8 +232,31 @@ def candidate_exists(address):
         return cur.fetchone() is not None
     return db_op(_op)
 
-def upsert_tg_alert(address, msg):
-    if candidate_exists(address):
+def get_candidate_snapshot(address):
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT holder_count, mcap_at_alert, alert_count, raw_stats
+            FROM alpha_token_candidates
+            WHERE address=%s
+            """,
+            (address,),
+        )
+        return cur.fetchone()
+    row = db_op(_op)
+    if not row:
+        return None
+    raw_stats = row[3] if isinstance(row[3], dict) else {}
+    return {
+        "holder_count": int(row[0] or 0),
+        "mcap": safe_float(row[1]),
+        "alert_count": int(row[2] or 0),
+        "price": safe_float(raw_stats.get("price")),
+    }
+
+def upsert_tg_alert(address, msg, allow_repeat=False):
+    if candidate_exists(address) and not allow_repeat:
         return None
     return send_tg_alert(msg)
 
@@ -255,6 +287,125 @@ def optional_float(*sources, keys=()):
     if value in (None, ""):
         return None
     return safe_float(value)
+
+def token_observation_label(address, symbol=None):
+    symbol = symbol or "UNKNOWN"
+    short_addr = f"{address[:8]}..." if address else "noaddr"
+    return f"${symbol}({short_addr})"
+
+def redis_observation_key(address):
+    return redis_key(REDIS_KEY_PREFIX, "token", address)
+
+def redis_scan_round_key():
+    return redis_key(REDIS_KEY_PREFIX, "scan_round")
+
+def reset_price_observation(address):
+    PRICE_OBSERVATION_STATE.pop(address, None)
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(redis_observation_key(address))
+    except Exception as exc:
+        print(f"  [Redis] 重置观察状态失败 {address[:8]}: {exc}")
+
+def next_scan_round():
+    global SCAN_ROUND
+    client = get_redis_client()
+    if client is not None:
+        try:
+            key = redis_scan_round_key()
+            value = int(client.incr(key))
+            client.expire(key, REDIS_STATE_TTL_SEC)
+            return value
+        except Exception as exc:
+            print(f"  [Redis] scan_round 写入失败，使用内存计数: {exc}")
+    SCAN_ROUND += 1
+    return SCAN_ROUND
+
+def load_price_observation_state(address):
+    client = get_redis_client()
+    if client is None:
+        return PRICE_OBSERVATION_STATE.get(address)
+    try:
+        raw = client.get(redis_observation_key(address))
+        return json.loads(raw) if raw else None
+    except Exception as exc:
+        print(f"  [Redis] 读取观察状态失败 {address[:8]}: {exc}")
+        return PRICE_OBSERVATION_STATE.get(address)
+
+def save_price_observation_state(address, state):
+    PRICE_OBSERVATION_STATE[address] = state
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.setex(redis_observation_key(address), REDIS_STATE_TTL_SEC, json.dumps(state, ensure_ascii=False))
+    except Exception as exc:
+        print(f"  [Redis] 写入观察状态失败 {address[:8]}: {exc}")
+
+def update_price_observation(address, price, scan_round, symbol=None):
+    price = safe_float(price)
+    if price <= 0:
+        return {
+            "ready": False,
+            "allowed": False,
+            "reason": "price_missing",
+            "count": 0,
+            "change_pct": 0.0,
+            "drop_pct": 0.0,
+        }
+
+    state = load_price_observation_state(address)
+    if not state or int(state.get("last_round") or 0) != scan_round - 1:
+        state = {
+            "first_round": scan_round,
+            "last_round": scan_round,
+            "prices": [price],
+            "symbol": symbol,
+        }
+    else:
+        prices = list(state.get("prices") or [])
+        prices.append(price)
+        state["prices"] = prices[-MIN_PRICE_OBSERVATION_SCANS:]
+        state["last_round"] = scan_round
+        state["symbol"] = symbol or state.get("symbol")
+
+    save_price_observation_state(address, state)
+    prices = list(state.get("prices") or [])
+    count = len(prices)
+    first_price = safe_float(prices[0])
+    current_price = safe_float(prices[-1])
+    change_pct = (current_price - first_price) / first_price if first_price > 0 else 0.0
+    drop_pct = (first_price - current_price) / first_price if first_price > 0 and current_price < first_price else 0.0
+    continuous_up = (
+        count >= MIN_PRICE_OBSERVATION_SCANS
+        and change_pct >= MIN_PRICE_UP_PCT
+        and all(prices[idx] >= prices[idx - 1] for idx in range(1, len(prices)))
+    )
+    not_large_drop = count >= MIN_PRICE_OBSERVATION_SCANS and drop_pct <= MAX_PRICE_DROP_PCT
+    ready = count >= MIN_PRICE_OBSERVATION_SCANS
+    allowed = ready and (continuous_up or not_large_drop)
+    if not ready:
+        reason = f"observe_wait_{count}/{MIN_PRICE_OBSERVATION_SCANS}"
+    elif continuous_up:
+        reason = f"continuous_up_{change_pct:.1%}"
+    elif not_large_drop:
+        reason = f"drop_ok_{drop_pct:.1%}"
+    else:
+        reason = f"drop_too_much_{drop_pct:.1%}"
+    return {
+        "ready": ready,
+        "allowed": allowed,
+        "reason": reason,
+        "count": count,
+        "change_pct": change_pct,
+        "drop_pct": drop_pct,
+        "first_price": first_price,
+        "current_price": current_price,
+        "prices": prices,
+        "continuous_up": continuous_up,
+    }
 
 def nested_value(source, path):
     current = source
@@ -1436,6 +1587,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
 def scan_pro():
     for chain in CHAINS:
         for interval in TREND_INTERVALS:
+            scan_round = next_scan_round()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
             output = run_command(f"gmgn-cli market trending --chain {chain} --interval {interval} --limit 100 --raw")
             if not output:
@@ -1453,11 +1605,41 @@ def scan_pro():
                     trend_mcap = calc_mcap(t)
                     if trend_mcap > MAX_MCAP_USD:
                         continue
-                    if candidate_exists(addr):
+                    existing_candidate = get_candidate_snapshot(addr)
+                    trend_price = first_float(t, keys=("price",))
+                    price_observation = update_price_observation(
+                        addr,
+                        trend_price,
+                        scan_round,
+                        symbol=t.get("symbol") or t.get("name"),
+                    )
+                    if not price_observation["ready"]:
+                        print(
+                            f"  [观察] {token_observation_label(addr, t.get('symbol'))} "
+                            f"{price_observation['count']}/{MIN_PRICE_OBSERVATION_SCANS} "
+                            f"price={trend_price:.12f}"
+                        )
+                        continue
+                    if not price_observation["allowed"]:
+                        print(
+                            f"  [跳过] 三次价格观察失败 {token_observation_label(addr, t.get('symbol'))}: "
+                            f"首价={price_observation['first_price']:.12f}, 现价={price_observation['current_price']:.12f}, "
+                            f"跌幅={price_observation['drop_pct']:.1%}>{MAX_PRICE_DROP_PCT:.0%}"
+                        )
+                        continue
+                    if existing_candidate and not price_observation.get("continuous_up"):
+                        print(
+                            f"  [观察跳过] 已推送代币未满足复推连续上涨 {token_observation_label(addr, t.get('symbol'))}: "
+                            f"三次变化={price_observation['change_pct']:.1%}, 回撤={price_observation['drop_pct']:.1%}"
+                        )
                         continue
                     
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
+                    s["price_observation_count"] = price_observation["count"]
+                    s["price_observation_change_pct"] = price_observation["change_pct"] * 100
+                    s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
+                    s["price_observation_reason"] = price_observation["reason"]
 
                     if s["mcap"] < MIN_MCAP_USD:
                         continue
@@ -1478,6 +1660,23 @@ def scan_pro():
                         continue
                     if s["is_dumping"]:
                         continue
+                    if existing_candidate:
+                        previous_holders = int(existing_candidate.get("holder_count") or 0)
+                        holder_delta = int(s["holder_count"]) - previous_holders
+                        if holder_delta <= 0:
+                            print(
+                                f"  [观察跳过] 已推送代币持有人未上升 ${s['symbol']} {addr}: "
+                                f"{s['holder_count']} <= {previous_holders}"
+                            )
+                            continue
+                        s["repeat_alert"] = True
+                        s["previous_holder_count"] = previous_holders
+                        s["holder_count_delta"] = holder_delta
+                        s["previous_alert_count"] = existing_candidate.get("alert_count", 0)
+                    else:
+                        s["repeat_alert"] = False
+                        s["previous_holder_count"] = 0
+                        s["holder_count_delta"] = 0
 
                     
                     # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
@@ -1492,10 +1691,19 @@ def scan_pro():
                             f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
                             f"卖出进度={s['dump_progress']:.2f}% | "
                             f"前排净流={s['front_holder_netflow']:.0f}U | Top100净流={s['holder_flow_netflow']:.0f}U | "
+                            f"观察={s['price_observation_count']}次/{s['price_observation_change_pct']:+.1f}% | "
                             f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | "
                         )
 
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
+                        alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
+                        repeat_line = (
+                            f"复推条件: 三次价格连续上涨 {s['price_observation_change_pct']:+.1f}% | "
+                            f"持有人 +{s['holder_count_delta']} ({s['previous_holder_count']} -> {s['holder_count']}) | "
+                            f"历史推送 {s.get('previous_alert_count', 0)} 次\n"
+                            if s.get("repeat_alert")
+                            else ""
+                        )
                         
                         # Build Smart Money / KOL holding details from tag stats
                         sm_stats = s.get('holder_tag_stats', {}).get('smart_degen', {})
@@ -1512,8 +1720,11 @@ def scan_pro():
                         ) if kol_stats.get('count', 0) > 0 else "KOL0个"
 
                         msg = (
-                            f"{alert_icon} *筹码关联性报警* | ${s['symbol']}\n"
+                            f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
+                            f"三次价格观察: {s['price_observation_count']}次 | 变化 {s['price_observation_change_pct']:+.1f}% | "
+                            f"回撤 {s['price_observation_drop_pct']:.1f}% | {s['price_observation_reason']}\n"
+                            f"{repeat_line}"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
                             f"👥 *共识强度*\n"
@@ -1538,8 +1749,9 @@ def scan_pro():
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
-                        tg_message_id = upsert_tg_alert(addr, msg)
+                        tg_message_id = upsert_tg_alert(addr, msg, allow_repeat=s.get("repeat_alert", False))
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
+                        reset_price_observation(addr)
                     
             except Exception as e:
                 print(f"Loop Error: {e}")
