@@ -43,7 +43,6 @@ EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
 INFLOW_STATE = {}
 PRICE_OBSERVATION_STATE = {}
 MIN_PRICE_OBSERVATION_SCANS = 3
-MIN_PRICE_UP_PCT = 0.10
 MAX_PRICE_DROP_PCT = 0.30
 SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
@@ -378,18 +377,14 @@ def update_price_observation(address, price, scan_round, symbol=None):
     current_price = safe_float(prices[-1])
     change_pct = (current_price - first_price) / first_price if first_price > 0 else 0.0
     drop_pct = (first_price - current_price) / first_price if first_price > 0 and current_price < first_price else 0.0
-    continuous_up = (
-        count >= MIN_PRICE_OBSERVATION_SCANS
-        and change_pct >= MIN_PRICE_UP_PCT
-        and all(prices[idx] >= prices[idx - 1] for idx in range(1, len(prices)))
+    continuous_up = count >= MIN_PRICE_OBSERVATION_SCANS and all(
+        prices[idx] >= prices[idx - 1] for idx in range(1, len(prices))
     )
     not_large_drop = count >= MIN_PRICE_OBSERVATION_SCANS and drop_pct <= MAX_PRICE_DROP_PCT
     ready = count >= MIN_PRICE_OBSERVATION_SCANS
-    allowed = ready and (continuous_up or not_large_drop)
+    allowed = ready and not_large_drop
     if not ready:
         reason = f"observe_wait_{count}/{MIN_PRICE_OBSERVATION_SCANS}"
-    elif continuous_up:
-        reason = f"continuous_up_{change_pct:.1%}"
     elif not_large_drop:
         reason = f"drop_ok_{drop_pct:.1%}"
     else:
@@ -1627,13 +1622,6 @@ def scan_pro():
                             f"跌幅={price_observation['drop_pct']:.1%}>{MAX_PRICE_DROP_PCT:.0%}"
                         )
                         continue
-                    if existing_candidate and not price_observation.get("continuous_up"):
-                        print(
-                            f"  [观察跳过] 已推送代币未满足复推连续上涨 {token_observation_label(addr, t.get('symbol'))}: "
-                            f"三次变化={price_observation['change_pct']:.1%}, 回撤={price_observation['drop_pct']:.1%}"
-                        )
-                        continue
-                    
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
                     s["price_observation_count"] = price_observation["count"]
@@ -1698,7 +1686,7 @@ def scan_pro():
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
-                            f"复推条件: 三次价格连续上涨 {s['price_observation_change_pct']:+.1f}% | "
+                            f"复推条件: 三次价格回撤未超30% | 变化 {s['price_observation_change_pct']:+.1f}% | "
                             f"持有人 +{s['holder_count_delta']} ({s['previous_holder_count']} -> {s['holder_count']}) | "
                             f"历史推送 {s.get('previous_alert_count', 0)} 次\n"
                             if s.get("repeat_alert")
