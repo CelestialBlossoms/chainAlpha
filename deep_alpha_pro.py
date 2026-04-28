@@ -1501,6 +1501,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
         profit = sum(safe_float(h.get("profit")) for h in wallets)
         profit_pct = (profit / buy_volume * 100) if buy_volume > 0 else 0
         position_value = sum(holder_position_value_usd(h) for h in wallets)
+        sell_progress = wallet_sell_progress_pct(wallets)
         avg_cost = weighted_avg_cost(wallets)
         mid_cost = median_cost(wallets)
         tag_stats[tag_key] = {
@@ -1513,6 +1514,7 @@ def analyze_holder_tags_and_costs(holders_list, current_price):
             "profit": profit,
             "profit_pct": profit_pct,
             "position_value": position_value,
+            "sell_progress": sell_progress,
             "avg_cost": avg_cost,
             "median_cost": mid_cost,
         }
