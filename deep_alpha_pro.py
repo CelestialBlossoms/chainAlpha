@@ -56,6 +56,8 @@ REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price
 REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
 ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:alert_candidate")
 ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(4 * 60 * 60)))
+ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
+ALERT_MISS_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_TTL_SEC", "300"))
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -245,6 +247,8 @@ def get_candidate_snapshot(address):
     cached = load_candidate_snapshot_from_redis(address)
     if cached:
         return cached
+    if load_candidate_miss_from_redis(address):
+        return None
 
     def _op(conn):
         cur = conn.cursor()
@@ -259,6 +263,7 @@ def get_candidate_snapshot(address):
         return cur.fetchone()
     row = db_op(_op)
     if not row:
+        cache_candidate_miss(address)
         return None
     raw_stats = row[3] if isinstance(row[3], dict) else {}
     snapshot = {
@@ -304,6 +309,9 @@ def format_mcap_history(values):
 def alert_candidate_redis_key(address):
     return redis_key(ALERT_REDIS_KEY_PREFIX, address)
 
+def alert_candidate_miss_redis_key(address):
+    return redis_key(ALERT_MISS_REDIS_KEY_PREFIX, address)
+
 def normalize_candidate_snapshot(data):
     if not isinstance(data, dict):
         return None
@@ -332,6 +340,25 @@ def load_candidate_snapshot_from_redis(address):
         print(f"  [Redis] 读取复推快照失败 {address[:8]}: {exc}")
         return None
 
+def load_candidate_miss_from_redis(address):
+    client = get_redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.get(alert_candidate_miss_redis_key(address)))
+    except Exception as exc:
+        print(f"  [Redis] 读取未推送缓存失败 {address[:8]}: {exc}")
+        return False
+
+def cache_candidate_miss(address):
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.setex(alert_candidate_miss_redis_key(address), ALERT_MISS_REDIS_TTL_SEC, "1")
+    except Exception as exc:
+        print(f"  [Redis] 写入未推送缓存失败 {address[:8]}: {exc}")
+
 def cache_candidate_snapshot(address, stats):
     client = get_redis_client()
     if client is None:
@@ -346,6 +373,7 @@ def cache_candidate_snapshot(address, stats):
     }
     try:
         client.setex(alert_candidate_redis_key(address), ALERT_REDIS_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+        client.delete(alert_candidate_miss_redis_key(address))
     except Exception as exc:
         print(f"  [Redis] 写入复推快照失败 {address[:8]}: {exc}")
 
