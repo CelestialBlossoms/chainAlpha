@@ -47,8 +47,10 @@ EARLY_TOKEN_MAX_AGE_SEC = 24 * 60 * 60
 INFLOW_STATE = {}
 PRICE_OBSERVATION_STATE = {}
 MIN_PRICE_OBSERVATION_SCANS = 3
+FAST_PRICE_OBSERVATION_SCANS = 2
+FAST_PRICE_UP_PCT = 0.15
 MAX_PRICE_DROP_PCT = 0.30
-MIN_REPEAT_PRICE_UP_PCT = 0.10
+MIN_REPEAT_PRICE_UP_PCT = 0.20
 SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
 REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(6 * 60 * 60)))
@@ -399,14 +401,17 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
     first_holder_count = int(safe_float(holder_counts[0])) if holder_counts else 0
     current_holder_count = int(safe_float(holder_counts[-1])) if holder_counts else 0
     holder_count_delta = current_holder_count - first_holder_count if first_holder_count > 0 and current_holder_count > 0 else 0
-    continuous_up = count >= MIN_PRICE_OBSERVATION_SCANS and all(
+    continuous_up = count >= FAST_PRICE_OBSERVATION_SCANS and all(
         prices[idx] >= prices[idx - 1] for idx in range(1, len(prices))
     )
+    fast_up = count >= FAST_PRICE_OBSERVATION_SCANS and continuous_up and change_pct >= FAST_PRICE_UP_PCT
     not_large_drop = count >= MIN_PRICE_OBSERVATION_SCANS and drop_pct <= MAX_PRICE_DROP_PCT
-    ready = count >= MIN_PRICE_OBSERVATION_SCANS
-    allowed = ready and not_large_drop
+    ready = count >= MIN_PRICE_OBSERVATION_SCANS or fast_up
+    allowed = fast_up or (count >= MIN_PRICE_OBSERVATION_SCANS and not_large_drop)
     if not ready:
         reason = f"observe_wait_{count}/{MIN_PRICE_OBSERVATION_SCANS}"
+    elif fast_up:
+        reason = f"fast_up_{change_pct:.1%}"
     elif not_large_drop:
         reason = f"drop_ok_{drop_pct:.1%}"
     else:
@@ -426,21 +431,23 @@ def update_price_observation(address, price, scan_round, symbol=None, holder_cou
         "current_holder_count": current_holder_count,
         "holder_count_delta": holder_count_delta,
         "continuous_up": continuous_up,
+        "fast_up": fast_up,
     }
 
 def mcap_price_observation_pass(mcap, price_observation):
     mcap = safe_float(mcap)
     change_pct = float(price_observation.get("change_pct") or 0)
     continuous_up = bool(price_observation.get("continuous_up"))
+    fast_up = bool(price_observation.get("fast_up"))
     drop_pct = float(price_observation.get("drop_pct") or 0)
     if mcap < LOW_MCAP_STRICT_USD:
         return (
-            continuous_up and change_pct >= LOW_MCAP_MIN_UP_PCT,
+            (continuous_up and change_pct >= LOW_MCAP_MIN_UP_PCT) or fast_up,
             f"市值<{LOW_MCAP_STRICT_USD:,.0f}，需要连续上涨{LOW_MCAP_MIN_UP_PCT:.0%}，当前{change_pct:.1%}",
         )
     if mcap < MID_MCAP_STRICT_USD:
         return (
-            continuous_up and change_pct >= MID_MCAP_MIN_UP_PCT,
+            (continuous_up and change_pct >= MID_MCAP_MIN_UP_PCT) or fast_up,
             f"市值{LOW_MCAP_STRICT_USD:,.0f}-{MID_MCAP_STRICT_USD:,.0f}，需要连续上涨{MID_MCAP_MIN_UP_PCT:.0%}，当前{change_pct:.1%}",
         )
     return (
@@ -1762,11 +1769,9 @@ def scan_pro():
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
                         alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
-                            f"复推条件: 三次价格连续上涨且涨幅>=10% | 变化 {s['price_observation_change_pct']:+.1f}% | "
-                            f"三次观察持有人 +{s['holder_count_delta']} "
+                            f"持有人变化: +{s['holder_count_delta']} "
                             f"({s.get('observation_first_holder_count', 0)} -> {s.get('observation_current_holder_count', 0)}) | "
-                            f"库内对比 {s['db_holder_count_delta']:+d} ({s['previous_holder_count']} -> {s['holder_count']}) | "
-                            f"历史推送 {s.get('previous_alert_count', 0)} 次\n"
+                            f"库内对比 {s['db_holder_count_delta']:+d}\n"
                             if s.get("repeat_alert")
                             else ""
                         )
@@ -1788,9 +1793,7 @@ def scan_pro():
                         msg = (
                             f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
-                            f"三次价格观察: {s['price_observation_count']}次 | 变化 {s['price_observation_change_pct']:+.1f}% | "
-                            f"回撤 {s['price_observation_drop_pct']:.1f}% | {s['price_observation_reason']}\n"
-                            f"市值分层条件: {s.get('mcap_observation_reason', '')}\n"
+                            f"价格变化: {s['price_observation_change_pct']:+.1f}% | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{repeat_line}"
                             f"流动性池: {s['pool_label']}\n"
                             f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
