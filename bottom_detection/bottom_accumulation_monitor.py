@@ -61,6 +61,7 @@ WATCHLIST_AUTO_ADD_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_AUTO_ADD_MCAP_US
 WATCHLIST_DELETE_BELOW_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_MCAP_USD", "40000"))
 MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", "0"))
 MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "0"))
+BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO", "0.10"))
 
 BOTTOM_ABNORMAL_RULES = [
     {
@@ -804,7 +805,9 @@ def analyze_abnormal_snapshot(
     ath_mcap = to_float(current_summary.get("ath_mcap"))
     matched_rule = match_abnormal_rule(ath_mcap, current_mcap)
     price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
-    signal_type = "abnormal" if matched_rule and price_ready else "watch"
+    pool_ratio = to_float(pool_stats.get("pool_mcap_ratio"))
+    pool_ready = pool_ratio >= BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO
+    signal_type = "abnormal" if matched_rule and price_ready and pool_ready else "watch"
     previous_holders = recent_history[0].get("holders") if recent_history else []
     holder_change = (
         compare_holder_sets(current_holders, previous_holders)
@@ -839,6 +842,11 @@ def analyze_abnormal_snapshot(
             if price_ready
             else f"价格上涨{price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
         ),
+        (
+            f"池/市值{pool_ratio:.1%}>={BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
+            if pool_ready
+            else f"池/市值{pool_ratio:.1%}<{BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
+        ),
     ]
     return {
         "score": 100 if signal_type == "abnormal" else 0,
@@ -846,8 +854,10 @@ def analyze_abnormal_snapshot(
         "reasons": reasons,
         "history_count": len(recent_history),
         "price_confirmation_ready": price_ready,
+        "pool_confirmation_ready": pool_ready,
         "price_change_pct": price_change_pct,
         "required_price_change_pct": BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT,
+        "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
         "current_mcap": current_mcap,
         "ath_mcap": ath_mcap,
         "abnormal_rule": rule_name,
@@ -942,7 +952,7 @@ def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str
         f"历史最高市值: ${analysis.get('ath_mcap', 0):,.0f} | 要求: >${analysis.get('min_ath_mcap', 0):,.0f}\n"
         f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | 区间: ${analysis.get('min_abnormal_mcap', 0):,.0f}-${analysis.get('max_abnormal_mcap', 0):,.0f}\n"
         f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
-        f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')})\n"
+        f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | 要求: >={analysis.get('required_pool_mcap_ratio', 0):.1%}\n"
         f"Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 净买入${analysis.get('netflow_usd', 0):,.0f}\n"
         f"理由: {', '.join(analysis.get('reasons') or []) or '无'}\n"
         f"https://gmgn.ai/sol/token/{address}"

@@ -52,6 +52,7 @@
     const dot = document.querySelector("#conn-dot");
     const connText = document.querySelector("#conn-text");
     const tabs = Array.from(document.querySelectorAll(".tab"));
+    const MAX_VISIBLE_SIGNALS = 10;
     const state = { signals: [], seen: new Set(), tab: "all" };
 
     function safeNum(value, fallback = 0) {
@@ -186,6 +187,19 @@
       };
     }
 
+    function isTestItem(item) {
+      const source = String(item && item.source || "").toLowerCase();
+      const status = String(item && item.status || "").toLowerCase();
+      const ca = String(item && item.ca || "").toUpperCase();
+      const title = String(item && item.title || "").toLowerCase();
+      const text = String(item && item.text || "").toLowerCase();
+      return source === "dashboard_test" ||
+        status === "test" ||
+        ca.startsWith("TEST") ||
+        title.includes("dashboard test") ||
+        text.includes("dashboard test message");
+    }
+
     function scoreSignal(signal) {
       const s = signal || {};
       const tags = s.tags || {};
@@ -250,40 +264,32 @@
               ${stat("持有人", safeNum(signal.holders))}
             </div>
           </div>
-          <div class="content-grid">
-            <section class="panel span-3">
-              <h3>核心走势</h3>
-              <p>波段：${htmlEscape(signal.wave || "-")}</p>
-              ${signal.capPath ? `<p>市值路径：${htmlEscape(signal.capPath)}</p>` : ""}
-              ${signal.holderChange ? `<p>持有人变化：${htmlEscape(signal.holderChange)}</p>` : ""}
-              <div class="mini-grid">
-                ${stat("流动性", formatCap(signal.liquidity))}
-                ${stat("手续费", `${safeNum(signal.feeSol)} SOL`)}
-                ${stat("回撤", `${safeNum(signal.drawdown)}%`)}
-                ${stat("状态", signal.status || "-")}
-              </div>
-            </section>
-            <section class="panel span-4">
-              <h3>标签钱包分析</h3>
-              <div class="meter-grid">
-                ${meter("捆绑持仓", tags.bundle && tags.bundle.hold)}
-                ${meter("狙击/老鼠仓", tags.sniper && tags.sniper.hold)}
-                ${meter("同批簇持仓", tags.cluster && tags.cluster.hold)}
-                ${meter("Top100持仓", top.top100Hold)}
-              </div>
-              <div class="mini-grid three">
-                ${tagStat("聪明钱", tags.smart)}
-                ${tagStat("KOL", tags.kol)}
-                ${tagStat("新钱包", tags.fresh)}
-              </div>
-            </section>
-            <section class="panel span-3">
-              <h3>基础结构</h3>
-              <div class="top-row"><b>Top10</b><span>持仓 ${safeNum(top.top10Hold)}% / ${formatCap(top.top10Value)} · 盈利 ${safeNum(top.top10Profit)}% · 卖出 ${safeNum(top.top10Sold)}% · 次数 ${htmlEscape(top.top10Times || "-")}</span></div>
-              <div class="top-row"><b>Top100</b><span>持仓 ${safeNum(top.top100Hold)}% / ${formatCap(top.top100Value)} · 盈利 ${safeNum(top.top100Profit)}% · 卖出 ${safeNum(top.top100Sold)}% · 次数 ${htmlEscape(top.top100Times || "-")}</span></div>
-              <div class="top-row"><b>捆绑</b><span>持仓 ${safeNum(tags.bundle && tags.bundle.hold)}% / ${formatCap(tags.bundle && tags.bundle.holdValue)} · 卖出 ${safeNum(tags.bundle && tags.bundle.sold)}%</span></div>
-              <div class="top-row"><b>Dev</b><span>持仓 ${safeNum(dev.hold)}% · 已卖 ${safeNum(dev.sold)}%</span></div>
-            </section>
+          <div class="compact-grid">
+            <div class="compact-block">
+              <b>走势</b>
+              <span>波段 ${htmlEscape(signal.wave || "-")}</span>
+              ${signal.capPath ? `<span>市值路径 ${htmlEscape(signal.capPath)}</span>` : ""}
+            </div>
+            <div class="compact-block">
+              <b>资金</b>
+              <span>流动性 ${formatCap(signal.liquidity)} · 手续费 ${safeNum(signal.feeSol)} SOL · 回撤 ${safeNum(signal.drawdown)}%</span>
+              <span>状态 ${htmlEscape(signal.status || "-")}</span>
+            </div>
+            <div class="compact-block">
+              <b>标签钱包</b>
+              <span>聪明钱 ${safeNum(tags.smart && tags.smart.count)}个 ${safeNum(tags.smart && tags.smart.hold)}% · KOL ${safeNum(tags.kol && tags.kol.count)}个 ${safeNum(tags.kol && tags.kol.hold)}%</span>
+              <span>捆绑 ${safeNum(tags.bundle && tags.bundle.count)}个 ${safeNum(tags.bundle && tags.bundle.hold)}%/${formatCap(tags.bundle && tags.bundle.holdValue)} 盈利 ${safeNum(tags.bundle && tags.bundle.profit)}% 卖出 ${safeNum(tags.bundle && tags.bundle.sold)}%</span>
+            </div>
+            <div class="compact-block">
+              <b>基础结构</b>
+              <span>Top10 ${safeNum(top.top10Hold)}%/${formatCap(top.top10Value)} 盈利 ${safeNum(top.top10Profit)}% 卖出 ${safeNum(top.top10Sold)}%</span>
+              <span>Top100 ${safeNum(top.top100Hold)}%/${formatCap(top.top100Value)} 盈利 ${safeNum(top.top100Profit)}% 卖出 ${safeNum(top.top100Sold)}%</span>
+            </div>
+            <div class="compact-block">
+              <b>Dev</b>
+              <span>持仓 ${safeNum(dev.hold)}% · 已卖 ${safeNum(dev.sold)}%</span>
+              <span>同批簇 ${safeNum(tags.cluster && tags.cluster.count)}个 ${safeNum(tags.cluster && tags.cluster.hold)}% · 新钱包 ${safeNum(tags.fresh && tags.fresh.count)}个 ${safeNum(tags.fresh && tags.fresh.hold)}%</span>
+            </div>
           </div>
           <div class="ca-row">
             <div class="ca-line">CA: ${htmlEscape(signal.ca || "-")}</div>
@@ -307,7 +313,7 @@
     }
 
     function render() {
-      const filtered = state.signals.filter(matches);
+      const filtered = state.signals.filter(matches).slice(0, MAX_VISIBLE_SIGNALS);
       list.innerHTML = filtered.map(renderCard).join("");
       empty.hidden = filtered.length > 0;
       const high = state.signals.filter((s) => scoreSignal(s).risk >= 70).length;
@@ -321,6 +327,7 @@
     }
 
     function pushItem(item, prepend = true) {
+      if (isTestItem(item)) return;
       if (!item || !item.id || state.seen.has(item.id)) return;
       state.seen.add(item.id);
       const signal = parseSignal(item);
