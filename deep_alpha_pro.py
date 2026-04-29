@@ -34,6 +34,7 @@ MIN_CANDIDATE_SM_COUNT = 1
 MIN_CANDIDATE_HOLDER_COUNT = 500
 MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
+MIN_MCAP_USD = float(os.getenv("DEEP_ALPHA_MIN_MCAP_USD", "7000"))
 MAX_DEV_BUY_USD = 500
 MAX_DEV_HOLD_RATE = 0.30
 MAX_MCAP_USD = 1_000_000
@@ -1999,6 +2000,9 @@ def scan_pro():
                     if not addr:
                         continue
                     trend_mcap = calc_mcap(t)
+                    if 0 < trend_mcap < MIN_MCAP_USD:
+                        print(f"  [跳过] 市值过低 {token_observation_label(addr, t.get('symbol'))}: ${trend_mcap:,.0f}<${MIN_MCAP_USD:,.0f}")
+                        continue
                     if trend_mcap > MAX_MCAP_USD:
                         continue
                     existing_candidate = get_candidate_snapshot(addr)
@@ -2030,6 +2034,9 @@ def scan_pro():
                         continue
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
+                    if 0 < s["mcap"] < MIN_MCAP_USD:
+                        print(f"  [跳过] 市值过低 ${s['symbol']} {addr}: ${s['mcap']:,.0f}<${MIN_MCAP_USD:,.0f}")
+                        continue
                     s["price_observation_count"] = price_observation["count"]
                     s["price_observation_change_pct"] = price_observation["change_pct"] * 100
                     s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
