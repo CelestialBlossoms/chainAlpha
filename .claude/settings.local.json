@@ -8,7 +8,8 @@
       "Bash(D:/software/anaconda/envs/py312/python.exe *)",
       "Bash(gmgn-cli token *)",
       "Bash(echo \"EXIT:$?\")",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(gmgn-cli portfolio *)"
     ]
   }
 }

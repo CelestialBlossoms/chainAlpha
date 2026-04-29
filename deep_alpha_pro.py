@@ -548,10 +548,10 @@ def observation_archive_entry(stats, price_observation):
     }
 
 def format_price_observation_archive(archive, current_entry=None, limit=3):
-    rows = list(archive or [])
     if current_entry:
-        rows.append(current_entry)
-    rows = rows[-limit:]
+        rows = [current_entry]
+    else:
+        rows = list(archive or [])[-1:]
     if not rows:
         return ""
     lines = []
@@ -720,14 +720,6 @@ def extract_token_narrative(info, trend_row):
         paths=(
             ("link", "description"),
             ("description",),
-            ("trans_name_zhcn",),
-            ("name",),
-            ("link", "twitter_username"),
-            ("twitter_username",),
-            ("link", "website"),
-            ("website",),
-            ("link", "telegram"),
-            ("telegram",),
         ),
     )
     return str(value or "").strip()[:180]
@@ -1703,6 +1695,12 @@ def analyze_bottom_profit_wallets(holders_list):
             f"盈利{holder_profit_pct(holder):+.1f}% 成本{format_chain_price(holder.get('avg_cost'))}"
         )
 
+    def wallet_lines(wallets, empty_text):
+        lines = [wallet_line(holder) for holder in wallets]
+        if not lines:
+            return empty_text
+        return "\n".join(f"  - {line}" for line in lines)
+
     return {
         "count": len(profitable),
         "hold_pct": total_hold,
@@ -1718,9 +1716,9 @@ def analyze_bottom_profit_wallets(holders_list):
             "底部盈利钱包聚合\n"
             f"- 结论: {conclusion}\n"
             f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2f}%/${total_value:,.0f} | 盈利{profit_pct:+.1f}%\n"
-            f"- 主要盈利钱包: {' | '.join(wallet_line(h) for h in profitable[:3]) or '暂无盈利钱包'}\n"
+            f"- 主要盈利钱包:\n{wallet_lines(profitable[:3], '  - 暂无盈利钱包')}\n"
             f"- 卖出观察: {len(sellers)}个 | 剩余持仓{seller_hold:.2f}% | 卖出进度{seller_progress:.1f}%\n"
-            f"- 主要卖出钱包: {' | '.join(wallet_line(h) for h in sellers[:3]) or '暂无明显卖出钱包'}"
+            f"- 主要卖出钱包:\n{wallet_lines(sellers[:3], '  - 暂无明显卖出钱包')}"
         ),
     }
 
