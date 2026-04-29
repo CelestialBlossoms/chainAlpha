@@ -910,9 +910,10 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
     return db_op(_op)
 
 
-def send_tg(text: str) -> None:
+def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
+    extra = extra or {}
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        publish_tg_alert(text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID)
+        publish_tg_alert(text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
         return
     try:
         resp = requests.post(
@@ -922,11 +923,11 @@ def send_tg(text: str) -> None:
         )
         if not resp.ok:
             print(f"tg failed: {resp.status_code} {resp.text[:200]}")
-            publish_tg_alert(text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID)
+            publish_tg_alert(text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
             return
         payload = resp.json()
         message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
-        publish_tg_alert(text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id)
+        publish_tg_alert(text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
     except Exception as exc:
         print(f"tg exception: {exc}")
         publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
@@ -988,7 +989,31 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis):
-        send_tg(abnormal_signal_text(token, analysis))
+        pool_summary = summary.get("pool") or {}
+        web_extra = {
+            "signal_type": analysis.get("signal_type"),
+            "abnormal_rule": analysis.get("abnormal_rule"),
+            "ath_mcap": analysis.get("ath_mcap", 0),
+            "min_ath_mcap": analysis.get("min_ath_mcap", 0),
+            "current_mcap": analysis.get("current_mcap", calc_mcap(token)),
+            "min_abnormal_mcap": analysis.get("min_abnormal_mcap", 0),
+            "max_abnormal_mcap": analysis.get("max_abnormal_mcap", 0),
+            "price_change_pct": analysis.get("price_change_pct", 0),
+            "required_price_change_pct": analysis.get("required_price_change_pct", 0),
+            "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
+            "pool_main_exchange": pool_summary.get("main_exchange", ""),
+            "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
+            "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
+            "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),
+            "distribution_pct_delta": analysis.get("distribution_pct_delta", 0),
+            "netflow_usd": analysis.get("netflow_usd", 0),
+            "score": analysis.get("score", 0),
+            "history_count": analysis.get("history_count", 0),
+            "reasons": analysis.get("reasons", []),
+            "symbol": token.get("symbol"),
+            "address": token_address(token),
+        }
+        send_tg(abnormal_signal_text(token, analysis), extra=web_extra)
     return True
 
 

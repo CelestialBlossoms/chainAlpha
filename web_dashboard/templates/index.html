@@ -46,6 +46,7 @@
           <button class="tab active" type="button" data-tab="all">全部</button>
           <button class="tab" type="button" data-tab="repeat">复推</button>
           <button class="tab" type="button" data-tab="new">首推</button>
+          <button class="tab" type="button" data-tab="bottom">底部异动</button>
           <button id="clear-btn" class="clear-btn" type="button">清空页面</button>
         </div>
       </section>
@@ -184,6 +185,72 @@
 
     function normalizeItem(item) {
       const extra = item.extra || {};
+      const source = item.source || "";
+
+      // bottom_abnormal signals: structured extra directly (no stats wrapper)
+      if (source === "bottom_abnormal") {
+        const address = extra.address || item.ca || "";
+        if (!address) return null;
+        const signalType = extra.signal_type || "watch";
+        const isAbnormal = signalType === "abnormal";
+        return {
+          id: item.id,
+          ts: safeNum(item.ts),
+          time: fmtTime(item.ts),
+          source: item.source || "",
+          status: item.status || "",
+          address,
+          chain: "sol",
+          symbol: extra.symbol || item.title || "UNKNOWN",
+          name: "",
+          narrative: `底部${isAbnormal ? "异动" : "观察"}: ${extra.abnormal_rule || ""}`,
+          mcap: safeNum(extra.current_mcap),
+          holders: 0,
+          feeSol: 0,
+          tradeVolume: 0,
+          priceChange: safeNum(extra.price_change_pct),
+          wave: extra.abnormal_rule || "",
+          drawdown: 0,
+          repeatCount: 1,
+          repeatType: signalType === "abnormal" ? "底部异动" : "底部观察",
+          capPath: `ATH $${formatCap(extra.ath_mcap)} → 当前 $${formatCap(extra.current_mcap)}`,
+          holderDelta: 0,
+          pool: extra.pool_main_exchange || "",
+          liquidity: safeNum(extra.pool_total_liquidity),
+          createdTime: "",
+          age: "",
+          verdict: signalType === "abnormal" ? "底部异动" : "底部观察",
+          trend: {},
+          tags: {
+            bottom: {
+              count: 1,
+              supply: safeNum(extra.accumulation_pct_delta) * 100,
+              position_value: safeNum(extra.netflow_usd),
+              profit_pct: 0,
+              sell_progress: safeNum(extra.distribution_pct_delta) * 100,
+            },
+          },
+          top10: {},
+          top100: {},
+          bottomProfit: {},
+          rawText: item.text || "",
+          rawStats: extra,
+          isNew: false,
+          // bottom-specific fields
+          isBottom: true,
+          athMcap: safeNum(extra.ath_mcap),
+          abnormalRule: extra.abnormal_rule || "",
+          poolMcapRatio: safeNum(extra.pool_mcap_ratio),
+          poolMcapRatioText: extra.pool_mcap_ratio_text || "",
+          accumulationPct: safeNum(extra.accumulation_pct_delta),
+          distributionPct: safeNum(extra.distribution_pct_delta),
+          netflowUsd: safeNum(extra.netflow_usd),
+          historyCount: safeNum(extra.history_count),
+          reasons: extra.reasons || [],
+        };
+      }
+
+      // deep_alpha signals: stats in extra.stats
       const stats = extra.stats || {};
       if (!stats || !Object.keys(stats).length) return null;
       const address = item.ca || extra.address || stats.address || "";
@@ -232,6 +299,7 @@
         rawText: item.text || "",
         rawStats: stats,
         isNew: false,
+        isBottom: false,
       };
     }
 
@@ -259,8 +327,9 @@
 
     function matches(signal) {
       const tabMatch = state.tab === "all" ||
-        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1) ||
-        (state.tab === "new" && safeNum(signal.repeatCount) <= 1);
+        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1 && !signal.isBottom) ||
+        (state.tab === "new" && safeNum(signal.repeatCount) <= 1 && !signal.isBottom) ||
+        (state.tab === "bottom" && signal.isBottom);
       if (!tabMatch) return false;
       const q = queryInput.value.trim().toLowerCase();
       if (!q) return true;
@@ -285,6 +354,29 @@
       const selected = signal.address === state.selected ? " selected" : "";
       const flashed = state.flashed.has(signal.address) || signal.isNew ? " new-row" : "";
       const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
+
+      if (signal.isBottom) {
+        const isAbnormal = signal.verdict === "底部异动";
+        const badge = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
+        return `
+          <tr class="signal-row${selected}${flashed}" data-address="${htmlEscape(signal.address)}">
+            <td>${htmlEscape(signal.time || "-")}</td>
+            <td><b>$${htmlEscape(signal.symbol)}</b>${badge}<span>${htmlEscape(signal.abnormalRule || signal.repeatType)}</span></td>
+            <td><code class="ca-short">${htmlEscape(shortAddress(signal.address))}</code></td>
+            <td>${formatCap(signal.mcap)}</td>
+            <td class="${priceClass}">${formatPct(signal.priceChange)}</td>
+            <td>-</td>
+            <td>${htmlEscape(signal.abnormalRule || "-")}</td>
+            <td>ATH ${formatCap(signal.athMcap)}<span>池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span></td>
+            <td>
+              <div class="row-actions">
+                <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
+                <a class="mini-link gmgn-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+              </div>
+            </td>
+          </tr>`;
+      }
+
       const riskText = `Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% / 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%`;
       return `
         <tr class="signal-row${selected}${flashed}" data-address="${htmlEscape(signal.address)}">
@@ -327,6 +419,54 @@
         detail.innerHTML = `<div class="detail-empty">选择一条代币查看详情</div>`;
         return;
       }
+
+      if (signal.isBottom) {
+        const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
+        const isAbnormal = signal.verdict === "底部异动";
+        const badge = isAbnormal ? '<span class="badge badge-orange">底部异动</span>' : '<span class="badge">底部观察</span>';
+        const reasonsHtml = (signal.reasons || []).map((r) => `<li>${htmlEscape(r)}</li>`).join("");
+        detail.innerHTML = `
+          <div class="detail-sticky">
+            <div>
+              <h2>$${htmlEscape(signal.symbol)} ${badge}</h2>
+              <p>CA: <code>${htmlEscape(shortAddress(signal.address))}</code></p>
+              <p>档位: ${htmlEscape(signal.abnormalRule || "未命中")}</p>
+            </div>
+            <div class="sticky-actions">
+              <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
+              <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+              <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
+            </div>
+          </div>
+          <div class="metric-grid">
+            ${metric("当前市值", formatCap(signal.mcap))}
+            ${metric("价格变化", formatPct(signal.priceChange), priceClass)}
+            ${metric("ATH市值", formatCap(signal.athMcap))}
+            ${metric("池/市值", `${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% (${htmlEscape(signal.poolMcapRatioText)})`)}
+            ${metric("流动性", formatCap(signal.liquidity))}
+            ${metric("快照历史", `${safeNum(signal.historyCount)}次`)}
+          </div>
+          <div class="metric-grid two">
+            ${metric("增持", `+${safeNum(signal.accumulationPct * 100).toFixed(2)}%`, "green-text")}
+            ${metric("减持", `-${safeNum(signal.distributionPct * 100).toFixed(2)}%`, "red-text")}
+            ${metric("净买入", formatCap(signal.netflowUsd))}
+            ${metric("评分", `${safeNum(signal.rawStats.score)}/100`)}
+          </div>
+          <section class="detail-section">
+            <h3>检测理由</h3>
+            <ul class="reason-list">${reasonsHtml || "<li>无</li>"}</ul>
+          </section>
+          <section class="detail-section">
+            <h3>筹码变化</h3>
+            <p>Top100 持仓变化: 增持 ${safeNum(signal.accumulationPct * 100).toFixed(2)}% | 减持 ${safeNum(signal.distributionPct * 100).toFixed(2)}%</p>
+            <p>净流入: ${formatCap(signal.netflowUsd)}</p>
+          </section>
+          <div class="ca-line">CA: ${htmlEscape(signal.address)}</div>
+          <details class="raw"><summary>原始 TG 文本</summary><pre>${htmlEscape(signal.rawText || "")}</pre></details>
+        `;
+        return;
+      }
+
       const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
       detail.innerHTML = `
         <div class="detail-sticky">
