@@ -20,11 +20,17 @@
         </div>
       </header>
 
-      <section class="summary">
-        <article class="card summary-card"><div class="stat-label">代币数</div><div id="sum-total" class="num">0</div></article>
-        <article class="card summary-card"><div class="stat-label">复推</div><div id="sum-repeat" class="num">0</div></article>
-        <article class="card summary-card"><div class="stat-label">最高市值</div><div id="sum-maxcap" class="num">$0</div></article>
-        <article class="card summary-card"><div class="stat-label">最新</div><div id="sum-latest" class="num">-</div></article>
+      <section id="quick-ca" class="card quick-ca">
+        <div>
+          <span class="quick-label">最新CA</span>
+          <b id="quick-symbol">-</b>
+          <code id="quick-address">等待新消息</code>
+        </div>
+        <div class="quick-actions">
+          <button id="quick-copy" class="mini-btn" type="button">复制</button>
+          <a id="quick-gmgn" class="mini-link" href="https://gmgn.ai/" target="_blank" rel="noreferrer">GMGN</a>
+          <a id="quick-dex" class="mini-link" href="https://dexscreener.com/" target="_blank" rel="noreferrer">DexScreener</a>
+        </div>
       </section>
 
       <section class="controls">
@@ -51,12 +57,13 @@
               <tr>
                 <th>时间</th>
                 <th>代币</th>
+                <th>CA</th>
                 <th>市值</th>
                 <th>涨幅</th>
                 <th>持有人</th>
                 <th>复推</th>
-                <th>池子</th>
-                <th>结构</th>
+                <th>风险</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody id="table-body"></tbody>
@@ -78,11 +85,16 @@
     const queryInput = document.querySelector("#query");
     const sortSelect = document.querySelector("#sort");
     const clearBtn = document.querySelector("#clear-btn");
+    const quickSymbol = document.querySelector("#quick-symbol");
+    const quickAddress = document.querySelector("#quick-address");
+    const quickCopy = document.querySelector("#quick-copy");
+    const quickGmgn = document.querySelector("#quick-gmgn");
+    const quickDex = document.querySelector("#quick-dex");
     const dot = document.querySelector("#conn-dot");
     const connText = document.querySelector("#conn-text");
     const tabs = Array.from(document.querySelectorAll(".tab"));
     const MAX_VISIBLE_SIGNALS = 10;
-    const state = { byAddress: new Map(), seenIds: new Set(), tab: "all", selected: "" };
+    const state = { byAddress: new Map(), seenIds: new Set(), tab: "all", selected: "", flashed: new Set() };
 
     function safeNum(value, fallback = 0) {
       const n = Number(value);
@@ -107,6 +119,43 @@
     function formatPct(value) {
       const n = safeNum(value);
       return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+    }
+
+    function shortAddress(address) {
+      const value = String(address || "");
+      if (value.length <= 16) return value || "-";
+      return `${value.slice(0, 6)}...${value.slice(-6)}`;
+    }
+
+    function gmgnUrl(signal) {
+      if (!signal || !signal.address) return "https://gmgn.ai/";
+      return `https://gmgn.ai/${signal.chain || "sol"}/token/${signal.address}`;
+    }
+
+    function solscanUrl(signal) {
+      if (!signal || !signal.address) return "https://solscan.io/";
+      return `https://solscan.io/token/${signal.address}`;
+    }
+
+    function dexUrl(signal) {
+      if (!signal || !signal.address) return "https://dexscreener.com/";
+      return `https://dexscreener.com/solana/${signal.address}`;
+    }
+
+    async function copyAddress(address) {
+      if (!address) return;
+      try {
+        await navigator.clipboard.writeText(address);
+      } catch (_) {
+        const area = document.createElement("textarea");
+        area.value = address;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
     }
 
     function fmtTime(ts) {
@@ -182,14 +231,25 @@
         bottomProfit: stats.bottom_profit_wallets || {},
         rawText: item.text || "",
         rawStats: stats,
+        isNew: false,
       };
     }
 
-    function upsertSignal(signal) {
+    function upsertSignal(signal, flash = false) {
       const prev = state.byAddress.get(signal.address);
       if (!prev || signal.ts >= prev.ts) {
+        signal.isNew = flash;
         state.byAddress.set(signal.address, signal);
         if (!state.selected) state.selected = signal.address;
+        if (flash) {
+          state.flashed.add(signal.address);
+          setTimeout(() => {
+            state.flashed.delete(signal.address);
+            const current = state.byAddress.get(signal.address);
+            if (current) current.isNew = false;
+            render();
+          }, 3000);
+        }
       }
     }
 
@@ -223,17 +283,25 @@
 
     function tableRow(signal) {
       const selected = signal.address === state.selected ? " selected" : "";
+      const flashed = state.flashed.has(signal.address) || signal.isNew ? " new-row" : "";
       const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
+      const riskText = `Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% / 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%`;
       return `
-        <tr class="signal-row${selected}" data-address="${htmlEscape(signal.address)}">
+        <tr class="signal-row${selected}${flashed}" data-address="${htmlEscape(signal.address)}">
           <td>${htmlEscape(signal.time || "-")}</td>
           <td><b>$${htmlEscape(signal.symbol)}</b><span>${htmlEscape(signal.narrative || signal.name || "-")}</span></td>
+          <td><code class="ca-short">${htmlEscape(shortAddress(signal.address))}</code></td>
           <td>${formatCap(signal.mcap)}</td>
           <td class="${priceClass}">${formatPct(signal.priceChange)}</td>
           <td>${safeNum(signal.holders)}</td>
           <td>${signal.repeatCount > 1 ? `第${signal.repeatCount}次` : "首推"}</td>
-          <td>${htmlEscape(signal.pool || "-")}<span>${formatCap(signal.liquidity)}</span></td>
-          <td>${htmlEscape(signal.verdict || "-")}</td>
+          <td>${htmlEscape(signal.verdict || "-")}<span>${htmlEscape(riskText)}</span></td>
+          <td>
+            <div class="row-actions">
+              <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
+              <a class="mini-link gmgn-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+            </div>
+          </td>
         </tr>`;
     }
 
@@ -260,14 +328,18 @@
         return;
       }
       const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
-      const gmgn = `https://gmgn.ai/${signal.chain || "sol"}/token/${signal.address}`;
       detail.innerHTML = `
-        <div class="detail-head">
+        <div class="detail-sticky">
           <div>
             <h2>$${htmlEscape(signal.symbol)}</h2>
+            <p>CA: <code>${htmlEscape(shortAddress(signal.address))}</code></p>
             <p>${htmlEscape(signal.name || signal.narrative || "无叙事")}</p>
           </div>
-          <a class="gmgn" href="${htmlEscape(gmgn)}" target="_blank" rel="noreferrer">GMGN</a>
+          <div class="sticky-actions">
+            <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
+            <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+            <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
+          </div>
         </div>
         <div class="metric-grid">
           ${metric("市值", formatCap(signal.mcap))}
@@ -326,20 +398,31 @@
       `;
     }
 
+    function updateQuickBar() {
+      const latest = allSignals().sort((a, b) => b.ts - a.ts)[0];
+      if (!latest) {
+        quickSymbol.textContent = "-";
+        quickAddress.textContent = "等待新消息";
+        quickGmgn.href = "https://gmgn.ai/";
+        quickDex.href = "https://dexscreener.com/";
+        quickCopy.dataset.address = "";
+        return;
+      }
+      quickSymbol.textContent = `$${latest.symbol}`;
+      quickAddress.textContent = shortAddress(latest.address);
+      quickAddress.title = latest.address;
+      quickGmgn.href = gmgnUrl(latest);
+      quickDex.href = dexUrl(latest);
+      quickCopy.dataset.address = latest.address;
+    }
+
     function render() {
       const rows = sortedSignals();
       tbody.innerHTML = rows.map(tableRow).join("");
       empty.hidden = rows.length > 0;
       if (rows.length && !rows.some((s) => s.address === state.selected)) state.selected = rows[0].address;
       renderDetail(state.byAddress.get(state.selected));
-      const signals = allSignals();
-      const repeat = signals.filter((s) => safeNum(s.repeatCount) > 1).length;
-      const maxCap = signals.length ? Math.max(...signals.map((s) => safeNum(s.mcap))) : 0;
-      const latest = signals.sort((a, b) => b.ts - a.ts)[0];
-      document.querySelector("#sum-total").textContent = signals.length;
-      document.querySelector("#sum-repeat").textContent = repeat;
-      document.querySelector("#sum-maxcap").textContent = formatCap(maxCap);
-      document.querySelector("#sum-latest").textContent = latest ? `$${latest.symbol}` : "-";
+      updateQuickBar();
     }
 
     function isTestItem(item) {
@@ -349,13 +432,13 @@
       return source === "dashboard_test" || status === "test" || ca.startsWith("TEST");
     }
 
-    function pushItem(item) {
+    function pushItem(item, flash = false) {
       if (isTestItem(item)) return;
       if (!item || !item.id || state.seenIds.has(item.id)) return;
       state.seenIds.add(item.id);
       const signal = normalizeItem(item);
       if (!signal) return;
-      upsertSignal(signal);
+      upsertSignal(signal, flash);
       render();
     }
 
@@ -367,7 +450,7 @@
     async function loadRecent() {
       const resp = await fetch("/api/recent?limit=300");
       const data = await resp.json();
-      for (const item of data.items || []) pushItem(item);
+      for (const item of data.items || []) pushItem(item, false);
       render();
     }
 
@@ -375,15 +458,31 @@
       const es = new EventSource("/events");
       es.addEventListener("open", () => setStatus("ok", "实时监听中"));
       es.addEventListener("ready", () => setStatus("ok", "实时监听中"));
-      es.addEventListener("alert", (event) => pushItem(JSON.parse(event.data)));
+      es.addEventListener("alert", (event) => pushItem(JSON.parse(event.data), true));
       es.addEventListener("error", () => setStatus("bad", "重连中"));
     }
 
     tbody.addEventListener("click", (event) => {
+      if (event.target.closest("a, button")) return;
       const row = event.target.closest(".signal-row");
       if (!row) return;
       state.selected = row.dataset.address;
+      copyAddress(state.selected);
       render();
+    });
+    tbody.addEventListener("dblclick", (event) => {
+      if (event.target.closest("a, button")) return;
+      const row = event.target.closest(".signal-row");
+      if (!row) return;
+      const signal = state.byAddress.get(row.dataset.address);
+      if (signal) window.open(gmgnUrl(signal), "_blank", "noopener");
+    });
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest(".copy-btn, #quick-copy");
+      if (!btn) return;
+      event.preventDefault();
+      event.stopPropagation();
+      copyAddress(btn.dataset.address || "");
     });
     queryInput.addEventListener("input", render);
     sortSelect.addEventListener("change", render);
