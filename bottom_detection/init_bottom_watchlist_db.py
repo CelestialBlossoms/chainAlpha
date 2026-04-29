@@ -14,10 +14,28 @@ def init_bottom_watchlist_table(conn):
         """
         CREATE TABLE IF NOT EXISTS bottom_watchlist_tokens (
             ca TEXT PRIMARY KEY,
-            create_at TIMESTAMPTZ
+            create_at TIMESTAMPTZ,
+            added_at TIMESTAMPTZ DEFAULT now(),
+            last_seen_at TIMESTAMPTZ,
+            source TEXT DEFAULT 'auto_ath_mcap',
+            peak_mcap NUMERIC DEFAULT 0,
+            last_mcap NUMERIC DEFAULT 0,
+            note TEXT
         );
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS create_at TIMESTAMPTZ;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT now();
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'auto_ath_mcap';
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS peak_mcap NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS last_mcap NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS note TEXT;
         """
     )
     print("Initialized bottom_watchlist_tokens")

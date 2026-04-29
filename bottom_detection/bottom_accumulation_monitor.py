@@ -27,6 +27,13 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
+from bottom_detection.bottom_watchlist_store import (
+    delete_watchlist_token,
+    fetch_watchlist_records,
+    fill_watchlist_create_at as store_fill_watchlist_create_at,
+    update_watchlist_seen,
+    upsert_watchlist_token,
+)
 
 
 CHAIN = "sol"
@@ -42,24 +49,32 @@ NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m"
 OLD_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_OLD_TOKEN_KLINE_RESOLUTION", "15m")
 KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(6 * 3600)))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
-MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", str(5 * 3600)))
-MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "10"))
+BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD", "1000000"))
+BOTTOM_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_MCAP_USD", "40000"))
+BOTTOM_ABNORMAL_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MAX_MCAP_USD", "200000"))
+BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD", "5000000"))
+BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD", "50000"))
+BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD", "500000"))
+BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT = float(os.getenv("BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT", "30"))
+WATCHLIST_AUTO_ADD_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_AUTO_ADD_MCAP_USD", "1000000"))
+WATCHLIST_DELETE_BELOW_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_MCAP_USD", "40000"))
+MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", "0"))
+MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "0"))
 
-MIN_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_ACCUM_PCT_DELTA", "0.015"))
-MIN_WINDOW_ACCUMULATED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_WINDOW_ACCUM_PCT_DELTA", "0.10"))
-MIN_SIGNAL_HISTORY_COUNT = int(os.getenv("BOTTOM_MIN_SIGNAL_HISTORY_COUNT", str(RECENT_COMPARE_LIMIT)))
-MIN_WALLET_BEHAVIOR_PCT_DELTA = float(os.getenv("BOTTOM_MIN_WALLET_BEHAVIOR_PCT_DELTA", "0.003"))
-MIN_WALLET_BEHAVIOR_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_WALLET_BEHAVIOR_NETFLOW_USD", "1000"))
-EARLY_WALLET_RANK_LIMIT = int(os.getenv("BOTTOM_EARLY_WALLET_RANK_LIMIT", "30"))
-MIN_EARLY_WALLET_SELL_STEPS = int(os.getenv("BOTTOM_MIN_EARLY_WALLET_SELL_STEPS", "3"))
-MIN_EARLY_WALLET_DISTRIBUTION_PCT = float(os.getenv("BOTTOM_MIN_EARLY_WALLET_DISTRIBUTION_PCT", "0.005"))
-MIN_DISTRIBUTED_PCT_DELTA = float(os.getenv("BOTTOM_MIN_DISTRIB_PCT_DELTA", "0.015"))
-MIN_ROTATION_PCT = float(os.getenv("BOTTOM_MIN_ROTATION_PCT", "0.02"))
-MIN_NETFLOW_USD = float(os.getenv("BOTTOM_MIN_NETFLOW_USD", "5000"))
-MIN_SIGNAL_SCORE = int(os.getenv("BOTTOM_MIN_SIGNAL_SCORE", "60"))
-NEW_TOKEN_NOTIFY_PRICE_UP_PCT = float(os.getenv("BOTTOM_NEW_TOKEN_NOTIFY_PRICE_UP_PCT", "10"))
-OLD_TOKEN_NOTIFY_PRICE_UP_PCT = float(os.getenv("BOTTOM_OLD_TOKEN_NOTIFY_PRICE_UP_PCT", "5"))
-ACCUMULATION_ENDING_RATIO = float(os.getenv("BOTTOM_ACCUM_ENDING_RATIO", "0.45"))
+BOTTOM_ABNORMAL_RULES = [
+    {
+        "name": "ATH5M_50K_500K",
+        "min_ath_mcap": BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD,
+        "min_mcap": BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD,
+        "max_mcap": BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD,
+    },
+    {
+        "name": "ATH1M_40K_200K",
+        "min_ath_mcap": BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD,
+        "min_mcap": BOTTOM_ABNORMAL_MIN_MCAP_USD,
+        "max_mcap": BOTTOM_ABNORMAL_MAX_MCAP_USD,
+    },
+]
 
 SOL_CA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,50}$")
 
@@ -150,6 +165,44 @@ def calc_mcap(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = None) -> float:
+    for source in (row, row.get("_gmgn_info") or {}, row.get("_gmgn_security") or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "ath_market_cap",
+            "ath_mcap",
+            "highest_market_cap",
+            "highest_mcap",
+            "max_market_cap",
+            "max_mcap",
+            "history_high_market_cap",
+            "market_cap_high",
+        ):
+            value = to_float(source.get(key))
+            if value > 0:
+                return value
+    supply = to_float(row.get("circulating_supply"))
+    if supply <= 0:
+        supply = to_float((row.get("_gmgn_info") or {}).get("circulating_supply"))
+    if supply > 0 and candles:
+        high_price = max((to_float(candle.get("high")) for candle in candles), default=0.0)
+        if high_price > 0:
+            return high_price * supply
+    return calc_mcap(row)
+
+
+def abnormal_max_mcap_usd() -> float:
+    return max(rule["max_mcap"] for rule in BOTTOM_ABNORMAL_RULES)
+
+
+def match_abnormal_rule(ath_mcap: float, current_mcap: float) -> dict[str, Any] | None:
+    for rule in sorted(BOTTOM_ABNORMAL_RULES, key=lambda item: item["min_ath_mcap"], reverse=True):
+        if ath_mcap >= rule["min_ath_mcap"] and rule["min_mcap"] <= current_mcap <= rule["max_mcap"]:
+            return rule
+    return None
+
+
 def first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         value = row.get(key)
@@ -235,6 +288,9 @@ def token_basic_filter_reason(row: dict[str, Any]) -> str | None:
     mcap = calc_mcap(row)
     if mcap < MIN_MCAP_USD:
         return f"市值${mcap:,.0f}<{MIN_MCAP_USD:,.0f}"
+    max_mcap = abnormal_max_mcap_usd()
+    if mcap > max_mcap:
+        return f"市值${mcap:,.0f}>{max_mcap:,.0f}"
     age = token_age_sec(row)
     if age and age < MIN_TOKEN_AGE_SEC:
         return f"创建{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
@@ -269,26 +325,32 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
 
 
 def fetch_watchlist_tokens() -> list[dict[str, Any]]:
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute("SELECT ca, create_at FROM bottom_watchlist_tokens WHERE ca IS NOT NULL")
-        return cur.fetchall()
-
     try:
-        rows = db_op(_op)
+        rows = fetch_watchlist_records()
     except Exception as exc:
         print(f"watchlist query failed: {exc}")
         return []
     tokens = []
-    for ca, create_at in rows:
+    for row in rows:
+        ca = row.get("ca")
+        create_at = row.get("create_at")
+        added_at = row.get("added_at")
         address = str(ca).strip()
         if not valid_sol_ca(address):
             continue
-        token = {"address": address, "source": "watchlist"}
+        token = {
+            "address": address,
+            "source": "watchlist",
+            "watchlist_source": row.get("source"),
+            "watchlist_peak_mcap": to_float(row.get("peak_mcap")),
+            "watchlist_last_mcap": to_float(row.get("last_mcap")),
+        }
         if create_at:
             created_ts = int(create_at.timestamp()) if isinstance(create_at, datetime) else parse_timestamp(create_at)
             token["watchlist_create_at"] = created_ts
             token["created_at"] = created_ts
+        if added_at:
+            token["watchlist_added_at"] = int(added_at.timestamp()) if isinstance(added_at, datetime) else parse_timestamp(added_at)
         tokens.append(token)
     return tokens
 
@@ -534,20 +596,8 @@ def fill_watchlist_create_at(token: dict[str, Any]) -> None:
     if created_ts <= 0:
         return
     address = token_address(token)
-
-    def _op(conn):
-        cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE bottom_watchlist_tokens
-            SET create_at = to_timestamp(%s)
-            WHERE ca = %s AND create_at IS NULL
-            """,
-            (created_ts, address),
-        )
-
     try:
-        db_op(_op)
+        store_fill_watchlist_create_at(address, created_ts)
         token["watchlist_create_at"] = created_ts
         print(f"{token_label(token)} watchlist create_at filled")
     except Exception as exc:
@@ -602,6 +652,7 @@ def build_snapshot_json(
         "sell_volume": sum(h["sell_volume"] for h in holders),
         "netflow": sum(h["netflow"] for h in holders),
         "mcap": calc_mcap(token),
+        "ath_mcap": calc_ath_mcap(token, candles or []),
         "price": to_float(token.get("price")),
         "liquidity": liquidity,
         "pool": pool_summary,
@@ -686,9 +737,6 @@ def compare_holder_sets(current_holders: list[dict[str, Any]], previous_holders:
     new_holder_pct = 0.0
     exited_holder_pct = 0.0
     netflow_delta = 0.0
-    tagged_delta = 0.0
-    top_buyers = []
-    top_sellers = []
 
     for wallet, cur in current.items():
         old = previous.get(wallet)
@@ -700,217 +748,21 @@ def compare_holder_sets(current_holders: list[dict[str, Any]], previous_holders:
         netflow_delta += net_delta
         if delta > 0:
             accumulated_delta += delta
-            top_buyers.append({"wallet": wallet, "pct_delta": delta, "netflow": net_delta, "tags": cur.get("tags", [])})
         elif delta < 0:
             distributed_delta += abs(delta)
-            top_sellers.append({"wallet": wallet, "pct_delta": delta, "netflow": net_delta, "tags": cur.get("tags", [])})
         if not old:
             new_holder_pct += cur["hold_pct"]
-        if delta > 0 and any(str(tag) in {"smart_degen", "renowned", "bundler", "rat_trader", "fresh_wallet"} for tag in cur.get("tags", [])):
-            tagged_delta += delta
 
     for wallet, old in previous.items():
         if wallet not in current:
             exited_holder_pct += old["hold_pct"]
 
-    rotation_score = accumulated_delta / max(distributed_delta, 0.000001)
     return {
         "accumulation_pct_delta": accumulated_delta,
         "distribution_pct_delta": distributed_delta,
-        "rotation_score": rotation_score,
         "new_holder_pct": new_holder_pct,
         "exited_holder_pct": exited_holder_pct,
-        "turnover_pct": new_holder_pct + exited_holder_pct,
         "netflow_usd": netflow_delta,
-        "tagged_delta": tagged_delta,
-        "top_buyers": sorted(top_buyers, key=lambda item: item["pct_delta"], reverse=True)[:8],
-        "top_sellers": sorted(top_sellers, key=lambda item: item["pct_delta"])[:8],
-    }
-
-
-def wallet_behavior_item(wallet: str, points: list[dict[str, Any]]) -> dict[str, Any]:
-    first = points[0]
-    last = points[-1]
-    hold_delta = to_float(last.get("hold_pct")) - to_float(first.get("hold_pct"))
-    buy_delta = to_float(last.get("buy_volume")) - to_float(first.get("buy_volume"))
-    sell_delta = to_float(last.get("sell_volume")) - to_float(first.get("sell_volume"))
-    netflow_delta = buy_delta - sell_delta
-    rank_delta = to_int(first.get("rank")) - to_int(last.get("rank"))
-    active_points = [point for point in points if to_float(point.get("hold_pct")) > 0]
-    first_active = active_points[0] if active_points else first
-    sell_steps = 0
-    buy_steps = 0
-    hold_down_steps = 0
-    hold_up_steps = 0
-    max_hold_pct = max((to_float(point.get("hold_pct")) for point in points), default=0.0)
-    min_after_peak_pct = to_float(last.get("hold_pct"))
-    peak_seen = False
-    for prev, cur in zip(points, points[1:]):
-        prev_hold = to_float(prev.get("hold_pct"))
-        cur_hold = to_float(cur.get("hold_pct"))
-        if prev_hold >= max_hold_pct:
-            peak_seen = True
-        if peak_seen:
-            min_after_peak_pct = min(min_after_peak_pct, cur_hold)
-        sell_step = to_float(cur.get("sell_volume")) - to_float(prev.get("sell_volume"))
-        buy_step = to_float(cur.get("buy_volume")) - to_float(prev.get("buy_volume"))
-        if sell_step > max(buy_step, 0) and sell_step > 0:
-            sell_steps += 1
-        if buy_step > max(sell_step, 0) and buy_step > 0:
-            buy_steps += 1
-        if cur_hold < prev_hold:
-            hold_down_steps += 1
-        elif cur_hold > prev_hold:
-            hold_up_steps += 1
-    distributed_from_peak = max_hold_pct - min_after_peak_pct
-    return {
-        "wallet": wallet,
-        "first_ts": to_int(first.get("_snapshot_ts")),
-        "last_ts": to_int(last.get("_snapshot_ts")),
-        "first_active_ts": to_int(first_active.get("_snapshot_ts")),
-        "first_rank": to_int(first.get("rank")),
-        "last_rank": to_int(last.get("rank")),
-        "first_active_rank": to_int(first_active.get("rank")),
-        "rank_delta": rank_delta,
-        "first_hold_pct": to_float(first.get("hold_pct")),
-        "last_hold_pct": to_float(last.get("hold_pct")),
-        "first_active_hold_pct": to_float(first_active.get("hold_pct")),
-        "max_hold_pct": max_hold_pct,
-        "distributed_from_peak": distributed_from_peak,
-        "hold_delta": hold_delta,
-        "buy_delta": buy_delta,
-        "sell_delta": sell_delta,
-        "netflow_delta": netflow_delta,
-        "sell_steps": sell_steps,
-        "buy_steps": buy_steps,
-        "hold_down_steps": hold_down_steps,
-        "hold_up_steps": hold_up_steps,
-        "avg_cost": to_float(last.get("avg_cost")) or to_float(first.get("avg_cost")),
-        "profit": to_float(last.get("profit")),
-        "tags": last.get("tags") or first.get("tags") or [],
-        "point_count": len(points),
-        "is_new_entry": to_float(first.get("hold_pct")) <= 0 and to_float(last.get("hold_pct")) > 0,
-        "is_exited": to_float(first.get("hold_pct")) > 0 and to_float(last.get("hold_pct")) <= 0,
-    }
-
-
-def analyze_wallet_behaviors(
-    current_holders: list[dict[str, Any]],
-    recent_history: list[dict[str, Any]],
-) -> dict[str, Any]:
-    frames = []
-    for snap in reversed(recent_history):
-        frames.append({"snapshot_ts": to_int(snap.get("snapshot_ts")), "holders": snap.get("holders") or []})
-    frames.append({"snapshot_ts": now_ts(), "holders": current_holders})
-
-    wallets = set()
-    for frame in frames:
-        holder_map = {}
-        for holder in frame["holders"]:
-            wallet = str(holder.get("wallet") or "").strip()
-            if wallet:
-                wallets.add(wallet)
-                holder_map[wallet] = holder
-        frame["holder_map"] = holder_map
-
-    trajectories = {}
-    for wallet in wallets:
-        points = []
-        previous_holder = None
-        for frame in frames:
-            holder = dict(frame["holder_map"].get(wallet) or {})
-            if not holder:
-                holder = {
-                    "wallet": wallet,
-                    "rank": 0,
-                    "hold_pct": 0,
-                    "usd_value": 0,
-                    "buy_volume": previous_holder.get("buy_volume", 0) if previous_holder else 0,
-                    "sell_volume": previous_holder.get("sell_volume", 0) if previous_holder else 0,
-                    "netflow": previous_holder.get("netflow", 0) if previous_holder else 0,
-                    "avg_cost": previous_holder.get("avg_cost", 0) if previous_holder else 0,
-                    "profit": previous_holder.get("profit", 0) if previous_holder else 0,
-                    "tags": previous_holder.get("tags", []) if previous_holder else [],
-                }
-            holder["_snapshot_ts"] = frame["snapshot_ts"]
-            points.append(holder)
-            previous_holder = holder
-        trajectories[wallet] = wallet_behavior_item(wallet, points)
-
-    def strong_buy(item: dict[str, Any]) -> bool:
-        return (
-            item["hold_delta"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA
-            and (item["netflow_delta"] >= MIN_WALLET_BEHAVIOR_NETFLOW_USD or item["buy_delta"] > item["sell_delta"] * 1.5)
-        )
-
-    def strong_sell(item: dict[str, Any]) -> bool:
-        return (
-            item["hold_delta"] <= -MIN_WALLET_BEHAVIOR_PCT_DELTA
-            and (item["netflow_delta"] <= -MIN_WALLET_BEHAVIOR_NETFLOW_USD or item["sell_delta"] > item["buy_delta"] * 1.5)
-        )
-
-    def early_distributor(item: dict[str, Any]) -> bool:
-        is_early = (
-            0 < item["first_active_rank"] <= EARLY_WALLET_RANK_LIMIT
-            or item["first_active_hold_pct"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
-        )
-        persistent_sell = (
-            item["sell_steps"] >= MIN_EARLY_WALLET_SELL_STEPS
-            or item["hold_down_steps"] >= MIN_EARLY_WALLET_SELL_STEPS
-        )
-        meaningful_distribution = (
-            item["distributed_from_peak"] >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
-            or abs(min(item["hold_delta"], 0)) >= MIN_EARLY_WALLET_DISTRIBUTION_PCT
-        )
-        sell_dominant = item["sell_delta"] > item["buy_delta"] or item["netflow_delta"] < 0
-        return is_early and persistent_sell and meaningful_distribution and sell_dominant
-
-    items = list(trajectories.values())
-    accumulators = sorted([item for item in items if strong_buy(item)], key=lambda x: x["hold_delta"], reverse=True)[:10]
-    distributors = sorted([item for item in items if strong_sell(item)], key=lambda x: x["hold_delta"])[:10]
-    early_distributors = sorted(
-        [item for item in items if early_distributor(item)],
-        key=lambda x: (x["distributed_from_peak"], x["sell_steps"], abs(min(x["hold_delta"], 0))),
-        reverse=True,
-    )[:10]
-    rotators_in = sorted(
-        [item for item in items if item["is_new_entry"] and item["last_hold_pct"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA],
-        key=lambda x: x["last_hold_pct"],
-        reverse=True,
-    )[:10]
-    rotators_out = sorted(
-        [item for item in items if item["is_exited"] and item["first_hold_pct"] >= MIN_WALLET_BEHAVIOR_PCT_DELTA],
-        key=lambda x: x["first_hold_pct"],
-        reverse=True,
-    )[:10]
-
-    tagged_accumulation = [
-        item for item in accumulators
-        if any(str(tag) in {"smart_degen", "renowned", "bundler", "rat_trader", "fresh_wallet", "sniper"} for tag in item.get("tags", []))
-    ]
-    return {
-        "frames": len(frames),
-        "wallet_count": len(items),
-        "accumulator_count": len(accumulators),
-        "accumulator_hold_delta": sum(item["hold_delta"] for item in accumulators),
-        "accumulator_netflow": sum(item["netflow_delta"] for item in accumulators),
-        "distributor_count": len(distributors),
-        "distributor_hold_delta": sum(abs(item["hold_delta"]) for item in distributors),
-        "distributor_netflow": sum(item["netflow_delta"] for item in distributors),
-        "early_distributor_count": len(early_distributors),
-        "early_distributor_hold_delta": sum(item["distributed_from_peak"] for item in early_distributors),
-        "early_distributor_netflow": sum(item["netflow_delta"] for item in early_distributors),
-        "rotator_in_count": len(rotators_in),
-        "rotator_in_hold": sum(item["last_hold_pct"] for item in rotators_in),
-        "rotator_out_count": len(rotators_out),
-        "rotator_out_hold": sum(item["first_hold_pct"] for item in rotators_out),
-        "tagged_accumulator_count": len(tagged_accumulation),
-        "tagged_accumulator_hold_delta": sum(item["hold_delta"] for item in tagged_accumulation),
-        "accumulators": accumulators,
-        "distributors": distributors,
-        "early_distributors": early_distributors,
-        "rotators_in": rotators_in,
-        "rotators_out": rotators_out,
     }
 
 
@@ -936,186 +788,81 @@ def pool_change(current_summary: dict[str, Any], previous_summary: dict[str, Any
     }
 
 
-def analyze_snapshot_change(
+
+def analyze_abnormal_snapshot(
     current_holders: list[dict[str, Any]],
     recent_history: list[dict[str, Any]],
     current_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    pool_stats = pool_change(current_summary or {}, (recent_history[0].get("summary") if recent_history else None) or {})
-    window_pool_stats = pool_change(current_summary or {}, (recent_history[-1].get("summary") if recent_history else None) or {})
-
-    if not current_holders or not recent_history:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["需要历史快照"], "history_count": len(recent_history), **pool_stats}
-
-    previous_holders = recent_history[0].get("holders") or []
-    earliest_holders = recent_history[-1].get("holders") or []
-    if not previous_holders:
-        return {"score": 0, "signal_type": "baseline", "reasons": ["上一轮快照为空"], "history_count": len(recent_history), **pool_stats}
-
-    last_change = compare_holder_sets(current_holders, previous_holders)
-    window_change = compare_holder_sets(current_holders, earliest_holders) if earliest_holders else last_change
-    historical_analyses = [snap.get("analysis") or {} for snap in recent_history]
-    accumulation_hits = sum(1 for item in historical_analyses if item.get("signal_type") in {"accumulation", "rotation"})
-    distribution_hits = sum(1 for item in historical_analyses if item.get("signal_type") == "distribution")
-    history_ready = len(recent_history) >= MIN_SIGNAL_HISTORY_COUNT
-    enough_history_for_window = len(recent_history) >= min(MIN_SIGNAL_HISTORY_COUNT, RECENT_COMPARE_LIMIT)
-    window_accumulation_pct = window_change["accumulation_pct_delta"]
-    window_distribution_pct = window_change["distribution_pct_delta"]
-    window_accumulation_ready = (
-        enough_history_for_window
-        and window_accumulation_pct >= MIN_WINDOW_ACCUMULATED_PCT_DELTA
+    current_summary = current_summary or {}
+    pool_stats = pool_change(current_summary, (recent_history[0].get("summary") if recent_history else None) or {})
+    window_pool_stats = pool_change(current_summary, (recent_history[-1].get("summary") if recent_history else None) or {})
+    kline_summary = current_summary.get("kline") or {}
+    price_change_pct = to_float(kline_summary.get("change_pct"))
+    current_mcap = to_float(current_summary.get("mcap"))
+    ath_mcap = to_float(current_summary.get("ath_mcap"))
+    matched_rule = match_abnormal_rule(ath_mcap, current_mcap)
+    price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
+    signal_type = "abnormal" if matched_rule and price_ready else "watch"
+    previous_holders = recent_history[0].get("holders") if recent_history else []
+    holder_change = (
+        compare_holder_sets(current_holders, previous_holders)
+        if current_holders and previous_holders
+        else {
+            "accumulation_pct_delta": 0.0,
+            "distribution_pct_delta": 0.0,
+            "new_holder_pct": 0.0,
+            "exited_holder_pct": 0.0,
+            "netflow_usd": 0.0,
+        }
     )
-    wallet_behaviors = analyze_wallet_behaviors(current_holders, recent_history)
-    early_distribution_pct = wallet_behaviors["early_distributor_hold_delta"]
-    trajectory_accumulation_pct = wallet_behaviors["accumulator_hold_delta"]
-    early_distribution_dominates = (
-        early_distribution_pct >= MIN_EARLY_WALLET_DISTRIBUTION_PCT * 2
-        and early_distribution_pct >= max(window_accumulation_pct, trajectory_accumulation_pct) * 0.35
-    )
-
-    accumulated_delta = last_change["accumulation_pct_delta"]
-    distributed_delta = last_change["distribution_pct_delta"]
-    turnover_pct = last_change["turnover_pct"]
-    tagged_delta = last_change["tagged_delta"]
-    netflow_delta = last_change["netflow_usd"]
-    score = 0
-    reasons = []
-    signal_type = "watch"
-    kline_summary = (current_summary or {}).get("kline") or {}
-    kline_price_change_pct = to_float(kline_summary.get("change_pct"))
-    age_sec = to_int((current_summary or {}).get("age_sec"))
-    token_is_new = age_sec > 0 and age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC
-    required_price_change_pct = NEW_TOKEN_NOTIFY_PRICE_UP_PCT if token_is_new else OLD_TOKEN_NOTIFY_PRICE_UP_PCT
-    accumulation_ending_ready = (
-        window_accumulation_ready
-        and accumulated_delta >= 0
-        and accumulated_delta <= max(window_accumulation_pct * ACCUMULATION_ENDING_RATIO, MIN_ACCUMULATED_PCT_DELTA)
-        and window_distribution_pct < window_accumulation_pct * 0.5
-    )
-    price_confirmation_ready = kline_price_change_pct >= required_price_change_pct
-
-    if accumulated_delta >= MIN_ACCUMULATED_PCT_DELTA:
-        score += 30
-        reasons.append(f"本轮Top100增持{accumulated_delta:.2%}")
-    if netflow_delta >= MIN_NETFLOW_USD:
-        score += 25
-        reasons.append(f"本轮净买入${netflow_delta:,.0f}")
-    if tagged_delta >= 0.005:
-        score += 15
-        reasons.append(f"标签钱包增持{tagged_delta:.2%}")
-    if wallet_behaviors["accumulator_hold_delta"] >= 0.02:
-        score += 10
-        reasons.append(
-            f"轨迹吸筹钱包{wallet_behaviors['accumulator_count']}个/"
-            f"{wallet_behaviors['accumulator_hold_delta']:.2%}"
+    if matched_rule:
+        rule_name = matched_rule["name"]
+        min_ath_mcap = matched_rule["min_ath_mcap"]
+        min_mcap = matched_rule["min_mcap"]
+        max_mcap = matched_rule["max_mcap"]
+        rule_reason = (
+            f"命中{rule_name}: ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, "
+            f"当前市值${current_mcap:,.0f}在{min_mcap:,.0f}-{max_mcap:,.0f}"
         )
-    if wallet_behaviors["tagged_accumulator_hold_delta"] >= 0.005:
-        score += 10
-        reasons.append(f"标签钱包轨迹吸筹{wallet_behaviors['tagged_accumulator_hold_delta']:.2%}")
-    if early_distribution_pct >= MIN_EARLY_WALLET_DISTRIBUTION_PCT:
-        score = max(score - (25 if early_distribution_dominates else 10), 0)
-        reasons.append(
-            f"早期钱包持续出货{wallet_behaviors['early_distributor_count']}个/"
-            f"{early_distribution_pct:.2%}"
-        )
-    if window_accumulation_ready:
-        score += 40
-        reasons.append(f"近{len(recent_history)}次累计增持{window_accumulation_pct:.2%}")
     else:
-        if not enough_history_for_window:
-            reasons.append(
-                f"历史快照{len(recent_history)}/{MIN_SIGNAL_HISTORY_COUNT}，"
-                f"累计增持{window_accumulation_pct:.2%}"
-            )
-        else:
-            reasons.append(
-                f"近{len(recent_history)}次累计增持{window_accumulation_pct:.2%}"
-                f"<{MIN_WINDOW_ACCUMULATED_PCT_DELTA:.0%}"
-            )
-    if window_change["netflow_usd"] >= MIN_NETFLOW_USD * 2:
-        score += 15
-        reasons.append(f"近{len(recent_history)}次净买入${window_change['netflow_usd']:,.0f}")
-
-    if pool_stats["pool_mcap_ratio"] >= 0.12:
-        score += 15
-        reasons.append(f"池/市值{pool_stats['pool_mcap_ratio']:.1%}({pool_stats['pool_mcap_ratio_text']})")
-    elif pool_stats["pool_mcap_ratio"] >= 0.08:
-        score += 8
-        reasons.append(f"池/市值接近1:10({pool_stats['pool_mcap_ratio']:.1%})")
-    elif 0 < pool_stats["pool_mcap_ratio"] < 0.03:
-        score = max(score - 15, 0)
-        reasons.append(f"池子偏薄{pool_stats['pool_mcap_ratio']:.1%}")
-    if pool_stats["pool_liquidity_delta_pct"] >= 0.2 and pool_stats["pool_liquidity_delta"] >= 5000:
-        score += 15
-        reasons.append(f"本轮池子增厚${pool_stats['pool_liquidity_delta']:,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
-    if window_pool_stats["pool_liquidity_delta_pct"] >= 0.3 and window_pool_stats["pool_liquidity_delta"] >= 8000:
-        score += 15
-        reasons.append(f"近{len(recent_history)}次池子增厚${window_pool_stats['pool_liquidity_delta']:,.0f}/{window_pool_stats['pool_liquidity_delta_pct']:.1%}")
-    if pool_stats["pool_liquidity_delta_pct"] <= -0.25 and abs(pool_stats["pool_liquidity_delta"]) >= 5000:
-        score = max(score - 25, 0)
-        reasons.append(f"池子抽离${abs(pool_stats['pool_liquidity_delta']):,.0f}/{pool_stats['pool_liquidity_delta_pct']:.1%}")
-
-    if accumulation_hits >= 2:
-        score += 10
-        reasons.append(f"历史连续吸筹/换筹{accumulation_hits}次")
-    if turnover_pct >= MIN_ROTATION_PCT and accumulated_delta >= distributed_delta * 0.8 and window_accumulation_ready:
-        score += 20
-        signal_type = "rotation"
-        reasons.append(f"换筹{turnover_pct:.2%}")
-    if distributed_delta >= MIN_DISTRIBUTED_PCT_DELTA and distributed_delta > accumulated_delta * 1.3:
-        signal_type = "distribution"
-        score = max(score - 30, 0)
-        reasons.append(f"派发{distributed_delta:.2%}")
-    if early_distribution_dominates and window_distribution_pct > window_accumulation_pct * 0.8:
-        signal_type = "distribution"
-        score = max(score - 20, 0)
-        reasons.append("早期出货压过吸筹")
-    if distribution_hits >= 2 and not window_accumulation_ready:
-        signal_type = "distribution"
-        score = max(score - 20, 0)
-        reasons.append(f"历史派发{distribution_hits}次")
-    elif score >= MIN_SIGNAL_SCORE and signal_type != "rotation" and window_accumulation_ready:
-        signal_type = "accumulation"
-    elif signal_type != "distribution" and not window_accumulation_ready:
-        signal_type = "watch"
-        score = min(score, MIN_SIGNAL_SCORE - 1)
-
+        rule_name = "未命中"
+        min_ath_mcap = BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD
+        min_mcap = BOTTOM_ABNORMAL_MIN_MCAP_USD
+        max_mcap = abnormal_max_mcap_usd()
+        rule_reason = f"未命中异动市值档位: ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}"
+    reasons = [
+        rule_reason,
+        (
+            f"价格上涨{price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+            if price_ready
+            else f"价格上涨{price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+        ),
+    ]
     return {
-        "score": min(score, 100),
+        "score": 100 if signal_type == "abnormal" else 0,
         "signal_type": signal_type,
         "reasons": reasons,
         "history_count": len(recent_history),
-        "history_ready": history_ready,
-        "enough_history_for_window": enough_history_for_window,
-        "min_signal_history_count": MIN_SIGNAL_HISTORY_COUNT,
-        "window_accumulation_ready": window_accumulation_ready,
-        "accumulation_ending_ready": accumulation_ending_ready,
-        "accumulation_ending_ratio": ACCUMULATION_ENDING_RATIO,
-        "price_confirmation_ready": price_confirmation_ready,
-        "price_change_pct": kline_price_change_pct,
-        "required_price_change_pct": required_price_change_pct,
-        "token_age_sec": age_sec,
-        "token_is_new": token_is_new,
-        "min_window_accumulation_pct_delta": MIN_WINDOW_ACCUMULATED_PCT_DELTA,
-        "early_distribution_dominates": early_distribution_dominates,
+        "price_confirmation_ready": price_ready,
+        "price_change_pct": price_change_pct,
+        "required_price_change_pct": BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT,
+        "current_mcap": current_mcap,
+        "ath_mcap": ath_mcap,
+        "abnormal_rule": rule_name,
+        "min_ath_mcap": min_ath_mcap,
+        "min_abnormal_mcap": min_mcap,
+        "max_abnormal_mcap": max_mcap,
+        "token_age_sec": to_int(current_summary.get("age_sec")),
         **pool_stats,
         "window_pool_liquidity_delta": window_pool_stats["pool_liquidity_delta"],
         "window_pool_liquidity_delta_pct": window_pool_stats["pool_liquidity_delta_pct"],
         "window_pool_mcap_ratio_delta": window_pool_stats["pool_mcap_ratio_delta"],
-        "accumulation_pct_delta": last_change["accumulation_pct_delta"],
-        "distribution_pct_delta": last_change["distribution_pct_delta"],
-        "rotation_score": last_change["rotation_score"],
-        "new_holder_pct": last_change["new_holder_pct"],
-        "exited_holder_pct": last_change["exited_holder_pct"],
-        "netflow_usd": last_change["netflow_usd"],
-        "window_accumulation_pct_delta": window_change["accumulation_pct_delta"],
-        "window_distribution_pct_delta": window_change["distribution_pct_delta"],
-        "window_netflow_usd": window_change["netflow_usd"],
-        "accumulation_hits": accumulation_hits,
-        "distribution_hits": distribution_hits,
-        "top_buyers": last_change["top_buyers"],
-        "top_sellers": last_change["top_sellers"],
-        "wallet_behaviors": wallet_behaviors,
+        "accumulation_pct_delta": holder_change["accumulation_pct_delta"],
+        "distribution_pct_delta": holder_change["distribution_pct_delta"],
+        "new_holder_pct": holder_change["new_holder_pct"],
+        "exited_holder_pct": holder_change["exited_holder_pct"],
+        "netflow_usd": holder_change["netflow_usd"],
     }
 
 def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
@@ -1171,139 +918,34 @@ def send_tg(text: str) -> None:
 
 def signal_type_text(signal_type: str) -> str:
     mapping = {
-        "baseline": "基线",
         "watch": "观察",
-        "accumulation": "吸筹",
-        "rotation": "换筹",
-        "distribution": "派发",
+        "abnormal": "异动检测",
     }
     return mapping.get(signal_type, signal_type or "未知")
 
 
-def short_wallet(address: str) -> str:
-    address = str(address or "")
-    if len(address) <= 12:
-        return address
-    return f"{address[:6]}...{address[-4:]}"
-
-
-def wallet_behavior_text(analysis: dict[str, Any]) -> str:
-    behaviors = analysis.get("wallet_behaviors") or {}
-    if not behaviors:
-        return "钱包轨迹: 暂无"
-    lines = [
-        (
-            f"钱包轨迹: 吸筹{behaviors.get('accumulator_count', 0)}个/"
-            f"{behaviors.get('accumulator_hold_delta', 0):.2%}/净${behaviors.get('accumulator_netflow', 0):,.0f} | "
-            f"出货{behaviors.get('distributor_count', 0)}个/"
-            f"{behaviors.get('distributor_hold_delta', 0):.2%}/净${behaviors.get('distributor_netflow', 0):,.0f}"
-        ),
-        (
-            f"早期出货: {behaviors.get('early_distributor_count', 0)}个/"
-            f"{behaviors.get('early_distributor_hold_delta', 0):.2%}/净${behaviors.get('early_distributor_netflow', 0):,.0f}"
-        ),
-        (
-            f"换筹: 新进{behaviors.get('rotator_in_count', 0)}个/"
-            f"{behaviors.get('rotator_in_hold', 0):.2%} | "
-            f"退出{behaviors.get('rotator_out_count', 0)}个/"
-            f"{behaviors.get('rotator_out_hold', 0):.2%} | "
-            f"标签吸筹{behaviors.get('tagged_accumulator_count', 0)}个/"
-            f"{behaviors.get('tagged_accumulator_hold_delta', 0):.2%}"
-        ),
-    ]
-    top_accumulators = behaviors.get("accumulators") or []
-    if top_accumulators:
-        parts = []
-        for item in top_accumulators[:3]:
-            raw_tags = item.get("tags") or []
-            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
-            tags = ",".join(str(tag) for tag in tags[:2])
-            tag_text = f" {tags}" if tags else ""
-            parts.append(
-                f"{short_wallet(item.get('wallet'))} +{item.get('hold_delta', 0):.2%} "
-                f"净${item.get('netflow_delta', 0):,.0f}{tag_text}"
-            )
-        lines.append("重点吸筹: " + " | ".join(parts))
-    top_distributors = behaviors.get("distributors") or []
-    if top_distributors:
-        parts = []
-        for item in top_distributors[:3]:
-            raw_tags = item.get("tags") or []
-            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
-            tags = ",".join(str(tag) for tag in tags[:2])
-            tag_text = f" {tags}" if tags else ""
-            parts.append(
-                f"{short_wallet(item.get('wallet'))} {item.get('hold_delta', 0):.2%} "
-                f"净${item.get('netflow_delta', 0):,.0f}{tag_text}"
-            )
-        lines.append("重点出货: " + " | ".join(parts))
-    early_distributors = behaviors.get("early_distributors") or []
-    if early_distributors:
-        parts = []
-        for item in early_distributors[:3]:
-            raw_tags = item.get("tags") or []
-            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
-            tags = ",".join(str(tag) for tag in tags[:2])
-            tag_text = f" {tags}" if tags else ""
-            parts.append(
-                f"{short_wallet(item.get('wallet'))} 峰值出{item.get('distributed_from_peak', 0):.2%} "
-                f"卖{item.get('sell_steps', 0)}次 净${item.get('netflow_delta', 0):,.0f}{tag_text}"
-            )
-        lines.append("早期持续出货: " + " | ".join(parts))
-    return "\n".join(lines)
-
-
-def signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
+def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
     return (
-        f"Top100 筹码异动 | ${token.get('symbol') or 'UNKNOWN'}\n"
-        f"类型: {signal_type_text(analysis['signal_type'])} | 分数: {analysis['score']}\n"
+        f"底部异动检测 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"类型: {signal_type_text(analysis.get('signal_type'))}\n"
+        f"档位: {analysis.get('abnormal_rule') or '未命中'}\n"
         f"CA: {address}\n"
-        f"市值: ${calc_mcap(token):,.0f} | 价格: {to_float(token.get('price')):.12f}\n"
-        f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | "
-        f"本轮池变动: ${analysis.get('pool_liquidity_delta', 0):,.0f}/{analysis.get('pool_liquidity_delta_pct', 0):.1%}\n"
-        f"主池: {analysis.get('pool_main_exchange') or '未知'} | 主池占比: {analysis.get('pool_main_share', 0):.1%}\n"
-        f"价格确认: {analysis.get('price_change_pct', 0):.1f}% / 要求{analysis.get('required_price_change_pct', 0):.1f}% | "
-        f"吸筹末段: {'是' if analysis.get('accumulation_ending_ready') else '否'}\n"
-        f"增持: {analysis['accumulation_pct_delta']:.2%} | 减持: {analysis['distribution_pct_delta']:.2%}\n"
-        f"新进: {analysis['new_holder_pct']:.2%} | 退出: {analysis['exited_holder_pct']:.2%}\n"
-        f"换筹比: {analysis['rotation_score']:.2f} | 净买入: ${analysis['netflow_usd']:,.0f}\n"
-        f"近{analysis.get('history_count', 0)}次: 增持{analysis.get('window_accumulation_pct_delta', 0):.2%} | "
-        f"减持{analysis.get('window_distribution_pct_delta', 0):.2%} | 净买入${analysis.get('window_netflow_usd', 0):,.0f}\n"
-        f"{wallet_behavior_text(analysis)}\n"
-        f"理由: {', '.join(analysis['reasons']) or '无'}\n"
+        f"历史最高市值: ${analysis.get('ath_mcap', 0):,.0f} | 要求: >${analysis.get('min_ath_mcap', 0):,.0f}\n"
+        f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | 区间: ${analysis.get('min_abnormal_mcap', 0):,.0f}-${analysis.get('max_abnormal_mcap', 0):,.0f}\n"
+        f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
+        f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')})\n"
+        f"Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 净买入${analysis.get('netflow_usd', 0):,.0f}\n"
+        f"理由: {', '.join(analysis.get('reasons') or []) or '无'}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
 
 def should_notify(analysis: dict[str, Any]) -> bool:
-    return (
-        analysis.get("signal_type") == "accumulation"
-        and analysis.get("score", 0) > MIN_SIGNAL_SCORE
-        and bool(analysis.get("window_accumulation_ready"))
-        and bool(analysis.get("accumulation_ending_ready"))
-        and bool(analysis.get("price_confirmation_ready"))
-        and to_float(analysis.get("window_distribution_pct_delta")) < to_float(analysis.get("window_accumulation_pct_delta")) * 0.5
-    )
+    return analysis.get("signal_type") == "abnormal"
 
 
 def notify_skip_reason(analysis: dict[str, Any]) -> str:
-    if analysis.get("signal_type") != "accumulation":
-        return f"非吸筹类型({signal_type_text(analysis.get('signal_type'))})"
-    if analysis.get("score", 0) <= MIN_SIGNAL_SCORE:
-        return f"分数{analysis.get('score', 0)}<={MIN_SIGNAL_SCORE}"
-    if not analysis.get("window_accumulation_ready"):
-        return f"窗口吸筹未达标{analysis.get('window_accumulation_pct_delta', 0):.2%}"
-    if not analysis.get("accumulation_ending_ready"):
-        return (
-            f"吸筹未到末段，本轮{analysis.get('accumulation_pct_delta', 0):.2%}/"
-            f"窗口{analysis.get('window_accumulation_pct_delta', 0):.2%}"
-        )
-    if not analysis.get("price_confirmation_ready"):
-        return (
-            f"涨幅{analysis.get('price_change_pct', 0):.1f}%"
-            f"<{analysis.get('required_price_change_pct', 0):.1f}%"
-        )
-    return "派发占比过高"
+    return "; ".join(analysis.get("reasons") or ["未满足异动检测条件"])
 
 
 def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
@@ -1316,23 +958,19 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
     candles = fetch_kline(address, kline_resolution)
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     history = recent_snapshots(address)
-    analysis = analyze_snapshot_change(holders, history, summary)
+    analysis = analyze_abnormal_snapshot(holders, history, summary)
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
         f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
         f"type={analysis.get('signal_type')} score={analysis.get('score')} "
-        f"acc={analysis.get('accumulation_pct_delta', 0):.2%} "
-        f"dist={analysis.get('distribution_pct_delta', 0):.2%} "
-        f"win_acc={analysis.get('window_accumulation_pct_delta', 0):.2%} "
+        f"ath=${analysis.get('ath_mcap', 0):,.0f} "
+        f"mcap=${analysis.get('current_mcap', 0):,.0f} "
         f"price={analysis.get('price_change_pct', 0):.1f}%/{analysis.get('required_price_change_pct', 0):.1f}% "
-        f"ending={analysis.get('accumulation_ending_ready')} "
         f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis):
-        send_tg(signal_text(token, analysis))
-    elif notify and analysis.get("score", 0) > MIN_SIGNAL_SCORE:
-        print(f"{token_label(token)} no notify: {notify_skip_reason(analysis)}")
+        send_tg(abnormal_signal_text(token, analysis))
     return True
 
 
@@ -1354,6 +992,27 @@ def scan_once(args: argparse.Namespace) -> None:
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
+            current_mcap = calc_mcap(token)
+            if current_mcap >= WATCHLIST_AUTO_ADD_MCAP_USD:
+                upsert_watchlist_token(
+                    address,
+                    token_created_ts(token),
+                    current_mcap,
+                    auto_add_threshold=WATCHLIST_AUTO_ADD_MCAP_USD,
+                )
+                if not is_watchlist:
+                    print(f"{token_label(token)} watchlist auto add mcap=${current_mcap:,.0f}")
+            if is_watchlist:
+                update_watchlist_seen(address, current_mcap)
+                if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
+                    deleted = delete_watchlist_token(address)
+                    if deleted:
+                        print(
+                            f"{address[:8]} watchlist deleted: "
+                            f"mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}"
+                        )
+                    skipped += 1
+                    continue
             if not is_watchlist:
                 skip_reason = token_basic_filter_reason(token)
                 if skip_reason:
