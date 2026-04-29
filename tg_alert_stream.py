@@ -52,7 +52,7 @@ def publish_tg_alert(
         "text": text or "",
         "message_id": str(message_id or ""),
         "chat_id": str(chat_id or ""),
-        "extra": json.dumps(extra or {}, ensure_ascii=False),
+        "extra": json.dumps(extra or {}, ensure_ascii=False, default=str),
     }
     try:
         return client.xadd(TG_ALERT_STREAM_KEY, payload, maxlen=TG_ALERT_STREAM_MAXLEN, approximate=True)

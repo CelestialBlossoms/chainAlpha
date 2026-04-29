@@ -130,6 +130,16 @@ h1 {
   font-size: 14px;
 }
 
+.sort-select {
+  padding: 9px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: white;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .tabs {
   display: flex;
   gap: 8px;
@@ -161,6 +171,156 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, .9fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.table-card {
+  overflow: auto;
+}
+
+.signal-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+  font-size: 13px;
+}
+
+.signal-table th,
+.signal-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.signal-table th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+  z-index: 1;
+}
+
+.signal-table td span {
+  display: block;
+  max-width: 220px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-row {
+  cursor: pointer;
+}
+
+.signal-row:hover,
+.signal-row.selected {
+  background: #eef2ff;
+}
+
+.detail-panel {
+  padding: 12px;
+  position: sticky;
+  top: 10px;
+  max-height: calc(100vh - 20px);
+  overflow: auto;
+}
+
+.detail-empty {
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.detail-head h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.detail-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric {
+  min-width: 0;
+  padding: 8px 9px;
+  background: var(--panel);
+  border-radius: 10px;
+}
+
+.metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.metric b {
+  display: block;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.detail-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.detail-section h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.detail-section p {
+  margin: 5px 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.mini-table th,
+.mini-table td {
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
 }
 
 .signal-card {
@@ -477,6 +637,15 @@ h1 {
 }
 
 @media (max-width: 1100px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-panel {
+    position: static;
+    max-height: none;
+  }
+
   .span-3,
   .span-4 {
     grid-column: span 6;
@@ -518,6 +687,11 @@ h1 {
 
   .compact-grid {
     grid-template-columns: 1fr;
+  }
+
+  .metric-grid,
+  .metric-grid.two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .compact-block span {

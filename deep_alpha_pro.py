@@ -205,29 +205,32 @@ def shell_quote(value):
 def trend_platform_args():
     return " ".join(f"--platform {shell_quote(platform)}" for platform in TREND_PLATFORMS)
 
-def send_tg_alert(msg):
+def send_tg_alert(msg, *, ca=None, extra=None):
+    stream_extra = dict(extra or {})
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
         print(f"--- TG ALERT ---\n{msg}\n----------------")
-        publish_tg_alert(msg, "deep_alpha", status="dry_run", chat_id=TG_CHAT_ID)
+        publish_tg_alert(msg, "deep_alpha", status="dry_run", ca=ca, chat_id=TG_CHAT_ID, extra=stream_extra)
         return None
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
         resp = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg}, timeout=15)
         if not resp.ok:
             print(f"TG send failed: http={resp.status_code} body={resp.text[:200]}")
-            publish_tg_alert(msg, "deep_alpha", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID)
+            publish_tg_alert(msg, "deep_alpha", status=f"failed_http_{resp.status_code}", ca=ca, chat_id=TG_CHAT_ID, extra=stream_extra)
             return None
         payload = resp.json()
         if not payload.get("ok"):
             print(f"TG send failed: {payload}")
-            publish_tg_alert(msg, "deep_alpha", status="failed_api", chat_id=TG_CHAT_ID, extra=payload)
+            failed_extra = {**stream_extra, "telegram": payload}
+            publish_tg_alert(msg, "deep_alpha", status="failed_api", ca=ca, chat_id=TG_CHAT_ID, extra=failed_extra)
             return None
         message_id = payload.get("result", {}).get("message_id")
-        publish_tg_alert(msg, "deep_alpha", status="sent", chat_id=TG_CHAT_ID, message_id=message_id)
+        publish_tg_alert(msg, "deep_alpha", status="sent", ca=ca, chat_id=TG_CHAT_ID, message_id=message_id, extra=stream_extra)
         return message_id
     except Exception as e:
         print(f"TG send exception: {e}")
-        publish_tg_alert(msg, "deep_alpha", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(e)})
+        exception_extra = {**stream_extra, "error": str(e)}
+        publish_tg_alert(msg, "deep_alpha", status="exception", ca=ca, chat_id=TG_CHAT_ID, extra=exception_extra)
         return None
 
 def edit_tg_alert(chat_id, message_id, msg):
@@ -314,12 +317,12 @@ def get_candidate_snapshot(address):
 
 _SNAPSHOT_NOT_PROVIDED = object()
 
-def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSHOT_NOT_PROVIDED):
+def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSHOT_NOT_PROVIDED, stats=None):
     if existing_candidate is _SNAPSHOT_NOT_PROVIDED:
         existing_candidate = get_candidate_snapshot(address)
     if existing_candidate and not allow_repeat:
         return None
-    return send_tg_alert(msg)
+    return send_tg_alert(msg, ca=address, extra={"stats": stats or {}, "address": address})
 
 def format_mcap_short(value):
     value = safe_float(value)
@@ -967,19 +970,15 @@ def analyze_trending_snapshot(trend_row):
         first_value(trend_row, keys=("change1h", "change_1h", "price_change_1h", "price_change_percent1h"))
     )
 
-    rank_text = f"#{rank}" if rank > 0 else "-"
-    hot_text = f"{hot_level:g}" if hot_level > 0 else "-"
-    volume_text = format_usd_short(volume) if volume > 0 else "N/A"
     gas_text = f"{gas_fee:.2f} SOL" if gas_fee > 0 else "N/A"
     liquidity_text = format_usd_short(liquidity) if liquidity > 0 else "N/A"
     wash_text = "是" if is_wash_trading else "否"
-    creator_text = f" | Dev状态 {creator_token_status}" if creator_token_status else ""
 
     desc = (
-        f"热门榜: 排名{rank_text} | 热度{hot_text} | 交易量{volume_text} | Gas {gas_text} | 流动性{liquidity_text}\n"
+        f"热门榜: Gas {gas_text} | 流动性{liquidity_text}\n"
         f"榜单风险: Rug{format_optional_pct(rug_ratio * 100)} | Wash{wash_text} | "
         f"捆绑{format_optional_pct(bundler_rate * 100)} | 老鼠仓{format_optional_pct(rat_trader_amount_rate * 100)} | "
-        f"Top10{format_optional_pct(top10_holder_rate * 100)}{creator_text}\n"
+        f"Top10{format_optional_pct(top10_holder_rate * 100)}\n"
         f"榜单资金: Smart{smart_degen_count} | KOL{renowned_count} | "
         f"1m{format_optional_pct(change1m, signed=True)} | 5m{format_optional_pct(change5m, signed=True)} | "
         f"1h{format_optional_pct(change1h, signed=True)}"
@@ -2292,6 +2291,9 @@ def scan_pro():
                         continue
                     s = perform_deep_analysis(chain, addr, t)
                     if not s: continue
+                    s["address"] = addr
+                    s["chain"] = chain
+                    s["trend_interval"] = interval
                     if 0 < s["mcap"] < MIN_MCAP_USD:
                         print(f"  [跳过] 市值过低 ${s['symbol']} {addr}: ${s['mcap']:,.0f}<${MIN_MCAP_USD:,.0f}")
                         continue
@@ -2467,14 +2469,6 @@ def scan_pro():
                             f"盈利{kol_stats.get('profit_pct', 0):+.1f}% 卖出进度{kol_stats.get('sell_progress', 0):.1f}%"
                         ) if kol_stats.get('count', 0) > 0 else "KOL0个"
 
-                        dev_address = short_addr(s.get("creator_address")) if s.get("creator_address") else "未知"
-                        dev_detail = (
-                            f"- Dev: {dev_address} | 持仓{s.get('dev_hold_rate', 0) * 100:.2f}% "
-                            f"{format_usd_short(s.get('dev_hold_value_usd'))} | "
-                            f"买{format_usd_short(s.get('dev_buy_usd'))} 卖{format_usd_short(s.get('dev_sell_usd'))} "
-                            f"净{format_usd_short(s.get('dev_netflow_usd'))} | "
-                            f"已卖{s.get('dev_sell_amount_rate', 0) * 100:.1f}%"
-                        )
                         narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
                         trend_market_desc = f"{s.get('trend_market_desc')}\n" if s.get("trend_market_desc") else ""
@@ -2482,7 +2476,7 @@ def scan_pro():
                         msg = (
                             f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
-                            f"交易量: {format_usd_short(s.get('trade_volume_usd'))} | 买税: {s.get('buy_tax_pct', 0):.2f}% | 卖税: {s.get('sell_tax_pct', 0):.2f}%\n"
+                            f"交易量: {format_usd_short(s.get('trade_volume_usd'))}\n"
                             f"{trend_market_desc}"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{s.get('price_observation_archive_text', '')}"
@@ -2496,9 +2490,7 @@ def scan_pro():
                             f"{s['holder_tag_desc']}\n\n"
                             f"📊 *基础结构*\n"
                             f"{s['rank_bucket_desc']}\n"
-                            f"\n"
-                            f"*Dev数据*\n"
-                            f"{dev_detail}\n\n"
+                            f"\n\n"
                             f"{s.get('bottom_profit_wallet_desc', '')}\n\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
@@ -2508,6 +2500,7 @@ def scan_pro():
                             msg,
                             allow_repeat=s.get("repeat_alert", False),
                             existing_candidate=existing_candidate,
+                            stats=s,
                         )
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])

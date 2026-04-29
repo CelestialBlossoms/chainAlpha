@@ -65,7 +65,7 @@ def index(request: Request):
 @app.get("/api/recent")
 def recent(limit: int = 100):
     limit = max(1, min(limit, 500))
-    return {"items": read_recent_tg_alerts(limit)}
+    return {"items": [normalize_alert(item.get("id", ""), item) for item in read_recent_tg_alerts(limit)]}
 
 
 @app.get("/events")
