@@ -620,7 +620,7 @@ def fetch_token_traders(address, chain="sol", limit=100):
 TRADER_SCENARIOS = [
     ("smart_buy", "smart_degen", "buy_volume_cur", "精明资金高买入"),
     ("smart_sell", "smart_degen", "sell_volume_cur", "聪明资金高卖出"),
-    ("kol_active", "renowned", "last_active_timestamp", "近期活跃KOL"),
+    ("kol_active", "renowned", "amount_percentage", "仍有持仓KOL"),
     ("smart_profit", "smart_degen", "profit", "聪明资金盈利"),
     ("sniper_hold", "sniper", "amount_percentage", "狙击手坚守"),
     ("smart_unrealized", "smart_degen", "unrealized_profit", "聪明资金未实现收益"),
