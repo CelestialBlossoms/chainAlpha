@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TG 筹码报警看板</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="page">
+    <div class="wrap">
+      <header class="topbar">
+        <div>
+          <h1>TG 筹码报警看板</h1>
+          <p class="desc">自动接收后端消息，按风险、复推、筹码结构一屏展示。Stream: {{ stream_key }}</p>
+        </div>
+        <div class="live">
+          <span id="conn-dot" class="dot idle"></span>
+          <span id="conn-text">连接中</span>
+        </div>
+      </header>
+
+      <section class="summary">
+        <article class="card summary-card"><div class="stat-label">消息数</div><div id="sum-total" class="num">0</div></article>
+        <article class="card summary-card"><div class="stat-label">高风险</div><div id="sum-high" class="num red-text">0</div></article>
+        <article class="card summary-card"><div class="stat-label">复推</div><div id="sum-repeat" class="num">0</div></article>
+        <article class="card summary-card"><div class="stat-label">最高市值</div><div id="sum-maxcap" class="num">$0</div></article>
+        <article class="card summary-card"><div class="stat-label">最新</div><div id="sum-latest" class="num">-</div></article>
+      </section>
+
+      <section class="controls">
+        <input id="query" class="search" type="search" placeholder="搜索 Symbol / CA / 叙事 / 文本">
+        <div class="tabs">
+          <button class="tab active" type="button" data-tab="all">全部</button>
+          <button class="tab" type="button" data-tab="high">高风险</button>
+          <button class="tab" type="button" data-tab="repeat">复推</button>
+          <button class="tab" type="button" data-tab="new">首推</button>
+          <button id="clear-btn" class="clear-btn" type="button">清空页面</button>
+        </div>
+      </section>
+
+      <section id="list" class="list"></section>
+      <div id="empty" class="empty" hidden>没有匹配的报警消息</div>
+    </div>
+  </div>
+
+  <script>
+    const list = document.querySelector("#list");
+    const empty = document.querySelector("#empty");
+    const queryInput = document.querySelector("#query");
+    const clearBtn = document.querySelector("#clear-btn");
+    const dot = document.querySelector("#conn-dot");
+    const connText = document.querySelector("#conn-text");
+    const tabs = Array.from(document.querySelectorAll(".tab"));
+    const state = { signals: [], seen: new Set(), tab: "all" };
+
+    function safeNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function htmlEscape(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function moneyToNumber(value) {
+      if (value == null) return 0;
+      const raw = String(value).replace(/[$,\s]/g, "");
+      const match = raw.match(/^(-?\d+(?:\.\d+)?)([KkMmWw万]?)$/);
+      if (!match) return safeNum(raw);
+      const n = safeNum(match[1]);
+      const unit = match[2];
+      if (unit === "K" || unit === "k") return n * 1000;
+      if (unit === "M" || unit === "m") return n * 1000000;
+      if (unit === "W" || unit === "w" || unit === "万") return n * 10000;
+      return n;
+    }
+
+    function formatCap(value) {
+      const n = safeNum(value);
+      if (n >= 1000000) return `$${(n / 1000000).toFixed(2)}M`;
+      if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`;
+      return `$${Math.round(n)}`;
+    }
+
+    function fmtTime(ts) {
+      const ms = safeNum(ts) * 1000;
+      if (!ms) return "";
+      return new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+      }).format(new Date(ms));
+    }
+
+    function firstMatch(text, pattern, group = 1) {
+      const m = String(text || "").match(pattern);
+      return m ? m[group] : "";
+    }
+
+    function parsePct(value) {
+      return safeNum(String(value || "").replace("%", ""));
+    }
+
+    function parseTagLine(text, names) {
+      const result = { count: 0, hold: 0, holdValue: 0, profit: 0, sold: 0 };
+      const lines = String(text || "").split(/\r?\n/);
+      const line = lines.find((x) => names.some((name) => x.includes(name)));
+      if (!line) return result;
+      const count = line.match(/(\d+)\s*(?:个|簇)/);
+      const hold = line.match(/持仓\s*([+-]?\d+(?:\.\d+)?)%/);
+      const holdValue = line.match(/持仓[^$￥]*(?:[$￥])([\d,.]+[KkMmWw万]?)/);
+      const profit = line.match(/盈利\s*([+-]?\d+(?:\.\d+)?)%/);
+      const sold = line.match(/(?:卖出进度|已卖)\s*([+-]?\d+(?:\.\d+)?)%/);
+      result.count = count ? safeNum(count[1]) : 0;
+      result.hold = hold ? safeNum(hold[1]) : 0;
+      result.holdValue = holdValue ? moneyToNumber(holdValue[1]) : 0;
+      result.profit = profit ? safeNum(profit[1]) : 0;
+      result.sold = sold ? safeNum(sold[1]) : 0;
+      return result;
+    }
+
+    function parseTop(text, key) {
+      const result = { hold: 0, holdValue: 0, profit: 0, sold: 0, times: "" };
+      const line = String(text || "").split(/\r?\n/).find((x) => x.includes(`${key}:`));
+      if (!line) return result;
+      result.hold = parsePct(firstMatch(line, /持仓\s*([+-]?\d+(?:\.\d+)?)%/));
+      result.holdValue = moneyToNumber(firstMatch(line, /持仓[^$￥]*(?:[$￥])([\d,.]+[KkMmWw万]?)/));
+      result.profit = parsePct(firstMatch(line, /盈利\s*([+-]?\d+(?:\.\d+)?)%/));
+      result.sold = parsePct(firstMatch(line, /(?:卖出进度|已卖)\s*([+-]?\d+(?:\.\d+)?)%/));
+      result.times = firstMatch(line, /次数\s*([0-9/]+)/);
+      return result;
+    }
+
+    function parseSignal(item) {
+      const text = item.text || item.title || "";
+      const extra = item.extra || {};
+      const firstLine = String(text).split(/\r?\n/).find(Boolean) || item.title || "";
+      const symbol = firstMatch(firstLine, /\|\s*\$?([^\s|*]+)/) || firstMatch(text, /\$([A-Za-z0-9_.-]{1,32})/) || "UNKNOWN";
+      const ca = item.ca || firstMatch(text, /CA:\s*`?([1-9A-HJ-NP-Za-km-z]{32,60})`?/) || "";
+      const type = firstMatch(firstLine, /\*([^*]+报警)\*/) || firstMatch(text, /复推类型:\s*([^|\n]+)/) || item.status || "报警";
+      const marketCap = moneyToNumber(firstMatch(text, /市值:\s*\$?([\d,.]+[KkMmWw万]?)/) || firstMatch(text, /当前市值:\s*\$?([\d,.]+[KkMmWw万]?)/));
+      const holders = safeNum(firstMatch(text, /持有人:\s*(\d+)/));
+      const feeSol = safeNum(firstMatch(text, /手续费:\s*([+-]?\d+(?:\.\d+)?)\s*SOL/i));
+      const priceChange = parsePct(firstMatch(text, /价格(?:变化|上涨):\s*([+-]?\d+(?:\.\d+)?)%/));
+      const wave = firstMatch(text, /(?:波段|价格路径):\s*([^\n]+)/) || (priceChange ? `${priceChange > 0 ? "+" : ""}${priceChange}%` : "");
+      const drawdown = parsePct(firstMatch(text, /回撤\s*([+-]?\d+(?:\.\d+)?)%/));
+      const rebound = parsePct(firstMatch(text, /(?:低点反弹|反弹)\s*([+-]?\d+(?:\.\d+)?)%/));
+      const capPath = firstMatch(text, /市值路径:\s*([^\n]+)/);
+      const holderChange = firstMatch(text, /持有人变化:\s*([^\n|]+)/);
+      const narrative = firstMatch(text, /叙事:\s*([^\n]+)/) || extra.narrative || "";
+      const pool = firstMatch(text, /流动性池:\s*([^|\n]+)/) || firstMatch(text, /池子:\s*([^|\n]+)/);
+      const liquidity = moneyToNumber(firstMatch(text, /流动性\s*\$?([\d,.]+[KkMmWw万]?)/) || firstMatch(text, /池子:\s*\$?([\d,.]+[KkMmWw万]?)/));
+      const age = firstMatch(text, /创建时间:[^\n(]*\(([^)]+)\)/);
+      const status = firstMatch(text, /状态:\s*([^\n|]+)/) || item.status || "";
+      const repeatCount = safeNum(firstMatch(text, /复推次数:\s*第?(\d+)次/), type.includes("首推") ? 1 : 0) || 1;
+      const gmgn = firstMatch(text, /(https:\/\/gmgn\.ai\/[^\s)]+)/) || (ca ? `https://gmgn.ai/sol/token/${ca}` : "https://gmgn.ai/");
+      const devLine = String(text).split(/\r?\n/).find((x) => x.includes("Dev") && x.includes("持仓")) || "";
+      const dev = {
+        hold: parsePct(firstMatch(devLine, /持仓\s*([+-]?\d+(?:\.\d+)?)%/)),
+        sold: parsePct(firstMatch(devLine, /(?:已卖|卖出进度)\s*([+-]?\d+(?:\.\d+)?)%/)),
+        net: moneyToNumber(firstMatch(devLine, /净[$￥]?([+-]?[\d,.]+[KkMmWw万]?)/)),
+      };
+      const tags = {
+        smart: parseTagLine(text, ["聪明钱"]),
+        kol: parseTagLine(text, ["KOL"]),
+        sniper: parseTagLine(text, ["狙击手", "老鼠仓"]),
+        bundle: parseTagLine(text, ["捆绑"]),
+        fresh: parseTagLine(text, ["新钱包"]),
+        cluster: parseTagLine(text, ["同批创建簇汇总", "同批创建簇"]),
+      };
+      const top10 = parseTop(text, "Top10");
+      const top100 = parseTop(text, "Top100");
+      return {
+        raw: item, id: item.id, time: fmtTime(item.ts), source: item.source || "", title: item.title || firstLine,
+        type, symbol, ca, gmgn, marketCap, holders, feeSol, priceChange, wave, drawdown, rebound,
+        pool, liquidity, age, status, narrative, repeatCount, holderChange, capPath, dev, tags,
+        top: {
+          top10Hold: top10.hold, top10Value: top10.holdValue, top10Profit: top10.profit, top10Sold: top10.sold, top10Times: top10.times,
+          top100Hold: top100.hold, top100Value: top100.holdValue, top100Profit: top100.profit, top100Sold: top100.sold, top100Times: top100.times,
+        },
+        text,
+      };
+    }
+
+    function scoreSignal(signal) {
+      const s = signal || {};
+      const tags = s.tags || {};
+      const dev = s.dev || {};
+      const top = s.top || {};
+      let risk = 0;
+      let opportunity = 0;
+      if (safeNum(s.marketCap) > 0 && safeNum(s.marketCap) < 15000) risk += 25;
+      if (safeNum(s.holders) > 0 && safeNum(s.holders) < 80) risk += 20;
+      if (safeNum(tags.bundle && tags.bundle.hold) > 20) risk += 25;
+      if (safeNum(tags.sniper && tags.sniper.hold) > 10) risk += 20;
+      if (safeNum(dev.sold) >= 80) risk += 20;
+      if (safeNum(top.top100Hold) > 65) risk += 15;
+      if (safeNum(s.priceChange) > 10) opportunity += 20;
+      if (safeNum(s.repeatCount) >= 3) opportunity += 20;
+      if (safeNum(s.rebound) > 15) opportunity += 15;
+      if (safeNum(s.liquidity) > 10000) opportunity += 10;
+      return { risk: Math.max(0, Math.min(risk, 100)), opportunity: Math.max(0, Math.min(opportunity, 100)) };
+    }
+
+    function badgeHtml(signal, score) {
+      const riskTone = score.risk >= 70 ? "red" : score.risk >= 40 ? "orange" : "green";
+      const riskText = score.risk >= 70 ? "高风险" : score.risk >= 40 ? "中风险" : "低风险";
+      const repeat = safeNum(signal.repeatCount) > 1 ? `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>` : "";
+      return `<span class="badge">${htmlEscape(signal.type)}</span><span class="badge badge-${riskTone}">${riskText}</span>${repeat}`;
+    }
+
+    function stat(label, value, cls = "") {
+      return `<div class="stat-box"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${htmlEscape(value)}</div></div>`;
+    }
+
+    function meter(label, value, suffix = "%") {
+      const n = Math.max(0, Math.min(safeNum(value), 100));
+      return `<div class="meter"><div class="meter-row"><span>${label}</span><b>${safeNum(value)}${suffix}</b></div><div class="meter-bg"><div class="meter-fill" style="width:${n}%"></div></div></div>`;
+    }
+
+    function tagStat(label, tag) {
+      const t = tag || {};
+      const value = `${safeNum(t.count)}个 / ${safeNum(t.hold)}% / ${formatCap(t.holdValue)}`;
+      return stat(label, value);
+    }
+
+    function renderCard(signal) {
+      const score = scoreSignal(signal);
+      const tags = signal.tags || {};
+      const top = signal.top || {};
+      const dev = signal.dev || {};
+      const priceClass = safeNum(signal.priceChange) >= 0 ? "green-text" : "red-text";
+      return `
+        <article class="card signal-card" data-id="${htmlEscape(signal.id)}">
+          <div class="signal-head">
+            <div>
+              <div class="title-row">
+                <span class="symbol">$${htmlEscape(signal.symbol || "UNKNOWN")}</span>
+                ${badgeHtml(signal, score)}
+              </div>
+              <div class="subline">${htmlEscape(signal.time || "-")} · ${htmlEscape(signal.narrative || "无叙事")} · ${htmlEscape(signal.pool || "-")} · ${htmlEscape(signal.age || "-")}</div>
+            </div>
+            <div class="head-stats">
+              ${stat("市值", formatCap(signal.marketCap))}
+              ${stat("涨跌", `${safeNum(signal.priceChange) > 0 ? "+" : ""}${safeNum(signal.priceChange)}%`, priceClass)}
+              ${stat("持有人", safeNum(signal.holders))}
+            </div>
+          </div>
+          <div class="content-grid">
+            <section class="panel span-3">
+              <h3>核心走势</h3>
+              <p>波段：${htmlEscape(signal.wave || "-")}</p>
+              ${signal.capPath ? `<p>市值路径：${htmlEscape(signal.capPath)}</p>` : ""}
+              ${signal.holderChange ? `<p>持有人变化：${htmlEscape(signal.holderChange)}</p>` : ""}
+              <div class="mini-grid">
+                ${stat("流动性", formatCap(signal.liquidity))}
+                ${stat("手续费", `${safeNum(signal.feeSol)} SOL`)}
+                ${stat("回撤", `${safeNum(signal.drawdown)}%`)}
+                ${stat("状态", signal.status || "-")}
+              </div>
+            </section>
+            <section class="panel span-4">
+              <h3>标签钱包分析</h3>
+              <div class="meter-grid">
+                ${meter("捆绑持仓", tags.bundle && tags.bundle.hold)}
+                ${meter("狙击/老鼠仓", tags.sniper && tags.sniper.hold)}
+                ${meter("同批簇持仓", tags.cluster && tags.cluster.hold)}
+                ${meter("Top100持仓", top.top100Hold)}
+              </div>
+              <div class="mini-grid three">
+                ${tagStat("聪明钱", tags.smart)}
+                ${tagStat("KOL", tags.kol)}
+                ${tagStat("新钱包", tags.fresh)}
+              </div>
+            </section>
+            <section class="panel span-3">
+              <h3>基础结构</h3>
+              <div class="top-row"><b>Top10</b><span>持仓 ${safeNum(top.top10Hold)}% / ${formatCap(top.top10Value)} · 盈利 ${safeNum(top.top10Profit)}% · 卖出 ${safeNum(top.top10Sold)}% · 次数 ${htmlEscape(top.top10Times || "-")}</span></div>
+              <div class="top-row"><b>Top100</b><span>持仓 ${safeNum(top.top100Hold)}% / ${formatCap(top.top100Value)} · 盈利 ${safeNum(top.top100Profit)}% · 卖出 ${safeNum(top.top100Sold)}% · 次数 ${htmlEscape(top.top100Times || "-")}</span></div>
+              <div class="top-row"><b>捆绑</b><span>持仓 ${safeNum(tags.bundle && tags.bundle.hold)}% / ${formatCap(tags.bundle && tags.bundle.holdValue)} · 卖出 ${safeNum(tags.bundle && tags.bundle.sold)}%</span></div>
+              <div class="top-row"><b>Dev</b><span>持仓 ${safeNum(dev.hold)}% · 已卖 ${safeNum(dev.sold)}%</span></div>
+            </section>
+          </div>
+          <div class="ca-row">
+            <div class="ca-line">CA: ${htmlEscape(signal.ca || "-")}</div>
+            <a class="gmgn" href="${htmlEscape(signal.gmgn || "https://gmgn.ai/")}" target="_blank" rel="noreferrer">GMGN</a>
+          </div>
+          <details class="raw"><summary>原始 TG 文本</summary><pre>${htmlEscape(signal.text || "")}</pre></details>
+        </article>`;
+    }
+
+    function matches(signal) {
+      const q = queryInput.value.trim().toLowerCase();
+      const score = scoreSignal(signal);
+      const tabMatch = state.tab === "all" ||
+        (state.tab === "high" && score.risk >= 70) ||
+        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1) ||
+        (state.tab === "new" && safeNum(signal.repeatCount) === 1);
+      if (!tabMatch) return false;
+      if (!q) return true;
+      return [signal.symbol, signal.ca, signal.narrative, signal.title, signal.text, signal.source]
+        .join(" ").toLowerCase().includes(q);
+    }
+
+    function render() {
+      const filtered = state.signals.filter(matches);
+      list.innerHTML = filtered.map(renderCard).join("");
+      empty.hidden = filtered.length > 0;
+      const high = state.signals.filter((s) => scoreSignal(s).risk >= 70).length;
+      const repeat = state.signals.filter((s) => safeNum(s.repeatCount) > 1).length;
+      const maxCap = state.signals.length ? Math.max(...state.signals.map((s) => safeNum(s.marketCap))) : 0;
+      document.querySelector("#sum-total").textContent = state.signals.length;
+      document.querySelector("#sum-high").textContent = high;
+      document.querySelector("#sum-repeat").textContent = repeat;
+      document.querySelector("#sum-maxcap").textContent = formatCap(maxCap);
+      document.querySelector("#sum-latest").textContent = state.signals[0] ? `$${state.signals[0].symbol}` : "-";
+    }
+
+    function pushItem(item, prepend = true) {
+      if (!item || !item.id || state.seen.has(item.id)) return;
+      state.seen.add(item.id);
+      const signal = parseSignal(item);
+      if (prepend) state.signals.unshift(signal);
+      else state.signals.push(signal);
+      state.signals = state.signals.slice(0, 300);
+      render();
+    }
+
+    function setStatus(cls, text) {
+      dot.className = `dot ${cls}`;
+      connText.textContent = text;
+    }
+
+    async function loadRecent() {
+      const resp = await fetch("/api/recent?limit=100");
+      const data = await resp.json();
+      for (const item of data.items || []) pushItem(item, false);
+      render();
+    }
+
+    function connect() {
+      const es = new EventSource("/events");
+      es.addEventListener("open", () => setStatus("ok", "实时监听中"));
+      es.addEventListener("ready", () => setStatus("ok", "实时监听中"));
+      es.addEventListener("alert", (event) => pushItem(JSON.parse(event.data), true));
+      es.addEventListener("error", () => setStatus("bad", "重连中"));
+    }
+
+    queryInput.addEventListener("input", render);
+    tabs.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.tab = btn.dataset.tab;
+        tabs.forEach((x) => x.classList.toggle("active", x === btn));
+        render();
+      });
+    });
+    clearBtn.addEventListener("click", () => {
+      state.signals = [];
+      state.seen.clear();
+      render();
+    });
+
+    loadRecent().finally(connect);
+  </script>
+</body>
+</html>

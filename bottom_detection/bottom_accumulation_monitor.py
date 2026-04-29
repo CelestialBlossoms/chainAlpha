@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
+from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
     delete_watchlist_token,
     fetch_watchlist_records,
@@ -901,6 +902,7 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
 
 def send_tg(text: str) -> None:
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        publish_tg_alert(text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID)
         return
     try:
         resp = requests.post(
@@ -910,8 +912,14 @@ def send_tg(text: str) -> None:
         )
         if not resp.ok:
             print(f"tg failed: {resp.status_code} {resp.text[:200]}")
+            publish_tg_alert(text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID)
+            return
+        payload = resp.json()
+        message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
+        publish_tg_alert(text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id)
     except Exception as exc:
         print(f"tg exception: {exc}")
+        publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
 
 
 

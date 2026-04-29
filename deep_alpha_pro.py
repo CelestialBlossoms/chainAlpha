@@ -9,6 +9,7 @@ from psycopg2.extras import Json
 from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 from redis_client import get_redis_client, redis_key
+from tg_alert_stream import publish_tg_alert
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -200,20 +201,26 @@ def trend_platform_args():
 def send_tg_alert(msg):
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
         print(f"--- TG ALERT ---\n{msg}\n----------------")
+        publish_tg_alert(msg, "deep_alpha", status="dry_run", chat_id=TG_CHAT_ID)
         return None
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
         resp = requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg}, timeout=15)
         if not resp.ok:
             print(f"TG send failed: http={resp.status_code} body={resp.text[:200]}")
+            publish_tg_alert(msg, "deep_alpha", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID)
             return None
         payload = resp.json()
         if not payload.get("ok"):
             print(f"TG send failed: {payload}")
+            publish_tg_alert(msg, "deep_alpha", status="failed_api", chat_id=TG_CHAT_ID, extra=payload)
             return None
-        return payload.get("result", {}).get("message_id")
+        message_id = payload.get("result", {}).get("message_id")
+        publish_tg_alert(msg, "deep_alpha", status="sent", chat_id=TG_CHAT_ID, message_id=message_id)
+        return message_id
     except Exception as e:
         print(f"TG send exception: {e}")
+        publish_tg_alert(msg, "deep_alpha", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(e)})
         return None
 
 def edit_tg_alert(chat_id, message_id, msg):

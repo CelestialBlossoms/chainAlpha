@@ -8,6 +8,7 @@ from pathlib import Path
 import requests
 
 from config import GMGN_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID
+from tg_alert_stream import publish_tg_alert
 from deep_alpha_pro import (
     CHAINS,
     format_chain_price,
@@ -47,11 +48,35 @@ def tg_api(method, payload):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/{method}"
     resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
     if not resp.ok:
+        if method == "sendMessage":
+            publish_tg_alert(
+                str(payload.get("text") or ""),
+                "tg_ca_chip",
+                status=f"failed_http_{resp.status_code}",
+                chat_id=payload.get("chat_id"),
+            )
         raise RuntimeError(f"Telegram {method} failed: http={resp.status_code} {resp.text[:300]}")
     data = resp.json()
     if not data.get("ok"):
+        if method == "sendMessage":
+            publish_tg_alert(
+                str(payload.get("text") or ""),
+                "tg_ca_chip",
+                status="failed_api",
+                chat_id=payload.get("chat_id"),
+                extra=data,
+            )
         raise RuntimeError(f"Telegram {method} failed: {data}")
-    return data.get("result")
+    result = data.get("result")
+    if method == "sendMessage":
+        publish_tg_alert(
+            str(payload.get("text") or ""),
+            "tg_ca_chip",
+            status="sent",
+            chat_id=payload.get("chat_id"),
+            message_id=(result or {}).get("message_id") if isinstance(result, dict) else None,
+        )
+    return result
 
 
 def send_message(chat_id, text, reply_to_message_id=None):
