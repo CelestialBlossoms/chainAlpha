@@ -21,6 +21,7 @@ LOW_MCAP_STRICT_USD = 10_000
 MID_MCAP_STRICT_USD = 20_000
 LOW_MCAP_MIN_UP_PCT = 0.30
 MID_MCAP_MIN_UP_PCT = 0.10
+HIGH_MCAP_MIN_UP_PCT = float(os.getenv("DEEP_ALPHA_HIGH_MCAP_MIN_UP_PCT", "0.05"))
 MIN_FEE_SOL = 1
 HIGH_VOLUME_USD_THRESHOLD = 100_000
 MIN_HIGH_VOLUME_FEE_SOL = 5
@@ -670,8 +671,11 @@ def mcap_price_observation_pass(mcap, price_observation):
             f"市值{LOW_MCAP_STRICT_USD:,.0f}-{MID_MCAP_STRICT_USD:,.0f}，需要连续上涨{MID_MCAP_MIN_UP_PCT:.0%}，当前{change_pct:.1%}",
         )
     return (
-        drop_pct <= MAX_PRICE_DROP_PCT,
-        f"市值>={MID_MCAP_STRICT_USD:,.0f}，需要回撤不超{MAX_PRICE_DROP_PCT:.0%}，当前{drop_pct:.1%}",
+        (change_pct >= HIGH_MCAP_MIN_UP_PCT and drop_pct <= MAX_PRICE_DROP_PCT) or fast_up,
+        (
+            f"市值>={MID_MCAP_STRICT_USD:,.0f}，需要当前价格上涨{HIGH_MCAP_MIN_UP_PCT:.0%}且回撤不超{MAX_PRICE_DROP_PCT:.0%}，"
+            f"当前涨跌{change_pct:.1%}，回撤{drop_pct:.1%}"
+        ),
     )
 
 def nested_value(source, path):
