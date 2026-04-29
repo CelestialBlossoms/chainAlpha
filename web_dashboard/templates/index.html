@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TG 筹码报警看板</title>
+  <title>热门代币自动检索</title>
   <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <div class="wrap">
       <header class="topbar">
         <div>
-          <h1>TG 筹码报警看板</h1>
-          <p class="desc">自动接收后端消息，按风险、复推、筹码结构一屏展示。Stream: {{ stream_key }}</p>
+          <h1>热门代币自动检索</h1>
+          <p class="desc">自动接收后端消息，实时展示热门代币、复推记录和筹码结构。Stream: {{ stream_key }}</p>
         </div>
         <div class="live">
           <span id="conn-dot" class="dot idle"></span>
@@ -22,7 +22,6 @@
 
       <section class="summary">
         <article class="card summary-card"><div class="stat-label">消息数</div><div id="sum-total" class="num">0</div></article>
-        <article class="card summary-card"><div class="stat-label">高风险</div><div id="sum-high" class="num red-text">0</div></article>
         <article class="card summary-card"><div class="stat-label">复推</div><div id="sum-repeat" class="num">0</div></article>
         <article class="card summary-card"><div class="stat-label">最高市值</div><div id="sum-maxcap" class="num">$0</div></article>
         <article class="card summary-card"><div class="stat-label">最新</div><div id="sum-latest" class="num">-</div></article>
@@ -32,7 +31,6 @@
         <input id="query" class="search" type="search" placeholder="搜索 Symbol / CA / 叙事 / 文本">
         <div class="tabs">
           <button class="tab active" type="button" data-tab="all">全部</button>
-          <button class="tab" type="button" data-tab="high">高风险</button>
           <button class="tab" type="button" data-tab="repeat">复推</button>
           <button class="tab" type="button" data-tab="new">首推</button>
           <button id="clear-btn" class="clear-btn" type="button">清空页面</button>
@@ -40,7 +38,7 @@
       </section>
 
       <section id="list" class="list"></section>
-      <div id="empty" class="empty" hidden>没有匹配的报警消息</div>
+      <div id="empty" class="empty" hidden>没有匹配的信号消息</div>
     </div>
   </div>
 
@@ -142,7 +140,7 @@
       const firstLine = String(text).split(/\r?\n/).find(Boolean) || item.title || "";
       const symbol = firstMatch(firstLine, /\|\s*\$?([^\s|*]+)/) || firstMatch(text, /\$([A-Za-z0-9_.-]{1,32})/) || "UNKNOWN";
       const ca = item.ca || firstMatch(text, /CA:\s*`?([1-9A-HJ-NP-Za-km-z]{32,60})`?/) || "";
-      const type = firstMatch(firstLine, /\*([^*]+报警)\*/) || firstMatch(text, /复推类型:\s*([^|\n]+)/) || item.status || "报警";
+      const type = firstMatch(text, /复推类型:\s*([^|\n]+)/) || item.status || "信号";
       const marketCap = moneyToNumber(firstMatch(text, /市值:\s*\$?([\d,.]+[KkMmWw万]?)/) || firstMatch(text, /当前市值:\s*\$?([\d,.]+[KkMmWw万]?)/));
       const holders = safeNum(firstMatch(text, /持有人:\s*(\d+)/));
       const feeSol = safeNum(firstMatch(text, /手续费:\s*([+-]?\d+(?:\.\d+)?)\s*SOL/i));
@@ -221,10 +219,8 @@
     }
 
     function badgeHtml(signal, score) {
-      const riskTone = score.risk >= 70 ? "red" : score.risk >= 40 ? "orange" : "green";
-      const riskText = score.risk >= 70 ? "高风险" : score.risk >= 40 ? "中风险" : "低风险";
       const repeat = safeNum(signal.repeatCount) > 1 ? `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>` : "";
-      return `<span class="badge">${htmlEscape(signal.type)}</span><span class="badge badge-${riskTone}">${riskText}</span>${repeat}`;
+      return `<span class="badge">${htmlEscape(signal.type)}</span>${repeat}`;
     }
 
     function stat(label, value, cls = "") {
@@ -279,6 +275,7 @@
               <b>标签钱包</b>
               <span>聪明钱 ${safeNum(tags.smart && tags.smart.count)}个 ${safeNum(tags.smart && tags.smart.hold)}% · KOL ${safeNum(tags.kol && tags.kol.count)}个 ${safeNum(tags.kol && tags.kol.hold)}%</span>
               <span>捆绑 ${safeNum(tags.bundle && tags.bundle.count)}个 ${safeNum(tags.bundle && tags.bundle.hold)}%/${formatCap(tags.bundle && tags.bundle.holdValue)} 盈利 ${safeNum(tags.bundle && tags.bundle.profit)}% 卖出 ${safeNum(tags.bundle && tags.bundle.sold)}%</span>
+              <span>同批簇 ${safeNum(tags.cluster && tags.cluster.count)}个 ${safeNum(tags.cluster && tags.cluster.hold)}% · 新钱包 ${safeNum(tags.fresh && tags.fresh.count)}个 ${safeNum(tags.fresh && tags.fresh.hold)}%</span>
             </div>
             <div class="compact-block">
               <b>基础结构</b>
@@ -288,7 +285,6 @@
             <div class="compact-block">
               <b>Dev</b>
               <span>持仓 ${safeNum(dev.hold)}% · 已卖 ${safeNum(dev.sold)}%</span>
-              <span>同批簇 ${safeNum(tags.cluster && tags.cluster.count)}个 ${safeNum(tags.cluster && tags.cluster.hold)}% · 新钱包 ${safeNum(tags.fresh && tags.fresh.count)}个 ${safeNum(tags.fresh && tags.fresh.hold)}%</span>
             </div>
           </div>
           <div class="ca-row">
@@ -303,7 +299,6 @@
       const q = queryInput.value.trim().toLowerCase();
       const score = scoreSignal(signal);
       const tabMatch = state.tab === "all" ||
-        (state.tab === "high" && score.risk >= 70) ||
         (state.tab === "repeat" && safeNum(signal.repeatCount) > 1) ||
         (state.tab === "new" && safeNum(signal.repeatCount) === 1);
       if (!tabMatch) return false;
@@ -316,11 +311,9 @@
       const filtered = state.signals.filter(matches).slice(0, MAX_VISIBLE_SIGNALS);
       list.innerHTML = filtered.map(renderCard).join("");
       empty.hidden = filtered.length > 0;
-      const high = state.signals.filter((s) => scoreSignal(s).risk >= 70).length;
       const repeat = state.signals.filter((s) => safeNum(s.repeatCount) > 1).length;
       const maxCap = state.signals.length ? Math.max(...state.signals.map((s) => safeNum(s.marketCap))) : 0;
       document.querySelector("#sum-total").textContent = state.signals.length;
-      document.querySelector("#sum-high").textContent = high;
       document.querySelector("#sum-repeat").textContent = repeat;
       document.querySelector("#sum-maxcap").textContent = formatCap(maxCap);
       document.querySelector("#sum-latest").textContent = state.signals[0] ? `$${state.signals[0].symbol}` : "-";

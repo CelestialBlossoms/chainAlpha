@@ -940,15 +940,6 @@ def local_phase_rule_text(analysis):
     current_kline = (analysis or {}).get("current_kline") or {}
     kline_summary = current_kline.get("summary") or {}
     stage = local_stage_conclusion(phase_flows)
-    risks = []
-    if down.get("sellers_or_distributors"):
-        risks.append(f"下跌阶段出货钱包 {wallet_brief(down.get('sellers_or_distributors'), limit=2, sign='-')}")
-    if float(down.get("top100_hold_delta") or 0) < 0:
-        risks.append(f"下跌阶段Top100减持{fmt_pct(abs(float(down.get('top100_hold_delta') or 0)))}")
-    if float(kline_summary.get("change_pct") or 0) < -30:
-        risks.append(f"当前K线跌幅{kline_summary.get('change_pct'):.1f}%")
-    if not risks:
-        risks.append("未见明确砸盘证据")
     return (
         f"本地规则阶段分析\n"
         f"- 阶段结论: {stage}。\n"
@@ -963,8 +954,7 @@ def local_phase_rule_text(analysis):
         f"- 换筹证据: 横盘Top100变化{float(sideways.get('top100_hold_delta') or 0):+.2%} | "
         f"横盘净流{compact_money(sideways.get('netflow_delta'))} | 下跌净流{compact_money(down.get('netflow_delta'))} | "
         f"时间段{phase_time_text(sideways)}，与K线横盘阶段对应。\n"
-        f"{current_node_text(current_node)}\n"
-        f"- 风险点: {'；'.join(risks)}。"
+        f"{current_node_text(current_node)}"
     )
 
 
@@ -1113,7 +1103,7 @@ def call_deepseek_chip_analysis(chain, address, stats, bottom_analysis):
         "请基于这些聚合数据判断：1 当前处于拉升、下跌、横盘吸筹、派发还是洗盘阶段；"
         "2 上涨阶段哪些钱包买入推动；3 下跌阶段哪些钱包卖出或砸盘；4 横盘阶段哪些钱包吸筹；"
         "5 Top100/Top20持仓占比如何变化；6 当前更偏吸筹、换筹、出货还是观察。6，当前阶段是那些钱包主导导致的"
-        "请用中文输出，必须包含：阶段结论、K线证据、Top100持仓变化、吸筹钱包、出货钱包、换筹证据、风险点、后续观察条件。"
+        "请用中文输出，必须包含：阶段结论、K线证据、Top100持仓变化、吸筹钱包、出货钱包、换筹证据、后续观察条件。"
         "不要给出买入建议，不要编造输入里没有的数据。\n\n"
         f"数据JSON:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -1150,20 +1140,19 @@ def deepseek_chip_text(text):
 
 def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis=""):
     reasons = ", ".join(stats.get("buy_reasons") or []) or "无明显加分项"
-    icon = "高风险" if stats.get("is_dumping") else "筹码报警"
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
 
     return (
-        f"{icon} | ${stats.get('symbol') or 'UNKNOWN'}\n"
+        f"${stats.get('symbol') or 'UNKNOWN'}\n"
         f"CA: {address}\n"
         f"链: {chain} | 查询时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         f"基础信息\n"
         f"- 市值: {compact_money(stats.get('mcap'))} | 持有人: {stats.get('holder_count', 0)} | 手续费: {stats.get('fee_sol', 0):.2f} SOL\n"
         f"- 流动性池: {stats.get('pool_label')} | 流动性: {compact_money(stats.get('pool_liquidity'))}\n"
         f"- 创建时间: {stats.get('created_time')} | 类型: {stats.get('token_age_type')} | 状态: {stats.get('verdict')}\n"
-        f"- Smart Money: {stats.get('sm_count', 0)} | KOL: {stats.get('kol_count', 0)} | 狙击手: {stats.get('snipers', 0)} | 风险分数: {stats.get('rug_ratio')}\n\n"
+        f"- Smart Money: {stats.get('sm_count', 0)} | KOL: {stats.get('kol_count', 0)} | 狙击手: {stats.get('snipers', 0)}\n\n"
         f"市场结构\n"
-        f"- {stats.get('market_structure')} | 风险: {stats.get('market_structure_risk')}\n"
+        f"- {stats.get('market_structure')}\n"
         f"- {stats.get('market_structure_reason')}\n"
         f"- 可买评分: {stats.get('buy_score', 0)} | 理由: {reasons}\n"
         f"- 5m买/卖: {stats.get('buys_5m', 0)}/{stats.get('sells_5m', 0)}\n\n"

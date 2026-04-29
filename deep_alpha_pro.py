@@ -2170,7 +2170,6 @@ def scan_pro():
                         )
 
                         alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
-                        alert_title = "筹码关联性追踪报警" if s.get("repeat_alert") else "筹码关联性报警"
                         repeat_line = (
                             f"复推次数: 第{s.get('alert_sequence_no', 1)}次 | 市值路径: {s.get('mcap_alert_history_text', 'N/A')}\n"
                             f"持有人变化: +{s['holder_count_delta']} "
@@ -2217,7 +2216,7 @@ def scan_pro():
                         narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
                         msg = (
-                            f"{alert_icon} *{alert_title}* | ${s['symbol']}\n"
+                            f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{s.get('price_observation_archive_text', '')}"
