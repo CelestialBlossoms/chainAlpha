@@ -922,6 +922,34 @@ def trader_scenario_conclusion_text(summary):
     )
 
 
+def analyze_snapshot_change(current_holders, history, summary):
+    previous_holders = (history[0].get("holders") if history else []) or []
+    holder_change = (
+        bottom_monitor.compare_holder_sets(current_holders, previous_holders)
+        if current_holders and previous_holders
+        else {
+            "accumulation_pct_delta": 0.0,
+            "distribution_pct_delta": 0.0,
+            "new_holder_pct": 0.0,
+            "exited_holder_pct": 0.0,
+            "netflow_usd": 0.0,
+        }
+    )
+    previous_summary = (history[0].get("summary") if history else {}) or {}
+    return {
+        "summary": summary or {},
+        "previous_summary": previous_summary,
+        "accumulation_pct_delta": holder_change["accumulation_pct_delta"],
+        "distribution_pct_delta": holder_change["distribution_pct_delta"],
+        "new_holder_pct": holder_change["new_holder_pct"],
+        "exited_holder_pct": holder_change["exited_holder_pct"],
+        "netflow_usd": holder_change["netflow_usd"],
+        "top10_hold_delta": float((summary or {}).get("top10_pct") or 0) - float(previous_summary.get("top10_pct") or 0),
+        "top20_hold_delta": float((summary or {}).get("top20_pct") or 0) - float(previous_summary.get("top20_pct") or 0),
+        "top100_hold_delta": float((summary or {}).get("top100_pct") or 0) - float(previous_summary.get("top100_pct") or 0),
+    }
+
+
 def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     raw_holders = bottom_monitor.fetch_top100_holders(address)
     if not raw_holders:
@@ -943,7 +971,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     raw_traders = fetch_token_traders(address, chain=chain, limit=100)
     trader_scenarios = fetch_token_trader_scenarios(address, chain=chain, limit=20)
     history = bottom_monitor.recent_snapshots(address, limit=limit)
-    analysis = bottom_monitor.analyze_snapshot_change(holders, history, summary)
+    analysis = analyze_snapshot_change(holders, history, summary)
     analysis["snapshot_count"] = len(history)
     analysis["current_holder_count"] = len(holders)
     analysis["current_snapshot_ts"] = int(time.time())
