@@ -23,8 +23,13 @@ LOW_MCAP_MIN_UP_PCT = 0.30
 MID_MCAP_MIN_UP_PCT = 0.10
 HIGH_MCAP_MIN_UP_PCT = float(os.getenv("DEEP_ALPHA_HIGH_MCAP_MIN_UP_PCT", "0.05"))
 MIN_FEE_SOL = 1
-HIGH_VOLUME_USD_THRESHOLD = 100_000
-MIN_HIGH_VOLUME_FEE_SOL = 5
+VOLUME_FEE_GUARD_MIN_MCAP_USD = float(os.getenv("DEEP_ALPHA_VOLUME_FEE_GUARD_MIN_MCAP_USD", "40000"))
+VOLUME_FEE_TIERS = (
+    (1_000_000, float(os.getenv("DEEP_ALPHA_VOLUME_FEE_1M_SOL", "10"))),
+    (500_000, float(os.getenv("DEEP_ALPHA_VOLUME_FEE_500K_SOL", "8"))),
+    (200_000, float(os.getenv("DEEP_ALPHA_VOLUME_FEE_200K_SOL", "4"))),
+    (100_000, float(os.getenv("DEEP_ALPHA_VOLUME_FEE_100K_SOL", "2"))),
+)
 DUMP_PROGRESS_THRESHOLD = 20
 MIN_DUMP_ASSOCIATED_SUPPLY = 10
 MIN_DUMP_SOLD_SUPPLY = 2
@@ -785,6 +790,54 @@ def extract_trade_volume_usd(*sources):
         keys=("sell_volume", "sell_volume_usd", "sell_volume_1m", "sell_volume_1m_usd", "sell_volume_5m", "sell_volume_5m_usd"),
     )
     return buy_volume + sell_volume
+
+def normalize_tax_pct(value):
+    tax = safe_float(value)
+    if tax <= 0:
+        return 0.0
+    return tax * 100 if tax <= 1 else tax
+
+def extract_tax_pct(*sources, side):
+    if side == "buy":
+        keys = (
+            "buy_tax",
+            "buy_tax_pct",
+            "buy_tax_rate",
+            "tax_buy",
+            "tax_buy_pct",
+        )
+    else:
+        keys = (
+            "sell_tax",
+            "sell_tax_pct",
+            "sell_tax_rate",
+            "tax_sell",
+            "tax_sell_pct",
+        )
+    return normalize_tax_pct(first_float(*sources, keys=keys))
+
+def required_volume_fee_sol(mcap_usd, trade_volume_usd):
+    mcap_usd = safe_float(mcap_usd)
+    trade_volume_usd = safe_float(trade_volume_usd)
+    if mcap_usd <= VOLUME_FEE_GUARD_MIN_MCAP_USD:
+        return 0.0, ""
+    for min_volume, required_fee in VOLUME_FEE_TIERS:
+        if trade_volume_usd >= min_volume:
+            return required_fee, f"市值>{VOLUME_FEE_GUARD_MIN_MCAP_USD:,.0f}且交易量>={min_volume:,.0f}"
+    return 0.0, ""
+
+def volume_fee_filter_reason(stats):
+    required_fee, reason = required_volume_fee_sol(stats.get("mcap"), stats.get("trade_volume_usd"))
+    if required_fee <= 0:
+        return None
+    fee_sol = safe_float(stats.get("fee_sol"))
+    if fee_sol >= required_fee:
+        return None
+    return (
+        f"{reason}，手续费{fee_sol:.2f}SOL<{required_fee:.2f}SOL "
+        f"(交易量{format_usd_short(stats.get('trade_volume_usd'))}, "
+        f"买税{safe_float(stats.get('buy_tax_pct')):.2f}%, 卖税{safe_float(stats.get('sell_tax_pct')):.2f}%)"
+    )
 
 def extract_pool_label(*sources):
     value = first_value(
@@ -1894,6 +1947,8 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     )
     fee_sol = extract_fee_sol(info, trend_row)
     trade_volume_usd = extract_trade_volume_usd(trend_row, info)
+    buy_tax_pct = extract_tax_pct(trend_row, info, side="buy")
+    sell_tax_pct = extract_tax_pct(trend_row, info, side="sell")
     pool_label, pool_liquidity = extract_pool_label(info, trend_row)
     created_at = first_value(
         info,
@@ -1926,6 +1981,8 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "holder_count": int(holder_count),
         "fee_sol": fee_sol,
         "trade_volume_usd": trade_volume_usd,
+        "buy_tax_pct": buy_tax_pct,
+        "sell_tax_pct": sell_tax_pct,
         "pool_label": pool_label,
         "pool_liquidity": pool_liquidity,
         "price": current_price,
@@ -2060,12 +2117,9 @@ def scan_pro():
                     if s["fee_sol"] < MIN_FEE_SOL:
                         print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{MIN_FEE_SOL:.2f} SOL")
                         continue
-                    if s["trade_volume_usd"] >= HIGH_VOLUME_USD_THRESHOLD and s["fee_sol"] < MIN_HIGH_VOLUME_FEE_SOL:
-                        print(
-                            f"  [跳过] 高交易量低手续费 ${s['symbol']} {addr}: "
-                            f"volume=${s['trade_volume_usd']:,.0f}>={HIGH_VOLUME_USD_THRESHOLD:,.0f}, "
-                            f"fee={s['fee_sol']:.2f} SOL<{MIN_HIGH_VOLUME_FEE_SOL:.2f} SOL"
-                        )
+                    volume_fee_reason = volume_fee_filter_reason(s)
+                    if volume_fee_reason:
+                        print(f"  [跳过] 疑似刷量低手续费 ${s['symbol']} {addr}: {volume_fee_reason}")
                         continue
                     if s["is_dumping"]:
                         continue
@@ -2229,6 +2283,7 @@ def scan_pro():
                         msg = (
                             f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
+                            f"交易量: {format_usd_short(s.get('trade_volume_usd'))} | 买税: {s.get('buy_tax_pct', 0):.2f}% | 卖税: {s.get('sell_tax_pct', 0):.2f}%\n"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{s.get('price_observation_archive_text', '')}"
                             f"{repeat_line}"

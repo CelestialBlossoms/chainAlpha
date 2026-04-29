@@ -137,11 +137,19 @@ def extract_addresses(text):
 
 def compact_money(value):
     value = float(value or 0)
+    sign = "-" if value < 0 else ""
+    value = abs(value)
     if value >= 1_000_000:
-        return f"${value / 1_000_000:.2f}M"
+        return f"{sign}${value / 1_000_000:.2f}M"
     if value >= 1_000:
-        return f"${value / 1_000:.1f}K"
-    return f"${value:,.0f}"
+        return f"{sign}${value / 1_000:.1f}K"
+    return f"{sign}${value:,.0f}"
+
+
+def profit_pct_text(profit, buy_volume):
+    buy = float(buy_volume or 0)
+    pct = (float(profit or 0) / buy * 100) if buy > 0 else 0.0
+    return f"{pct:+.1f}%"
 
 
 def round_float(value, digits=4):
@@ -159,6 +167,7 @@ def compact_holder(holder, include_wallet=True):
         "buy": round_float(holder.get("buy_volume"), 2),
         "sell": round_float(holder.get("sell_volume"), 2),
         "net": round_float(holder.get("netflow"), 2),
+        "profit": round_float(holder.get("profit"), 2),
         "avg_cost": holder.get("avg_cost"),
         "buy_count": holder.get("buy_count"),
         "sell_count": holder.get("sell_count"),
@@ -480,7 +489,15 @@ def clean_holder_tag_desc(desc):
     }
     for old, new in replacements.items():
         desc = desc.replace(old, new)
-    return desc
+    cleaned = []
+    for line in desc.splitlines():
+        line = re.sub(r"\s+买(?:\$?[-+\d,.KMBkmb万亿]+)?", "", line)
+        line = re.sub(r"\s+卖(?:\$?[-+\d,.KMBkmb万亿]+)?", "", line)
+        line = re.sub(r"\s+净\$?[-+\d,.KMBkmb万亿]+", "", line)
+        line = re.sub(r"\s+均[^\s|，。]+", "", line)
+        line = re.sub(r"\s+中[^\s|，。]+", "", line)
+        cleaned.append(line.strip())
+    return "\n".join(line for line in cleaned if line)
 
 
 def raw_wallet_address(row):
@@ -598,6 +615,55 @@ def fetch_token_traders(address, chain="sol", limit=100):
             seen.add(wallet)
             rows.append(row)
     return rows
+
+
+TRADER_SCENARIOS = [
+    ("smart_buy", "smart_degen", "buy_volume_cur", "精明资金高买入"),
+    ("smart_sell", "smart_degen", "sell_volume_cur", "聪明资金高卖出"),
+    ("kol_active", "renowned", "last_active_timestamp", "近期活跃KOL"),
+    ("smart_profit", "smart_degen", "profit", "聪明资金盈利"),
+    ("sniper_hold", "sniper", "amount_percentage", "狙击手坚守"),
+    ("smart_unrealized", "smart_degen", "unrealized_profit", "聪明资金未实现收益"),
+    ("kol_profit", "renowned", "profit", "KOL已获利"),
+]
+
+
+def fetch_token_trader_scenarios(address, chain="sol", limit=20):
+    scenarios = {}
+    for key, tag, order_by, label in TRADER_SCENARIOS:
+        data = bottom_monitor.run_gmgn(
+            [
+                "token",
+                "traders",
+                "--chain",
+                chain,
+                "--address",
+                address,
+                "--limit",
+                str(limit),
+                "--tag",
+                tag,
+                "--order-by",
+                order_by,
+                "--direction",
+                "desc",
+            ],
+            timeout=90,
+        )
+        rows = []
+        if isinstance(data, dict):
+            traders = data.get("list") or data.get("data", {}).get("list") or []
+            for rank_no, row in enumerate(traders if isinstance(traders, list) else [], start=1):
+                item = normalize_raw_wallet(row, rank_no, "trader")
+                if item:
+                    rows.append(item)
+        scenarios[key] = {
+            "tag": tag,
+            "order_by": order_by,
+            "label": label,
+            "wallets": rows,
+        }
+    return scenarios
 
 
 def merge_wallet_record(target, item):
@@ -723,6 +789,7 @@ def summarize_package_wallet_matches(records):
                 "groups": item.get("package_groups") or [],
                 "hold_pct": float(item.get("hold_pct") or 0),
                 "usd_value": float(item.get("usd_value") or 0),
+                "buy_volume": float(item.get("buy_volume") or 0),
                 "profit": float(item.get("profit") or 0),
                 "avg_cost": float(item.get("avg_cost") or 0),
                 "roles": sorted(item.get("roles") or []),
@@ -797,6 +864,64 @@ def analyze_traders_and_sources(raw_holders, raw_traders):
     }
 
 
+def summarize_trader_scenarios(scenarios):
+    result = {}
+    for key, data in (scenarios or {}).items():
+        wallets = data.get("wallets") or []
+        result[key] = {
+            "label": data.get("label") or key,
+            "count": len(wallets),
+            "hold_pct": sum(float(item.get("hold_pct") or 0) for item in wallets),
+            "buy_volume": sum(float(item.get("buy_volume") or 0) for item in wallets),
+            "sell_volume": sum(float(item.get("sell_volume") or 0) for item in wallets),
+            "profit": sum(float(item.get("profit") or 0) for item in wallets),
+            "unrealized_profit": sum(float(item.get("unrealized_profit") or 0) for item in wallets),
+            "wallets": wallets[:5],
+        }
+    return result
+
+
+def trader_scenario_conclusion_text(summary):
+    if not summary:
+        return "交易员结论\n- 暂无 token traders 标签数据"
+
+    smart_buy = summary.get("smart_buy") or {}
+    smart_sell = summary.get("smart_sell") or {}
+    smart_profit = summary.get("smart_profit") or {}
+    smart_unrealized = summary.get("smart_unrealized") or {}
+    kol_active = summary.get("kol_active") or {}
+    kol_profit = summary.get("kol_profit") or {}
+    sniper_hold = summary.get("sniper_hold") or {}
+
+    smart_buy_usd = float(smart_buy.get("buy_volume") or 0)
+    smart_sell_usd = float(smart_sell.get("sell_volume") or 0)
+    smart_net = smart_buy_usd - smart_sell_usd
+    smart_hold = float(smart_buy.get("hold_pct") or 0) + float(smart_profit.get("hold_pct") or 0)
+    profit_pressure = float(smart_profit.get("profit") or 0) + float(kol_profit.get("profit") or 0)
+    unrealized = float(smart_unrealized.get("unrealized_profit") or 0)
+    sniper_hold_pct = float(sniper_hold.get("hold_pct") or 0)
+
+    if smart_sell_usd > smart_buy_usd * 1.2 and profit_pressure > 0:
+        conclusion = "聪明资金卖出强于买入，且已有盈利钱包，偏出货观察。"
+    elif smart_buy_usd > smart_sell_usd * 1.2 and smart_hold > 0:
+        conclusion = "聪明资金买入强于卖出，且仍有持仓，偏吸筹观察。"
+    elif unrealized > 0 and sniper_hold_pct > 0.01:
+        conclusion = "聪明资金有未实现收益，狙击手仍有持仓，注意利润兑现。"
+    else:
+        conclusion = "买卖和盈利信号不极端，暂按观察处理。"
+
+    return (
+        "交易员结论\n"
+        f"- 结论: {conclusion}\n"
+        f"- 精明买入: {int(smart_buy.get('count') or 0)}个 | 持仓{float(smart_buy.get('hold_pct') or 0):.2%} | 买入{compact_money(smart_buy_usd)}\n"
+        f"- 精明卖出: {int(smart_sell.get('count') or 0)}个 | 持仓{float(smart_sell.get('hold_pct') or 0):.2%} | 卖出{compact_money(smart_sell_usd)} | 净{compact_money(smart_net)}\n"
+        f"- 精明盈利: {int(smart_profit.get('count') or 0)}个 | 持仓{float(smart_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(smart_profit.get('profit'), smart_profit.get('buy_volume'))}\n"
+        f"- 未实现收益: {int(smart_unrealized.get('count') or 0)}个 | 持仓{float(smart_unrealized.get('hold_pct') or 0):.2%} | 未实现{compact_money(unrealized)}\n"
+        f"- KOL活跃/盈利: 活跃{int(kol_active.get('count') or 0)}个 | 已获利{int(kol_profit.get('count') or 0)}个 | 持仓{float(kol_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(kol_profit.get('profit'), kol_profit.get('buy_volume'))}\n"
+        f"- 狙击手坚守: {int(sniper_hold.get('count') or 0)}个 | 持仓{float(sniper_hold.get('hold_pct') or 0):.2%}"
+    )
+
+
 def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     raw_holders = bottom_monitor.fetch_top100_holders(address)
     if not raw_holders:
@@ -816,6 +941,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     candles = bottom_monitor.fetch_kline(address, kline_resolution)
     summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders, candles, kline_resolution)
     raw_traders = fetch_token_traders(address, chain=chain, limit=100)
+    trader_scenarios = fetch_token_trader_scenarios(address, chain=chain, limit=20)
     history = bottom_monitor.recent_snapshots(address, limit=limit)
     analysis = bottom_monitor.analyze_snapshot_change(holders, history, summary)
     analysis["snapshot_count"] = len(history)
@@ -828,7 +954,17 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
     }
     analysis["current_top_holders"] = [compact_holder(holder) for holder in holders[:100]]
     analysis["trader_source_analysis"] = analyze_traders_and_sources(raw_holders, raw_traders)
+    analysis["trader_scenario_analysis"] = summarize_trader_scenarios(trader_scenarios)
     analysis["phase_wallet_flows"] = analyze_phase_wallet_flows(summary, holders, history[:DEEPSEEK_MAX_HISTORY])
+    previous_holders = (history[0].get("holders") if history else []) or []
+    analysis["profit_track"] = {
+        "current_top100_profit": sum(float(holder.get("profit") or 0) for holder in holders[:100]),
+        "previous_top100_profit": sum(float(holder.get("profit") or 0) for holder in previous_holders[:100]),
+        "current_top100_buy": sum(float(holder.get("buy_volume") or 0) for holder in holders[:100]),
+        "current_top20_profit": sum(float(holder.get("profit") or 0) for holder in holders[:20]),
+        "previous_top20_profit": sum(float(holder.get("profit") or 0) for holder in previous_holders[:20]),
+        "current_top20_buy": sum(float(holder.get("buy_volume") or 0) for holder in holders[:20]),
+    }
     return analysis
 
 
@@ -964,10 +1100,12 @@ def trader_wallet_brief(items, mode="buy", limit=3):
         tags = item.get("tags") or []
         tags_text = ",".join(str(tag) for tag in tags[:2]) if isinstance(tags, list) else str(tags)
         suffix = f" {tags_text}" if tags_text else ""
-        metric = f"卖{compact_money(item.get('sell_volume'))}" if mode == "sell" else f"买{compact_money(item.get('buy_volume'))}"
         hold = float(item.get("hold_pct") or 0)
         profit = float(item.get("profit") or 0)
-        parts.append(f"{short_addr(item.get('wallet'))} {metric} 持{hold:.2%} 盈亏{compact_money(profit)}{suffix}")
+        parts.append(
+            f"{short_addr(item.get('wallet'))} 持仓{hold:.2%} "
+            f"盈利{profit_pct_text(profit, item.get('buy_volume'))}{suffix}"
+        )
     return " | ".join(parts) if parts else "暂无明显钱包"
 
 
@@ -991,9 +1129,8 @@ def package_wallet_group_brief(groups):
     for group in (groups or [])[:4]:
         parts.append(
             f"{group.get('group')} {int(group.get('count') or 0)}个/"
-            f"持{float(group.get('hold_pct') or 0):.2%}/"
-            f"盈亏{compact_money(group.get('profit'))}/"
-            f"均{format_chain_price(group.get('avg_cost'))}/中{format_chain_price(group.get('median_cost'))}"
+            f"持仓{float(group.get('hold_pct') or 0):.2%}/"
+            f"盈利{profit_pct_text(group.get('profit'), group.get('buy_volume'))}"
         )
     return " | ".join(parts) if parts else "暂无分组命中"
 
@@ -1006,9 +1143,8 @@ def package_wallet_brief(wallets):
         group_text = f"/{groups}" if groups else ""
         parts.append(
             f"{name}{group_text} {short_addr(item.get('wallet'))} "
-            f"持{float(item.get('hold_pct') or 0):.2%} "
-            f"盈亏{compact_money(item.get('profit'))} "
-            f"成本{format_chain_price(item.get('avg_cost'))}"
+            f"持仓{float(item.get('hold_pct') or 0):.2%} "
+            f"盈利{profit_pct_text(item.get('profit'), item.get('buy_volume'))}"
         )
     return " | ".join(parts) if parts else "暂无重点命中钱包"
 
@@ -1016,14 +1152,11 @@ def package_wallet_brief(wallets):
 def package_wallet_text(analysis):
     data = ((analysis or {}).get("trader_source_analysis") or {}).get("package_wallets") or {}
     if not data or int(data.get("count") or 0) <= 0:
-        return "自定义钱包命中分析\n- 暂无 package_wallet_map.json 命中钱包"
+        return "钱包命中分析\n- 暂无 package_wallet_map.json 命中钱包"
     return (
-        "自定义钱包命中分析\n"
+        "钱包命中分析\n"
         f"- 命中汇总: {int(data.get('count') or 0)}个 | 持仓{float(data.get('hold_pct') or 0):.2%} | "
-        f"持仓金额{compact_money(data.get('usd_value'))} | 买{compact_money(data.get('buy_volume'))} | "
-        f"卖{compact_money(data.get('sell_volume'))} | 净{compact_money(data.get('netflow'))} | "
-        f"盈亏{compact_money(data.get('profit'))} | 均{format_chain_price(data.get('avg_cost'))} | "
-        f"中{format_chain_price(data.get('median_cost'))}。\n"
+        f"持仓金额{compact_money(data.get('usd_value'))} | 盈利{profit_pct_text(data.get('profit'), data.get('buy_volume'))}。\n"
         f"- 分组聚合: {package_wallet_group_brief(data.get('groups'))}。\n"
         f"- 重点钱包: {package_wallet_brief(data.get('wallets'))}。"
     )
@@ -1051,6 +1184,29 @@ def trader_source_text(analysis):
     )
 
 
+def bottom_profit_wallet_text(analysis):
+    current = (analysis or {}).get("current_top_holders") or []
+    data = (analysis or {}).get("trader_source_analysis") or {}
+    profitable = [item for item in current if float(item.get("profit") or 0) > 0]
+    profitable.sort(key=lambda item: (float(item.get("profit") or 0), float(item.get("hold_pct") or 0)), reverse=True)
+    total_hold = sum(float(item.get("hold_pct") or 0) for item in profitable)
+    total_profit = sum(float(item.get("profit") or 0) for item in profitable)
+    total_buy = sum(float(item.get("buy") or 0) for item in profitable)
+    top_profit = " | ".join(
+        f"{short_addr(item.get('wallet'))} 持仓{float(item.get('hold_pct') or 0):.2%} 盈利{profit_pct_text(item.get('profit'), item.get('buy'))}"
+        for item in profitable[:3]
+    ) or "暂无盈利钱包"
+    sellers = data.get("top_sellers") or []
+    exited = data.get("exited_sellers") or []
+    return (
+        "底部盈利钱包聚合\n"
+        f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2%} | 盈利{profit_pct_text(total_profit, total_buy)}。\n"
+        f"- 主要盈利钱包: {top_profit}。\n"
+        f"- 当前卖出观察: {trader_wallet_brief(sellers, 'sell')}。\n"
+        f"- 已退出卖出观察: {trader_wallet_brief(exited, 'sell')}。"
+    )
+
+
 def bottom_chip_history_text(analysis):
     if not analysis:
         return "最近100次筹码轨迹\n- 暂无 bottom_top100_snapshots 历史数据"
@@ -1058,12 +1214,22 @@ def bottom_chip_history_text(analysis):
     history_ts = analysis.get("latest_history_snapshot_ts")
     current_time = datetime.fromtimestamp(current_ts).strftime("%Y-%m-%d %H:%M:%S") if current_ts else "未知"
     history_time = datetime.fromtimestamp(history_ts).strftime("%Y-%m-%d %H:%M:%S") if history_ts else "暂无"
+    top100 = ((analysis or {}).get("phase_wallet_flows") or {}).get("top100_hold_change") or {}
+    top20 = ((analysis or {}).get("phase_wallet_flows") or {}).get("top20_hold_change") or {}
+    profit = (analysis or {}).get("profit_track") or {}
+    top100_profit_delta = float(profit.get("current_top100_profit") or 0) - float(profit.get("previous_top100_profit") or 0)
+    top20_profit_delta = float(profit.get("current_top20_profit") or 0) - float(profit.get("previous_top20_profit") or 0)
     return (
         f"实时Top100 + 最近100次筹码轨迹\n"
         f"- 当前查询: {current_time} | 当前Top100: {analysis.get('current_holder_count', 0)}个 | 历史快照: {analysis.get('snapshot_count', 0)}条\n"
         f"- 最近历史: {history_time}\n"
-        f"{local_phase_rule_text(analysis)}\n\n"
-        f"{trader_source_text(analysis)}"
+        f"- Top100持仓变化: {fmt_pct(top100.get('first'))}->{fmt_pct(top100.get('last'))} ({float(top100.get('delta') or 0):+.2%}) | "
+        f"盈利变化: {profit_pct_text(top100_profit_delta, profit.get('current_top100_buy'))}\n"
+        f"- Top20持仓变化: {fmt_pct(top20.get('first'))}->{fmt_pct(top20.get('last'))} ({float(top20.get('delta') or 0):+.2%}) | "
+        f"盈利变化: {profit_pct_text(top20_profit_delta, profit.get('current_top20_buy'))}\n\n"
+        f"{trader_scenario_conclusion_text((analysis or {}).get('trader_scenario_analysis'))}\n\n"
+        f"{bottom_profit_wallet_text(analysis)}\n\n"
+        f"{package_wallet_text(analysis)}"
     )
 
 
@@ -1139,8 +1305,25 @@ def deepseek_chip_text(text):
 
 
 def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis=""):
-    reasons = ", ".join(stats.get("buy_reasons") or []) or "无明显加分项"
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
+    sm_stats = stats.get("holder_tag_stats", {}).get("smart_degen", {})
+    kol_stats = stats.get("holder_tag_stats", {}).get("renowned", {})
+    sm_detail = (
+        f"聪明钱{sm_stats['count']}个 持仓{sm_stats['supply']:.1f}%/${sm_stats['position_value']:,.0f} "
+        f"盈利{sm_stats.get('profit_pct', 0):+.1f}% 卖出进度{sm_stats.get('sell_progress', 0):.1f}%"
+    ) if sm_stats.get("count", 0) > 0 else "聪明钱0个"
+    kol_detail = (
+        f"KOL{kol_stats['count']}个 持仓{kol_stats['supply']:.1f}%/${kol_stats['position_value']:,.0f} "
+        f"盈利{kol_stats.get('profit_pct', 0):+.1f}% 卖出进度{kol_stats.get('sell_progress', 0):.1f}%"
+    ) if kol_stats.get("count", 0) > 0 else "KOL0个"
+    dev_address = short_addr(stats.get("creator_address")) if stats.get("creator_address") else "未知"
+    dev_detail = (
+        f"- Dev: {dev_address} | 持仓{stats.get('dev_hold_rate', 0) * 100:.2f}% "
+        f"{compact_money(stats.get('dev_hold_value_usd'))} | "
+        f"买{compact_money(stats.get('dev_buy_usd'))} 卖{compact_money(stats.get('dev_sell_usd'))} "
+        f"净{compact_money(stats.get('dev_netflow_usd'))} | "
+        f"已卖{stats.get('dev_sell_amount_rate', 0) * 100:.1f}%"
+    )
 
     return (
         f"${stats.get('symbol') or 'UNKNOWN'}\n"
@@ -1150,30 +1333,16 @@ def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepse
         f"- 市值: {compact_money(stats.get('mcap'))} | 持有人: {stats.get('holder_count', 0)} | 手续费: {stats.get('fee_sol', 0):.2f} SOL\n"
         f"- 流动性池: {stats.get('pool_label')} | 流动性: {compact_money(stats.get('pool_liquidity'))}\n"
         f"- 创建时间: {stats.get('created_time')} | 类型: {stats.get('token_age_type')} | 状态: {stats.get('verdict')}\n"
-        f"- Smart Money: {stats.get('sm_count', 0)} | KOL: {stats.get('kol_count', 0)} | 狙击手: {stats.get('snipers', 0)}\n\n"
-        f"市场结构\n"
-        f"- {stats.get('market_structure')}\n"
-        f"- {stats.get('market_structure_reason')}\n"
-        f"- 可买评分: {stats.get('buy_score', 0)} | 理由: {reasons}\n"
-        f"- 5m买/卖: {stats.get('buys_5m', 0)}/{stats.get('sells_5m', 0)}\n\n"
-        f"资金关联分析 Top100\n"
-        f"- 疑似关联控盘: {stats.get('control_ratio', 0):.1f}%\n"
-        f"- 同资金/Token来源: {stats.get('source_cluster_desc')}\n"
-        f"- 同源持仓: {stats.get('source_cluster_supply', 0):.2f}% | {compact_money(stats.get('source_cluster_usd_value'))} | Token {stats.get('source_cluster_amount', 0):,.0f}\n"
-        f"- 同源买卖: 买入 {compact_money(stats.get('source_cluster_buy_volume'))} | 卖出 {compact_money(stats.get('source_cluster_sell_volume'))} | 净流 {compact_money(stats.get('source_cluster_netflow'))}\n"
-        f"- 庄家出货进度: {stats.get('dump_progress', 0):.1f}%\n\n"
+        f"- 交易量: {compact_money(stats.get('trade_volume_usd'))} | 买税: {stats.get('buy_tax_pct', 0):.2f}% | 卖税: {stats.get('sell_tax_pct', 0):.2f}%\n\n"
         f"标签钱包分析\n"
+        f"{sm_detail}\n"
+        f"{kol_detail}\n"
         f"{holder_tag_desc}\n\n"
-        f"成本线分析\n"
-        f"- 链上价(x1e9): {format_chain_price(stats.get('price'))}\n"
-        f"- Top20成本: {format_chain_price(stats.get('top20_avg_cost'))} | 盈亏 {format_pnl_pct(stats.get('price'), stats.get('top20_avg_cost'))}\n"
-        f"- Top50成本: {format_chain_price(stats.get('top50_avg_cost'))} | 盈亏 {format_pnl_pct(stats.get('price'), stats.get('top50_avg_cost'))}\n"
-        f"- Top100成本: {format_chain_price(stats.get('top100_avg_cost'))} | 盈亏 {format_pnl_pct(stats.get('price'), stats.get('top100_avg_cost'))}\n"
-        f"- 主成本区: {stats.get('dominant_cost_band')} {stats.get('dominant_cost_band_count', 0)}个/{stats.get('dominant_cost_band_supply', 0):.1f}%\n"
-        f"- 区间分布:\n{stats.get('cost_band_desc')}\n\n"
         f"基础结构\n"
         f"{stats.get('rank_bucket_desc')}\n"
         f"- 捆绑持仓: {stats.get('associated_supply', 0):.1f}% | 钱包 {stats.get('associated_count', 0)}个 | 卖出进度 {stats.get('dump_progress', 0):.1f}%\n\n"
+        f"Dev数据\n"
+        f"{dev_detail}\n\n"
         f"{bottom_chip_history_text(bottom_analysis)}\n\n"
         f"{deepseek_chip_text(deepseek_analysis)}"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
