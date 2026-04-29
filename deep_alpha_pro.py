@@ -905,6 +905,114 @@ def normalize_ratio(value):
         ratio = ratio / 100
     return max(0.0, ratio)
 
+def normalize_signed_pct(value):
+    return safe_float(value)
+
+def boolish(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in ("1", "true", "yes", "y", "on")
+
+def format_optional_pct(value, signed=False):
+    pct = safe_float(value)
+    if signed:
+        return f"{pct:+.1f}%"
+    return f"{pct:.1f}%"
+
+def analyze_trending_snapshot(trend_row):
+    if not isinstance(trend_row, dict) or not trend_row:
+        return {"desc": ""}
+
+    rank = int(first_float(trend_row, keys=("rank", "rank_no", "order", "index")))
+    hot_level = first_float(trend_row, keys=("hot_level", "hot", "heat"))
+    volume = first_float(
+        trend_row,
+        keys=(
+            "volume",
+            "volume_usd",
+            "trade_volume",
+            "trade_volume_usd",
+            "volume_1m",
+            "volume_5m",
+            "volume_1h",
+        ),
+    )
+    gas_fee = first_float(
+        trend_row,
+        keys=("gas_fee", "gas_fee_sol", "total_fee", "total_fee_sol", "fee_sol", "transaction_fee_sol"),
+    )
+    smart_degen_count = int(first_float(trend_row, keys=("smart_degen_count", "smart_wallets", "smart_money_count")))
+    renowned_count = int(first_float(trend_row, keys=("renowned_count", "renowned_wallets", "kol_count")))
+    rug_ratio = normalize_ratio(first_value(trend_row, keys=("rug_ratio", "risk_score", "risk_level")))
+    is_wash_trading = boolish(first_value(trend_row, keys=("is_wash_trading", "wash_trading", "is_wash")))
+    bundler_rate = normalize_ratio(
+        first_value(
+            trend_row,
+            keys=("bundler_rate", "bundler_amount_rate", "bundler_trader_amount_rate", "top_bundler_trader_percentage"),
+        )
+    )
+    rat_trader_amount_rate = normalize_ratio(
+        first_value(
+            trend_row,
+            keys=("rat_trader_amount_rate", "rat_trader_rate", "top_rat_trader_percentage"),
+        )
+    )
+    creator_token_status = first_value(trend_row, keys=("creator_token_status", "creator_status", "dev_token_status")) or ""
+    top10_holder_rate = normalize_ratio(
+        first_value(trend_row, keys=("top_10_holder_rate", "top10_holder_rate", "top10_rate"))
+    )
+    liquidity = first_float(trend_row, keys=("liquidity", "pool_liquidity", "liquidity_usd"))
+    change1m = normalize_signed_pct(
+        first_value(trend_row, keys=("change1m", "change_1m", "price_change_1m", "price_change_percent1m"))
+    )
+    change5m = normalize_signed_pct(
+        first_value(trend_row, keys=("change5m", "change_5m", "price_change_5m", "price_change_percent5m"))
+    )
+    change1h = normalize_signed_pct(
+        first_value(trend_row, keys=("change1h", "change_1h", "price_change_1h", "price_change_percent1h"))
+    )
+
+    rank_text = f"#{rank}" if rank > 0 else "-"
+    hot_text = f"{hot_level:g}" if hot_level > 0 else "-"
+    volume_text = format_usd_short(volume) if volume > 0 else "N/A"
+    gas_text = f"{gas_fee:.2f} SOL" if gas_fee > 0 else "N/A"
+    liquidity_text = format_usd_short(liquidity) if liquidity > 0 else "N/A"
+    wash_text = "是" if is_wash_trading else "否"
+    creator_text = f" | Dev状态 {creator_token_status}" if creator_token_status else ""
+
+    desc = (
+        f"热门榜: 排名{rank_text} | 热度{hot_text} | 交易量{volume_text} | Gas {gas_text} | 流动性{liquidity_text}\n"
+        f"榜单风险: Rug{format_optional_pct(rug_ratio * 100)} | Wash{wash_text} | "
+        f"捆绑{format_optional_pct(bundler_rate * 100)} | 老鼠仓{format_optional_pct(rat_trader_amount_rate * 100)} | "
+        f"Top10{format_optional_pct(top10_holder_rate * 100)}{creator_text}\n"
+        f"榜单资金: Smart{smart_degen_count} | KOL{renowned_count} | "
+        f"1m{format_optional_pct(change1m, signed=True)} | 5m{format_optional_pct(change5m, signed=True)} | "
+        f"1h{format_optional_pct(change1h, signed=True)}"
+    )
+
+    return {
+        "rank": rank,
+        "hot_level": hot_level,
+        "volume": volume,
+        "gas_fee": gas_fee,
+        "smart_degen_count": smart_degen_count,
+        "renowned_count": renowned_count,
+        "rug_ratio": rug_ratio,
+        "is_wash_trading": is_wash_trading,
+        "bundler_rate": bundler_rate,
+        "rat_trader_amount_rate": rat_trader_amount_rate,
+        "creator_token_status": creator_token_status,
+        "top10_holder_rate": top10_holder_rate,
+        "liquidity": liquidity,
+        "change1m": change1m,
+        "change5m": change5m,
+        "change1h": change1h,
+        "desc": desc,
+    }
+
 def extract_dev_risk(info, trend_row, holders_list):
     creator_address = first_nested_value(
         info,
@@ -1547,6 +1655,75 @@ def wallet_sell_progress_pct(wallets):
     )
     return sold_supply / supply * 100
 
+def holder_profit_pct(holder):
+    buy_volume = safe_float(holder.get("buy_volume_cur"))
+    profit = safe_float(holder.get("profit"))
+    return (profit / buy_volume * 100) if buy_volume > 0 else 0.0
+
+def holder_short_addr(holder):
+    address = str(holder.get("address") or holder.get("wallet_address") or "").strip()
+    return short_addr(address) if address else "未知"
+
+def analyze_bottom_profit_wallets(holders_list):
+    non_pool = [h for h in holders_list if not is_pool_holder(h)]
+    profitable = [h for h in non_pool if safe_float(h.get("profit")) > 0]
+    profitable.sort(
+        key=lambda h: (holder_profit_pct(h), safe_float(h.get("amount_percentage"))),
+        reverse=True,
+    )
+    sellers = [
+        h for h in non_pool
+        if safe_float(h.get("sell_volume_cur")) > 0
+        and normalize_ratio(h.get("sell_amount_percentage")) >= 0.30
+    ]
+    sellers.sort(
+        key=lambda h: (normalize_ratio(h.get("sell_amount_percentage")), safe_float(h.get("sell_volume_cur"))),
+        reverse=True,
+    )
+    total_hold = sum(safe_float(h.get("amount_percentage")) * 100 for h in profitable)
+    total_value = sum(holder_position_value_usd(h) for h in profitable)
+    total_profit = sum(safe_float(h.get("profit")) for h in profitable)
+    total_buy = sum(safe_float(h.get("buy_volume_cur")) for h in profitable)
+    profit_pct = (total_profit / total_buy * 100) if total_buy > 0 else 0.0
+    seller_hold = sum(safe_float(h.get("amount_percentage")) * 100 for h in sellers)
+    seller_progress = wallet_sell_progress_pct(sellers)
+
+    if total_hold >= 30 and profit_pct >= 20 and len(sellers) >= 3:
+        conclusion = "盈利钱包持仓高且已有批量卖出，疑似底部盈利盘在出货。"
+    elif total_hold >= 30 and profit_pct >= 20:
+        conclusion = "盈利钱包持仓高，暂未看到强卖出，需继续观察兑现。"
+    elif len(sellers) >= 3 and seller_hold <= 1:
+        conclusion = "卖出钱包数量较多但剩余持仓低，偏已兑现离场。"
+    else:
+        conclusion = "盈利和卖出聚合不极端，暂按观察处理。"
+
+    def wallet_line(holder):
+        return (
+            f"{holder_short_addr(holder)} 持仓{safe_float(holder.get('amount_percentage')) * 100:.2f}% "
+            f"盈利{holder_profit_pct(holder):+.1f}% 成本{format_chain_price(holder.get('avg_cost'))}"
+        )
+
+    return {
+        "count": len(profitable),
+        "hold_pct": total_hold,
+        "position_value": total_value,
+        "profit_pct": profit_pct,
+        "seller_count": len(sellers),
+        "seller_hold_pct": seller_hold,
+        "seller_progress": seller_progress,
+        "conclusion": conclusion,
+        "top_profit_wallets": profitable[:3],
+        "seller_wallets": sellers[:3],
+        "desc": (
+            "底部盈利钱包聚合\n"
+            f"- 结论: {conclusion}\n"
+            f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2f}%/${total_value:,.0f} | 盈利{profit_pct:+.1f}%\n"
+            f"- 主要盈利钱包: {' | '.join(wallet_line(h) for h in profitable[:3]) or '暂无盈利钱包'}\n"
+            f"- 卖出观察: {len(sellers)}个 | 剩余持仓{seller_hold:.2f}% | 卖出进度{seller_progress:.1f}%\n"
+            f"- 主要卖出钱包: {' | '.join(wallet_line(h) for h in sellers[:3]) or '暂无明显卖出钱包'}"
+        ),
+    }
+
 def analyze_holder_tags_and_costs(holders_list, current_price):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     tag_defs = [
@@ -1930,6 +2107,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     top10_holders = analyze_top10_holders(holders_list)
     current_price = safe_float(info.get("price") or trend_row.get("price"))
     holder_tags_costs = analyze_holder_tags_and_costs(holders_list, current_price)
+    bottom_profit_wallets = analyze_bottom_profit_wallets(holders_list)
     wallet_creation = analyze_wallet_creation_clusters(holders_list)
     narrative = extract_token_narrative(info, trend_row)
     trend_mcap = calc_mcap(trend_row)
@@ -1967,6 +2145,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     age_seconds = token_age_seconds(created_at)
     token_type = token_age_type(age_seconds)
     flow = analyze_5m_flow(address, trend_row)
+    trend_snapshot = analyze_trending_snapshot(trend_row)
     
     # 组装数据
     stats = {
@@ -1983,6 +2162,24 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "trade_volume_usd": trade_volume_usd,
         "buy_tax_pct": buy_tax_pct,
         "sell_tax_pct": sell_tax_pct,
+        "trend_snapshot": trend_snapshot,
+        "trend_market_desc": trend_snapshot.get("desc", ""),
+        "trend_rank": trend_snapshot.get("rank", 0),
+        "trend_hot_level": trend_snapshot.get("hot_level", 0),
+        "trend_volume_usd": trend_snapshot.get("volume", 0),
+        "trend_gas_fee_sol": trend_snapshot.get("gas_fee", 0),
+        "trend_smart_degen_count": trend_snapshot.get("smart_degen_count", 0),
+        "trend_renowned_count": trend_snapshot.get("renowned_count", 0),
+        "trend_rug_ratio": trend_snapshot.get("rug_ratio", 0),
+        "trend_is_wash_trading": trend_snapshot.get("is_wash_trading", False),
+        "trend_bundler_rate": trend_snapshot.get("bundler_rate", 0),
+        "trend_rat_trader_amount_rate": trend_snapshot.get("rat_trader_amount_rate", 0),
+        "trend_creator_token_status": trend_snapshot.get("creator_token_status", ""),
+        "trend_top10_holder_rate": trend_snapshot.get("top10_holder_rate", 0),
+        "trend_liquidity": trend_snapshot.get("liquidity", 0),
+        "trend_change1m": trend_snapshot.get("change1m", 0),
+        "trend_change5m": trend_snapshot.get("change5m", 0),
+        "trend_change1h": trend_snapshot.get("change1h", 0),
         "pool_label": pool_label,
         "pool_liquidity": pool_liquidity,
         "price": current_price,
@@ -2028,6 +2225,8 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     stats.update(holder_flow)
     stats.update(top10_holders)
     stats.update(holder_tags_costs)
+    stats["bottom_profit_wallets"] = bottom_profit_wallets
+    stats["bottom_profit_wallet_desc"] = bottom_profit_wallets.get("desc", "")
     stats.update(wallet_creation)
     stats.update(derive_market_structure(stats))
     stats["inflow_status"] = inflow_status_text(stats)
@@ -2280,10 +2479,13 @@ def scan_pro():
                         )
                         narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
+                        trend_market_desc = f"{s.get('trend_market_desc')}\n" if s.get("trend_market_desc") else ""
+
                         msg = (
                             f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"交易量: {format_usd_short(s.get('trade_volume_usd'))} | 买税: {s.get('buy_tax_pct', 0):.2f}% | 卖税: {s.get('sell_tax_pct', 0):.2f}%\n"
+                            f"{trend_market_desc}"
                             f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
                             f"{s.get('price_observation_archive_text', '')}"
                             f"{repeat_line}"
@@ -2299,6 +2501,7 @@ def scan_pro():
                             f"\n"
                             f"*Dev数据*\n"
                             f"{dev_detail}\n\n"
+                            f"{s.get('bottom_profit_wallet_desc', '')}\n\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )

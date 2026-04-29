@@ -152,6 +152,11 @@ def profit_pct_text(profit, buy_volume):
     return f"{pct:+.1f}%"
 
 
+def cost_text(value):
+    cost = float(value or 0)
+    return format_chain_price(cost) if cost > 0 else "-"
+
+
 def round_float(value, digits=4):
     try:
         return round(float(value or 0), digits)
@@ -876,6 +881,7 @@ def summarize_trader_scenarios(scenarios):
             "sell_volume": sum(float(item.get("sell_volume") or 0) for item in wallets),
             "profit": sum(float(item.get("profit") or 0) for item in wallets),
             "unrealized_profit": sum(float(item.get("unrealized_profit") or 0) for item in wallets),
+            "avg_cost": weighted_avg_cost(wallets),
             "wallets": wallets[:5],
         }
     return result
@@ -898,6 +904,8 @@ def trader_scenario_conclusion_text(summary):
     smart_net = smart_buy_usd - smart_sell_usd
     smart_hold = float(smart_buy.get("hold_pct") or 0) + float(smart_profit.get("hold_pct") or 0)
     profit_pressure = float(smart_profit.get("profit") or 0) + float(kol_profit.get("profit") or 0)
+    profit_buy = float(smart_profit.get("buy_volume") or 0) + float(kol_profit.get("buy_volume") or 0)
+    profit_pressure_pct = (profit_pressure / profit_buy * 100) if profit_buy > 0 else 0.0
     unrealized = float(smart_unrealized.get("unrealized_profit") or 0)
     sniper_hold_pct = float(sniper_hold.get("hold_pct") or 0)
 
@@ -913,12 +921,13 @@ def trader_scenario_conclusion_text(summary):
     return (
         "交易员结论\n"
         f"- 结论: {conclusion}\n"
+        f"- 盈利压力: 聪明资金+KOL综合盈利{profit_pressure_pct:+.1f}% | 未实现收益{compact_money(unrealized)}\n"
         f"- 精明买入: {int(smart_buy.get('count') or 0)}个 | 持仓{float(smart_buy.get('hold_pct') or 0):.2%} | 买入{compact_money(smart_buy_usd)}\n"
         f"- 精明卖出: {int(smart_sell.get('count') or 0)}个 | 持仓{float(smart_sell.get('hold_pct') or 0):.2%} | 卖出{compact_money(smart_sell_usd)} | 净{compact_money(smart_net)}\n"
-        f"- 精明盈利: {int(smart_profit.get('count') or 0)}个 | 持仓{float(smart_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(smart_profit.get('profit'), smart_profit.get('buy_volume'))}\n"
-        f"- 未实现收益: {int(smart_unrealized.get('count') or 0)}个 | 持仓{float(smart_unrealized.get('hold_pct') or 0):.2%} | 未实现{compact_money(unrealized)}\n"
-        f"- KOL活跃/盈利: 活跃{int(kol_active.get('count') or 0)}个 | 已获利{int(kol_profit.get('count') or 0)}个 | 持仓{float(kol_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(kol_profit.get('profit'), kol_profit.get('buy_volume'))}\n"
-        f"- 狙击手坚守: {int(sniper_hold.get('count') or 0)}个 | 持仓{float(sniper_hold.get('hold_pct') or 0):.2%}"
+        f"- 精明盈利: {int(smart_profit.get('count') or 0)}个 | 持仓{float(smart_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(smart_profit.get('profit'), smart_profit.get('buy_volume'))} | 成本{cost_text(smart_profit.get('avg_cost'))}\n"
+        f"- 未实现收益: {int(smart_unrealized.get('count') or 0)}个 | 持仓{float(smart_unrealized.get('hold_pct') or 0):.2%} | 未实现{compact_money(unrealized)} | 成本{cost_text(smart_unrealized.get('avg_cost'))}\n"
+        f"- KOL活跃/盈利: 活跃{int(kol_active.get('count') or 0)}个 | 已获利{int(kol_profit.get('count') or 0)}个 | 持仓{float(kol_profit.get('hold_pct') or 0):.2%} | 盈利{profit_pct_text(kol_profit.get('profit'), kol_profit.get('buy_volume'))} | 成本{cost_text(kol_profit.get('avg_cost'))}\n"
+        f"- 狙击手坚守: {int(sniper_hold.get('count') or 0)}个 | 持仓{float(sniper_hold.get('hold_pct') or 0):.2%} | 成本{cost_text(sniper_hold.get('avg_cost'))}"
     )
 
 
@@ -1132,7 +1141,8 @@ def trader_wallet_brief(items, mode="buy", limit=3):
         profit = float(item.get("profit") or 0)
         parts.append(
             f"{short_addr(item.get('wallet'))} 持仓{hold:.2%} "
-            f"盈利{profit_pct_text(profit, item.get('buy_volume'))}{suffix}"
+            f"盈利{profit_pct_text(profit, item.get('buy_volume'))} "
+            f"成本{cost_text(item.get('avg_cost'))}{suffix}"
         )
     return " | ".join(parts) if parts else "暂无明显钱包"
 
@@ -1167,10 +1177,9 @@ def package_wallet_brief(wallets):
     parts = []
     for item in (wallets or [])[:5]:
         groups = ",".join(item.get("groups") or [])
-        name = item.get("name") or short_addr(item.get("wallet"))
-        group_text = f"/{groups}" if groups else ""
+        name = item.get("name") or groups or short_addr(item.get("wallet"))
         parts.append(
-            f"{name}{group_text} {short_addr(item.get('wallet'))} "
+            f"{name} "
             f"持仓{float(item.get('hold_pct') or 0):.2%} "
             f"盈利{profit_pct_text(item.get('profit'), item.get('buy_volume'))}"
         )
@@ -1220,14 +1229,28 @@ def bottom_profit_wallet_text(analysis):
     total_hold = sum(float(item.get("hold_pct") or 0) for item in profitable)
     total_profit = sum(float(item.get("profit") or 0) for item in profitable)
     total_buy = sum(float(item.get("buy") or 0) for item in profitable)
+    total_profit_pct = (total_profit / total_buy * 100) if total_buy > 0 else 0.0
     top_profit = " | ".join(
-        f"{short_addr(item.get('wallet'))} 持仓{float(item.get('hold_pct') or 0):.2%} 盈利{profit_pct_text(item.get('profit'), item.get('buy'))}"
+        f"{short_addr(item.get('wallet'))} 持仓{float(item.get('hold_pct') or 0):.2%} "
+        f"盈利{profit_pct_text(item.get('profit'), item.get('buy'))} "
+        f"成本{cost_text(item.get('avg_cost'))}"
         for item in profitable[:3]
     ) or "暂无盈利钱包"
     sellers = data.get("top_sellers") or []
     exited = data.get("exited_sellers") or []
+    seller_count = len(sellers) + len(exited)
+    seller_hold = sum(float(item.get("hold_pct") or 0) for item in sellers + exited)
+    if total_hold >= 0.30 and total_profit_pct >= 20 and seller_count >= 3:
+        conclusion = "盈利钱包持仓高且已有卖出钱包，底部存在兑现/出货压力。"
+    elif total_hold >= 0.30 and total_profit_pct >= 20:
+        conclusion = "盈利钱包持仓高但卖出证据不强，偏继续观察兑现动作。"
+    elif seller_count >= 3 and seller_hold <= 0.01:
+        conclusion = "卖出观察钱包多但当前持仓低，偏已兑现离场。"
+    else:
+        conclusion = "盈利聚合不极端，暂按观察处理。"
     return (
         "底部盈利钱包聚合\n"
+        f"- 结论: {conclusion}\n"
         f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2%} | 盈利{profit_pct_text(total_profit, total_buy)}。\n"
         f"- 主要盈利钱包: {top_profit}。\n"
         f"- 当前卖出观察: {trader_wallet_brief(sellers, 'sell')}。\n"
