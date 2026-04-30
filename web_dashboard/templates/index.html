@@ -53,6 +53,7 @@
           <button class="tab" type="button" data-tab="repeat">复推</button>
           <button class="tab" type="button" data-tab="new">首推</button>
           <button class="tab" type="button" data-tab="bottom">底部异动</button>
+          <button class="tab" type="button" data-tab="daily1m">每日1M</button>
           <button id="clear-btn" class="clear-btn" type="button">清空页面</button>
         </div>
       </section>
@@ -240,6 +241,35 @@
         };
       }
 
+      // daily_1m: tokens that crossed $1M, tracked for MCap decline
+      if (source === "daily_1m") {
+        const address = extra.address || item.ca || "";
+        if (!address) return null;
+        const mcap = safeNum(extra.current_mcap);
+        const peak = safeNum(extra.peak_mcap || mcap);
+        const zone = extra.zone || "green";
+        const drop = safeNum(extra.drop_from_peak_pct);
+        return {
+          id: item.id, ts: safeNum(item.ts), time: fmtTime(item.ts),
+          source: "daily_1m", status: item.status || "", address, chain: "sol",
+          symbol: extra.symbol || item.title || "UNKNOWN",
+          name: extra.name || "",
+          narrative: `峰值${formatCap(peak)} → 当前${formatCap(mcap)} (跌${drop.toFixed(1)}%)`,
+          mcap, holders: safeNum(extra.holders),
+          feeSol: 0, tradeVolume: 0,
+          priceChange: -drop, wave: "", drawdown: 0,
+          repeatCount: 1, repeatType: zone === "red" ? "危险区" : (zone === "yellow" ? "观察区" : "安全区"),
+          capPath: `峰值 ${formatCap(peak)}`, holderDelta: 0,
+          pool: "", liquidity: safeNum(extra.liquidity),
+          createdTime: "", age: "", verdict: zone,
+          trend: {}, tags: {}, top10: {}, top100: {}, bottomProfit: {},
+          rawText: item.text || "", rawStats: extra,
+          isNew: false, isBottom: false,
+          isDaily1m: true,
+          m1Zone: zone, m1PeakMcap: peak, m1DropPct: drop,
+        };
+      }
+
       const stats = extra.stats || {};
       if (!stats || !Object.keys(stats).length) return null;
       const address = item.ca || extra.address || stats.address || "";
@@ -322,7 +352,8 @@
       const tabMatch = state.tab === "all" ||
         (state.tab === "repeat" && safeNum(signal.repeatCount) > 1 && !signal.isBottom) ||
         (state.tab === "new" && safeNum(signal.repeatCount) <= 1 && !signal.isBottom) ||
-        (state.tab === "bottom" && signal.isBottom);
+        (state.tab === "bottom" && signal.isBottom) ||
+        (state.tab === "daily1m" && signal.isDaily1m);
       if (!tabMatch) return false;
       const q = queryInput.value.trim().toLowerCase();
       if (!q) return true;
@@ -361,6 +392,25 @@
     }
 
     function renderDetailHtml(signal) {
+      if (signal.isDaily1m) {
+        const zoneColor = signal.m1Zone === "red" ? "red-text" : (signal.m1Zone === "yellow" ? "" : "green-text");
+        return `
+          <div class="metric-grid">
+            ${metric("当前市值", formatCap(signal.mcap), zoneColor)}
+            ${metric("峰值市值", formatCap(signal.m1PeakMcap))}
+            ${metric("跌幅", `${safeNum(signal.m1DropPct).toFixed(1)}%`, "red-text")}
+            ${metric("持有人", safeNum(signal.holders))}
+            ${metric("流动性", formatCap(signal.liquidity))}
+            ${metric("状态", signal.m1Zone === "red" ? "危险区" : (signal.m1Zone === "yellow" ? "观察区" : "安全区"), zoneColor)}
+          </div>
+          <section class="detail-section">
+            <h3>1M 监控信息</h3>
+            <p>该代币曾在 GMGN trending 中跨过 $1M 市值，当前处于${signal.m1Zone === "red" ? "危险区 ($400K-$500K)" : (signal.m1Zone === "yellow" ? "观察区 ($500K-$1M)" : "安全区 (>=$1M)")}</p>
+            <p>峰值市值: ${formatCap(signal.m1PeakMcap)} | 当前: ${formatCap(signal.mcap)} | 从峰值下跌: ${safeNum(signal.m1DropPct).toFixed(1)}%</p>
+          </section>
+        `;
+      }
+
       if (signal.isBottom) {
         const reasonsHtml = (signal.reasons || []).map((r) => `<li>${htmlEscape(r)}</li>`).join("");
         return `
@@ -454,9 +504,15 @@
       const expandedClass = isExpanded ? " expanded" : "";
       const flashClass = flashed ? " new-card" : "";
       const bottomClass = signal.isBottom ? " bottom-signal-card" : "";
+      const m1Class = signal.isDaily1m ? ` m1-${signal.m1Zone}` : "";
 
       let badges = "";
-      if (signal.isBottom) {
+      if (signal.isDaily1m) {
+        const zoneBadge = signal.m1Zone === "red"
+          ? '<span class="badge badge-red">危险区</span>'
+          : (signal.m1Zone === "yellow" ? '<span class="badge badge-orange">观察区</span>' : '<span class="badge badge-green">安全区</span>');
+        badges = zoneBadge;
+      } else if (signal.isBottom) {
         const isAbnormal = signal.verdict === "底部异动";
         badges = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
       } else if (signal.repeatCount > 1) {
@@ -465,12 +521,19 @@
         badges = '<span class="badge badge-green">首推</span>';
       }
 
-      const riskLine = signal.isBottom
-        ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span>`
-        : `<span>${htmlEscape(signal.verdict || "-")} · Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% · 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%</span>`;
+      const riskLine = signal.isDaily1m
+        ? `<span>峰值 ${formatCap(signal.m1PeakMcap)} · 当前 ${formatCap(signal.mcap)} · 跌${safeNum(signal.m1DropPct).toFixed(1)}%</span>`
+        : (signal.isBottom
+          ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span>`
+          : `<span>${htmlEscape(signal.verdict || "-")} · Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% · 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%</span>`);
+
+      const stat4label = signal.isDaily1m ? "跌幅" : (signal.isBottom ? "档位" : "复推");
+      const stat4value = signal.isDaily1m
+        ? `${safeNum(signal.m1DropPct).toFixed(1)}%`
+        : (signal.isBottom ? htmlEscape(signal.abnormalRule || "-") : (signal.repeatCount > 1 ? `${signal.repeatCount}次` : "首推"));
 
       return `
-        <article class="card signal-card${bottomClass}${expandedClass}${flashClass}" data-address="${htmlEscape(signal.address)}">
+        <article class="card signal-card${bottomClass}${m1Class}${expandedClass}${flashClass}" data-address="${htmlEscape(signal.address)}">
           <div class="card-main" data-action="toggle">
             <div class="card-top">
               <div class="card-title">
@@ -484,7 +547,7 @@
               <div class="card-stat"><span>市值</span><b>${formatCap(signal.mcap)}</b></div>
               <div class="card-stat"><span>涨幅</span><b class="${priceClass}">${formatPct(signal.priceChange)}</b></div>
               <div class="card-stat"><span>持有人</span><b>${signal.isBottom ? "-" : safeNum(signal.holders)}</b></div>
-              <div class="card-stat"><span>${signal.isBottom ? "档位" : "复推"}</span><b>${signal.isBottom ? htmlEscape(signal.abnormalRule || "-") : (signal.repeatCount > 1 ? `${signal.repeatCount}次` : "首推")}</b></div>
+              <div class="card-stat"><span>${stat4label}</span><b>${stat4value}</b></div>
             </div>
             <div class="card-risk">${riskLine}</div>
             <div class="card-ca">

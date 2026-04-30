@@ -1177,6 +1177,31 @@ def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_f
     )
 
 
+def daily_1m_zone(mcap: float):
+    if mcap >= 1_000_000: return "green", ">=$1M"
+    if mcap >= 500_000: return "yellow", f"${mcap/1000:.0f}K"
+    return "red", f"${mcap/1000:.0f}K"
+
+
+def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
+    zone, zone_label = daily_1m_zone(current_mcap)
+    drop = round((1 - current_mcap / max(peak_mcap, 1)) * 100, 1)
+    extra = {
+        "source_type": "daily_1m",
+        "symbol": token.get("symbol"),
+        "address": token_address(token),
+        "current_mcap": current_mcap,
+        "peak_mcap": peak_mcap,
+        "zone": zone,
+        "zone_label": zone_label,
+        "drop_from_peak_pct": drop,
+        "liquidity": to_float(token.get("liquidity") or token.get("pool_liquidity")),
+        "holders": token.get("holder_count", 0),
+    }
+    text = f"每日1M | ${token.get('symbol', '?')}\n市值: ${current_mcap:,.0f} | 峰值: ${peak_mcap:,.0f} | {zone_label}"
+    publish_tg_alert(text, "daily_1m", status="update", extra=extra)
+
+
 def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float, notify: bool) -> None:
     if current_mcap < DAILY_MCAP_MILESTONE_USD:
         return
@@ -1367,6 +1392,9 @@ def scan_once(args: argparse.Namespace) -> None:
             maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
             if is_watchlist:
                 update_watchlist_seen(address, current_mcap)
+                if current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
+                    peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
+                    publish_daily_1m_frontend_update(token, current_mcap, peak)
                 if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
                     if token.get("watchlist_daily_mcap_date"):
                         skipped += 1

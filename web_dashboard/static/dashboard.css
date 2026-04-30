@@ -289,6 +289,30 @@ h1 {
   box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .55), 0 1px 3px rgba(15, 23, 42, .08);
 }
 
+/* Daily 1M zone colors */
+.signal-card.m1-red {
+  border-color: #dc2626;
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, .55), 0 1px 3px rgba(15, 23, 42, .08);
+}
+
+.signal-card.m1-red:hover {
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, .75), 0 4px 16px rgba(220, 38, 38, .18);
+}
+
+.signal-card.m1-yellow {
+  border-color: #f59e0b;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, .55), 0 1px 3px rgba(15, 23, 42, .08);
+}
+
+.signal-card.m1-yellow:hover {
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, .75), 0 4px 16px rgba(245, 158, 11, .18);
+}
+
+.signal-card.m1-green {
+  border-color: #10b981;
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, .45), 0 1px 3px rgba(15, 23, 42, .08);
+}
+
 .signal-card.bottom-signal-card:hover {
   box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .72), 0 4px 16px rgba(37, 99, 235, .18);
 }
