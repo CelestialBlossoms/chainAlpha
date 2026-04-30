@@ -96,8 +96,8 @@ def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: flo
     db_op(_op)
 
 
-def fill_watchlist_token_created_at(address: str, gmgn_created_ts: int) -> None:
-    save_token_created_at(address, gmgn_created_ts)
+def fill_watchlist_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: float = 0) -> None:
+    save_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap)
 
 
 def ensure_watchlist_daily_mcap_columns() -> None:
