@@ -555,6 +555,23 @@ h1 {
   text-align: left;
 }
 
+.mini-table tr.focus-tag-row td {
+  background: #fef2f2;
+  color: #991b1b;
+  font-weight: 800;
+}
+
+.focus-tag-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: white;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .reason-list {
   margin: 4px 0 0;
   padding-left: 18px;
@@ -621,6 +638,11 @@ h1 {
 
 .badge-blue {
   background: #3b82f6;
+  color: white;
+}
+
+.focus-tag-badge {
+  background: #dc2626;
   color: white;
 }
 

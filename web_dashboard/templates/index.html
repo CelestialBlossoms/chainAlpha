@@ -164,7 +164,7 @@
     function isRecentDaily1m(item) {
       const ts = safeNum(item && item.ts);
       if (!ts) return false;
-      return Date.now() / 1000 - ts <= 24 * 60 * 60;
+      return Date.now() / 1000 - ts <= 48 * 60 * 60;
     }
 
     function tag(stats, key) {
@@ -388,13 +388,38 @@
       return `<div class="metric"><span>${label}</span><b class="${cls}">${htmlEscape(value)}</b></div>`;
     }
 
-    function tagRow(label, data) {
+    const FOCUS_TAG_THRESHOLD = 30;
+
+    function tagHoldPct(data) {
+      return safeNum((data || {}).supply);
+    }
+
+    function focusTagWarnings(signal) {
+      if (!signal || !signal.tags) return [];
+      return [
+        ["捆绑", signal.tags.bundle],
+        ["同批簇", signal.tags.cluster],
+        ["老鼠仓", signal.tags.rat],
+        ["新钱包", signal.tags.fresh],
+      ].map(([label, data]) => ({ label, hold: tagHoldPct(data) }))
+        .filter((x) => x.hold >= FOCUS_TAG_THRESHOLD);
+    }
+
+    function focusTagBadges(signal) {
+      return focusTagWarnings(signal)
+        .map((x) => `<span class="badge badge-red focus-tag-badge">重点 ${htmlEscape(x.label)} ${x.hold.toFixed(1)}%</span>`)
+        .join("");
+    }
+
+    function tagRow(label, data, focus = false) {
       const d = data || {};
+      const hold = tagHoldPct(d);
+      const isFocus = focus && hold >= FOCUS_TAG_THRESHOLD;
       return `
-        <tr>
+        <tr class="${isFocus ? "focus-tag-row" : ""}">
           <td>${label}</td>
           <td>${safeNum(d.count || d.wallet_count || d.cluster_count)}</td>
-          <td>${safeNum(d.supply).toFixed(2)}%</td>
+          <td>${hold.toFixed(2)}%${isFocus ? '<span class="focus-tag-note">重点</span>' : ""}</td>
           <td>${formatCap(d.position_value)}</td>
           <td>${formatPct(d.profit_pct || 0)}</td>
           <td>${safeNum(d.sell_progress).toFixed(1)}%</td>
@@ -482,10 +507,10 @@
             <tbody>
               ${tagRow("聪明钱", signal.tags.smart)}
               ${tagRow("KOL", signal.tags.kol)}
-              ${tagRow("捆绑", signal.tags.bundle)}
-              ${tagRow("老鼠仓", signal.tags.rat)}
-              ${tagRow("新钱包", signal.tags.fresh)}
-              ${tagRow("同批簇", signal.tags.cluster)}
+              ${tagRow("捆绑", signal.tags.bundle, true)}
+              ${tagRow("老鼠仓", signal.tags.rat, true)}
+              ${tagRow("新钱包", signal.tags.fresh, true)}
+              ${tagRow("同批簇", signal.tags.cluster, true)}
             </tbody>
           </table>
         </section>
@@ -529,6 +554,9 @@
         badges = `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>`;
       } else {
         badges = '<span class="badge badge-green">首推</span>';
+      }
+      if (!signal.isDaily1m && !signal.isBottom) {
+        badges += focusTagBadges(signal);
       }
 
       const riskLine = signal.isDaily1m
