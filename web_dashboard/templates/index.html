@@ -360,8 +360,8 @@
 
     function matches(signal) {
       const tabMatch = state.tab === "all" ||
-        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1 && !signal.isBottom) ||
-        (state.tab === "new" && safeNum(signal.repeatCount) <= 1 && !signal.isBottom) ||
+        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1 && !signal.isBottom && !signal.isDaily1m) ||
+        (state.tab === "new" && safeNum(signal.repeatCount) <= 1 && !signal.isBottom && !signal.isDaily1m) ||
         (state.tab === "bottom" && signal.isBottom) ||
         (state.tab === "daily1m" && signal.isDaily1m);
       if (!tabMatch) return false;
