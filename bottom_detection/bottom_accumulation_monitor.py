@@ -1236,13 +1236,17 @@ def daily_1m_zone(mcap: float):
 
 
 def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
+    address = token_address(token)
+    if address and is_watchlist_blacklisted(address):
+        print(f"{address[:8]} daily 1M frontend update blacklisted, skipped")
+        return
     zone, zone_label = daily_1m_zone(current_mcap)
     drop = round((1 - current_mcap / max(peak_mcap, 1)) * 100, 1)
     milestone_date = token.get("watchlist_daily_mcap_date") or ""
     extra = {
         "source_type": "daily_1m",
         "symbol": token.get("symbol"),
-        "address": token_address(token),
+        "address": address,
         "current_mcap": current_mcap,
         "peak_mcap": peak_mcap,
         "ath_mcap": max(to_float(token.get("_gmgn_ath_mcap") or token.get("ath_mcap")), peak_mcap),
@@ -1254,7 +1258,7 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
         "holders": token.get("holder_count", 0),
     }
     text = f"每日1M | ${token.get('symbol', '?')}\n市值: ${current_mcap:,.0f} | 峰值: ${peak_mcap:,.0f} | {zone_label}"
-    publish_tg_alert(text, "daily_1m", status="update", extra=extra)
+    publish_tg_alert(text, "daily_1m", status="update", ca=address, extra=extra)
 
 
 def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float, notify: bool) -> None:
