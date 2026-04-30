@@ -358,6 +358,47 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
     return tokens
 
 
+def quick_trending_mcap(row: dict[str, Any]) -> float:
+    """Estimate MCap from trending API fields only (no extra API call)."""
+    mcap = to_float(row.get("market_cap") or row.get("usd_market_cap"))
+    if mcap > 0:
+        return mcap
+    price = to_float(row.get("price"))
+    supply = to_float(row.get("total_supply") or row.get("circulating_supply"))
+    if price > 0 and supply > 0:
+        return price * supply
+    return 0
+
+
+def quick_trending_ath_mcap(row: dict[str, Any]) -> float:
+    """Estimate ATH MCap from trending API fields only."""
+    ath = to_float(row.get("history_highest_market_cap") or row.get("ath_market_cap"))
+    if ath > 0:
+        return ath
+    return quick_trending_mcap(row)
+
+
+def prefilter_trending_token(row: dict[str, Any]) -> str | None:
+    """Quick filter using only trending API data. Returns skip reason or None."""
+    mcap = quick_trending_mcap(row)
+    ath = quick_trending_ath_mcap(row)
+    peak = max(mcap, ath)
+
+    # Must have at least $40K current MCap, OR be a potential daily 1M candidate
+    if mcap < MIN_MCAP_USD and peak < DAILY_MCAP_MILESTONE_USD:
+        return f"市值${mcap:,.0f}<${MIN_MCAP_USD:,.0f}且ATH${peak:,.0f}<${DAILY_MCAP_MILESTONE_USD:,.0f}"
+
+    # Daily 1M candidate: ATH >= $1M with decent MCap — always keep
+    if peak >= DAILY_MCAP_MILESTONE_USD and mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
+        return None
+
+    # Must have at least $40K
+    if mcap < MIN_MCAP_USD:
+        return f"市值${mcap:,.0f}<${MIN_MCAP_USD:,.0f}"
+
+    return None
+
+
 def fetch_watchlist_tokens() -> list[dict[str, Any]]:
     try:
         rows = fetch_watchlist_records()
@@ -1407,12 +1448,25 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
 
 def scan_once(args: argparse.Namespace) -> None:
     scan_id = str(uuid.uuid4())
-    trending_tokens = fetch_trending_tokens()
+    trending_raw = fetch_trending_tokens()
     watchlist_tokens = fetch_watchlist_tokens()
-    tokens = merge_token_sources(watchlist_tokens, trending_tokens)
+
+    # Phase 1: Quick filter trending using ONLY trending API data (no extra calls)
+    filtered_trending = []
+    prefilter_skipped = 0
+    for row in trending_raw:
+        reason = prefilter_trending_token(row)
+        if reason:
+            prefilter_skipped += 1
+        else:
+            filtered_trending.append(row)
+
+    # Phase 2: Merge watchlist + pre-filtered trending
+    tokens = merge_token_sources(watchlist_tokens, filtered_trending)
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
-        f"trending={len(trending_tokens)} watchlist={len(watchlist_tokens)} merged={len(tokens)}"
+        f"trending={len(trending_raw)}→{len(filtered_trending)}(skipped {prefilter_skipped}) "
+        f"watchlist={len(watchlist_tokens)} merged={len(tokens)}"
     )
     processed = 0
     skipped = 0
