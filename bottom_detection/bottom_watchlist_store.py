@@ -134,16 +134,6 @@ def upsert_daily_mcap_watchlist_token(
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
                 fee_sol = GREATEST(COALESCE(bottom_watchlist_tokens.fee_sol, 0), EXCLUDED.fee_sol),
-                daily_mcap_notified_date = CASE
-                    WHEN bottom_watchlist_tokens.daily_mcap_date = CURRENT_DATE
-                    THEN bottom_watchlist_tokens.daily_mcap_notified_date
-                    ELSE NULL
-                END,
-                daily_mcap_notified_at = CASE
-                    WHEN bottom_watchlist_tokens.daily_mcap_date = CURRENT_DATE
-                    THEN bottom_watchlist_tokens.daily_mcap_notified_at
-                    ELSE NULL
-                END,
                 daily_mcap_date = CURRENT_DATE,
                 daily_mcap_threshold = EXCLUDED.daily_mcap_threshold,
                 note = EXCLUDED.note
@@ -176,7 +166,7 @@ def daily_mcap_watchlist_needs_notify(address: str) -> bool:
             FROM bottom_watchlist_tokens
             WHERE ca = %s
               AND daily_mcap_date = CURRENT_DATE
-              AND daily_mcap_notified_date IS DISTINCT FROM CURRENT_DATE
+              AND daily_mcap_notified_at IS NULL
             LIMIT 1
             """,
             (address,),
