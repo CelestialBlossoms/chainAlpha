@@ -509,6 +509,284 @@ def raw_wallet_address(row):
     return str(row.get("address") or row.get("wallet_address") or row.get("account_address") or "").strip()
 
 
+# ---------------------------------------------------------------------------
+# K-line pattern & volume analysis (golden dog patterns)
+# ---------------------------------------------------------------------------
+
+KLINE_PATTERN_LOOKBACK_DAYS = 90
+KLINE_NEW_TOKEN_AGE_SEC = 3 * 24 * 3600
+KLINE_MID_TOKEN_AGE_SEC = 14 * 24 * 3600
+
+
+def pick_kline_resolution(age_seconds):
+    if age_seconds <= 0:
+        return "1h"
+    if age_seconds <= KLINE_NEW_TOKEN_AGE_SEC:
+        return "1h"
+    if age_seconds <= KLINE_MID_TOKEN_AGE_SEC:
+        return "4h"
+    return "1d"
+
+
+def fetch_kline_for_pattern(address, age_seconds):
+    resolution = pick_kline_resolution(age_seconds)
+    end = int(time.time())
+    start = end - KLINE_PATTERN_LOOKBACK_DAYS * 24 * 3600
+    data = bottom_monitor.run_gmgn(
+        [
+            "market", "kline", "--chain", "sol", "--address", address,
+            "--resolution", resolution,
+            "--from", str(start), "--to", str(end),
+        ],
+        timeout=90,
+    )
+    if not data:
+        return None, resolution, []
+    rows = data.get("list") or data.get("data", {}).get("list") or []
+    candles = []
+    for row in (rows if isinstance(rows, list) else []):
+        if not isinstance(row, dict):
+            continue
+        raw_ts = int(float(str(row.get("time") or row.get("timestamp") or row.get("t") or 0)))
+        ts = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
+        close = float(row.get("close") or row.get("c") or 0)
+        if ts <= 0 or close <= 0:
+            continue
+        candles.append({
+            "ts": ts,
+            "open": float(row.get("open") or row.get("o") or close),
+            "high": float(row.get("high") or row.get("h") or close),
+            "low": float(row.get("low") or row.get("l") or close),
+            "close": close,
+            "volume": float(row.get("volume") or row.get("v") or 0),
+        })
+    candles.sort(key=lambda c: c["ts"])
+    return candles, resolution, rows
+
+
+def analyze_kline_volume_pattern(address, token_info):
+    """Analyze K-line for golden dog patterns: N-type, flash_pump, etc."""
+    age_seconds = max(0, int(time.time()) - int(float(str(token_info.get("created_at") or 0))))
+    candles, resolution, _ = fetch_kline_for_pattern(address, age_seconds)
+
+    if not candles or len(candles) < 6:
+        return {"error": f"K线数据不足 ({len(candles)}根{resolution}蜡烛)", "resolution": resolution}
+
+    closes = [c["close"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+    volumes = [c["volume"] for c in candles]
+
+    first = closes[0]
+    peak = max(highs)
+    peak_i = highs.index(peak)
+    low = min(lows)
+    low_i = lows.index(low)
+    cur = closes[-1]
+    avg_vol = sum(volumes) / len(volumes) if volumes else 1
+    max_vol = max(volumes) if volumes else 0
+    max_vol_i = volumes.index(max_vol) if max_vol > 0 else 0
+    vol_at_peak = volumes[peak_i] if peak_i < len(volumes) else 0
+
+    # Classify pattern type
+    is_n_type = low_i < peak_i and first > 0 and low > 0 and first / low >= 4
+    gain_from_low = (peak - low) / low * 100 if low > 0 else 0
+    total_gain = (peak - first) / first * 100 if first > 0 else 0
+    drawdown = (peak - cur) / peak * 100 if peak > 0 else 0
+    max_drawdown = (peak - min(lows[peak_i:])) / peak * 100 if peak_i < len(lows) and peak > 0 else 0
+    volume_ratio = max_vol / avg_vol if avg_vol > 0 else 0
+    late_vol = sum(volumes[-max(1, len(volumes)//4):]) / max(1, len(volumes)//4)
+    vol_trend = (late_vol - avg_vol) / avg_vol if avg_vol > 0 else 0
+
+    # Breakout bars
+    hour_changes = []
+    for i in range(1, len(closes)):
+        chg = (closes[i] - closes[i-1]) / closes[i-1] * 100 if closes[i-1] > 0 else 0
+        hour_changes.append(chg)
+    breakout_bars = sum(1 for chg in hour_changes if chg >= 30)
+    green_ratio = sum(1 for c in candles if c["close"] > c["open"]) / len(candles)
+
+    # Pattern classification
+    if is_n_type:
+        first_drop = (first - low) / first * 100
+        if gain_from_low > 5000:
+            pattern = "N型反转(超级)"
+        elif gain_from_low > 500:
+            pattern = "N型反转"
+        else:
+            pattern = "N型弱反转"
+        pattern_desc = f"第1波顶→砸盘{first_drop:.0f}%→CTO拉{gain_from_low:,.0f}%"
+    elif total_gain > 500 and breakout_bars >= 3 and max_vol_i >= peak_i - 2 and max_vol_i <= peak_i + 2:
+        pattern = "classic_pump_dump"
+        pattern_desc = f"积累→突破{breakout_bars}根放量阳线→顶点(量比{volume_ratio:.1f}x)→派发"
+    elif total_gain > 200 and breakout_bars >= 3:
+        pattern = "flash_pump" if peak_i <= 6 else "volatile_climb"
+        pattern_desc = f"{peak_i}根{resolution}内急拉{total_gain:+.0f}%, {breakout_bars}根突破阳线"
+    elif max_drawdown > 70 and total_gain < 50:
+        pattern = "rug_pull"
+        pattern_desc = f"峰值后回撤{max_drawdown:.0f}%, 已归零"
+    elif abs(total_gain) < 30:
+        pattern = "sideways_chop"
+        pattern_desc = f"横盘{total_gain:+.0f}%, 无明显方向"
+    else:
+        pattern = "complex"
+        pattern_desc = f"混合走势, 涨幅{total_gain:+.0f}%, 回撤{drawdown:.0f}%"
+
+    return {
+        "resolution": resolution,
+        "candle_count": len(candles),
+        "token_age_days": round(age_seconds / 86400, 1),
+        "first_price": first,
+        "lowest_price": low,
+        "peak_price": peak,
+        "current_price": cur,
+        "total_gain_pct": round(total_gain, 1),
+        "gain_from_low_pct": round(gain_from_low, 1) if is_n_type else None,
+        "drawdown_pct": round(drawdown, 1),
+        "max_drawdown_pct": round(max_drawdown, 1),
+        "volume_ratio": round(volume_ratio, 1),
+        "vol_trend": round(vol_trend, 2),
+        "green_ratio": round(green_ratio, 2),
+        "breakout_bars": breakout_bars,
+        "peak_bar_index": peak_i,
+        "low_bar_index": low_i,
+        "max_vol_bar_index": max_vol_i,
+        "is_n_type": is_n_type,
+        "pattern": pattern,
+        "pattern_desc": pattern_desc,
+        "_candles": candles,  # pass to volume divergence analysis
+    }
+
+
+def analyze_volume_divergence(kline_result):
+    """Analyze volume-price relationship from K-line candles.
+    Returns structured stats for TG message integration."""
+    candles = kline_result.get("_candles") or []
+    if len(candles) < 3:
+        return {"error": "candles insufficient", "text": ""}
+
+    closes = [c["close"] for c in candles]
+    volumes = [c["volume"] for c in candles]
+    avg_vol = sum(volumes) / len(volumes) if volumes else 1
+
+    events = {"absorption": 0, "exhaustion": 0, "climax_up": 0, "climax_down": 0, "equal_down": 0}
+    climax_details = []
+
+    for i in range(1, len(candles)):
+        prev, cur = candles[i - 1], candles[i]
+        price_chg = (cur["close"] - prev["close"]) / prev["close"] * 100
+        vol_chg = (cur["volume"] - prev["volume"]) / prev["volume"] * 100 if prev["volume"] > 0 else 0
+        vol_ratio = cur["volume"] / avg_vol if avg_vol > 0 else 1
+
+        # 缩量下跌: vol down >30% + price down
+        if vol_chg <= -30 and price_chg < 0 and abs(price_chg) > 0.5:
+            events["exhaustion"] += 1
+
+        # 放量滞跌: vol up >50% + price down <5% (absorption)
+        if vol_chg >= 50 and -5 <= price_chg < 0:
+            events["absorption"] += 1
+
+        # 量能顶点
+        if vol_ratio >= 4.0:
+            if price_chg > 5:
+                events["climax_up"] += 1
+                climax_details.append(f"第{i}根放量拉升 +{price_chg:.0f}% (量比{vol_ratio:.1f}x)")
+            elif price_chg < -5:
+                events["climax_down"] += 1
+                climax_details.append(f"第{i}根放量砸盘 {price_chg:.0f}% (量比{vol_ratio:.1f}x)")
+
+        # 等量等幅下跌
+        if i >= 2:
+            prev2 = candles[i - 2]
+            prev_price_chg_val = (prev["close"] - prev2["close"]) / prev2["close"] * 100
+            vol_similar = abs(vol_chg) <= 25
+            price_similar = abs(price_chg - prev_price_chg_val) <= 3
+            if vol_similar and price_similar and price_chg < 0 and prev_price_chg_val < 0:
+                events["equal_down"] += 1
+
+    # Volume asymmetry
+    up_vols = [candles[i]["volume"] for i in range(1, len(candles)) if candles[i]["close"] > candles[i-1]["close"]]
+    down_vols = [candles[i]["volume"] for i in range(1, len(candles)) if candles[i]["close"] < candles[i-1]["close"]]
+    avg_up = sum(up_vols) / len(up_vols) if up_vols else 0
+    avg_down = sum(down_vols) / len(down_vols) if down_vols else 0
+    asymmetry = (avg_up - avg_down) / avg_down if avg_down > 0 else 0
+
+    # Absorption score
+    score = events["absorption"] * 3 + events["exhaustion"] * 2
+    if asymmetry > 0.3:
+        score += 2
+    elif asymmetry < -0.3:
+        score -= 2
+
+    if score >= 6:
+        phase = "底部吸筹 — 多次放量滞跌+缩量下跌衰竭，多头量能主导"
+    elif score >= 3:
+        phase = "疑似底部积累 — 有吸筹信号但未完全确认"
+    elif events["climax_down"] >= 2 and asymmetry < -0.3:
+        phase = "派发砸盘 — 多次放量下跌+空头量能主导"
+    elif events["climax_up"] >= 1 and score >= 3:
+        phase = "拉升后换手洗盘 — 量能顶点后出现吸筹信号"
+    elif events["climax_up"] >= 1:
+        phase = "突破拉升 — 放量突破但需关注后续能否持续"
+    else:
+        phase = "量价信号不明确 — 缩量横盘或死币状态"
+
+    asymmetry_desc = (
+        "多头主导(上涨放量>下跌)" if asymmetry > 0.3
+        else "空头主导(下跌放量>上涨)" if asymmetry < -0.3
+        else "多空均衡"
+    )
+
+    text = (
+        f"量价关系分析\n"
+        f"- 量能不对称: {asymmetry_desc} (上涨均量{avg_up:.0f} vs 下跌均量{avg_down:.0f}, 不对称度{asymmetry:+.2f})\n"
+        f"- 缩量下跌衰竭: {events['exhaustion']}次 | 放量滞跌吸筹: {events['absorption']}次 | 等量等幅下跌: {events['equal_down']}次\n"
+        f"- 放量拉升: {events['climax_up']}次 | 放量砸盘: {events['climax_down']}次\n"
+        f"- 吸筹评分: {score}分 → {phase}\n"
+    )
+    if climax_details:
+        text += f"- 关键量能事件: {' | '.join(climax_details[-4:])}\n"
+
+    return {"error": None, "text": text, "score": score, "phase": phase, "asymmetry": round(asymmetry, 2)}
+
+
+def kline_volume_analysis_text(kline_result):
+    if not kline_result:
+        return ""
+    if kline_result.get("error"):
+        return f"K线量价分析\n- {kline_result['error']}\n"
+
+    r = kline_result
+    vol_status = "放量" if r["vol_trend"] > 0.3 else ("缩量" if r["vol_trend"] < -0.3 else "量能平稳")
+    vol_climax_info = (
+        f"最大量柱在第{r['max_vol_bar_index']}根(量比{r['volume_ratio']:.1f}x)"
+        if r["volume_ratio"] > 2 else "无量能异常"
+    )
+
+    n_type_extra = ""
+    if r["is_n_type"]:
+        n_type_extra = (
+            f"\n- N型细节: 起点价{r['first_price']:.10f} → 砸盘底{r['lowest_price']:.10f} "
+            f"→ CTO新高{r['peak_price']:.10f} (底部涨幅{r['gain_from_low_pct']:,.0f}%)"
+        )
+
+    # Volume-price divergence analysis
+    vol_div = analyze_volume_divergence(kline_result)
+    vol_div_text = vol_div.get("text", "") if vol_div and not vol_div.get("error") else ""
+
+    return (
+        f"K线量价分析 (周期: {r['resolution']}, 代币年龄: {r['token_age_days']}天)\n"
+        f"- 走势分类: {r['pattern']}\n"
+        f"- 走势描述: {r['pattern_desc']}\n"
+        f"- 蜡烛数: {r['candle_count']}根 | 阳线比: {r['green_ratio']:.0%} | 突破阳线: {r['breakout_bars']}根\n"
+        f"- 起点价: {r['first_price']:.10f} → 最低: {r['lowest_price']:.10f} → 最高: {r['peak_price']:.10f} → 现价: {r['current_price']:.10f}\n"
+        f"- 总涨幅: {r['total_gain_pct']:+.1f}% | 峰值回撤: {r['drawdown_pct']:.1f}% (最大: {r['max_drawdown_pct']:.1f}%)\n"
+        f"- 量能: 均量比{r['volume_ratio']:.1f}x | {vol_climax_info} | 趋势: {vol_status} ({r['vol_trend']:+.2f})"
+        f"{n_type_extra}\n\n"
+        f"{vol_div_text}"
+    )
+
+
 def short_addr(value):
     value = str(value or "")
     return f"{value[:6]}...{value[-4:]}" if len(value) > 12 else value
@@ -1278,9 +1556,7 @@ def bottom_chip_history_text(analysis):
         f"盈利变化: {profit_pct_text(top100_profit_delta, profit.get('current_top100_buy'))}\n"
         f"- Top20持仓变化: {fmt_pct(top20.get('first'))}->{fmt_pct(top20.get('last'))} ({float(top20.get('delta') or 0):+.2%}) | "
         f"盈利变化: {profit_pct_text(top20_profit_delta, profit.get('current_top20_buy'))}\n\n"
-        f"{trader_scenario_conclusion_text((analysis or {}).get('trader_scenario_analysis'))}\n\n"
-        f"{bottom_profit_wallet_text(analysis)}\n\n"
-        f"{package_wallet_text(analysis)}"
+        f"{trader_scenario_conclusion_text((analysis or {}).get('trader_scenario_analysis'))}"
     )
 
 
@@ -1355,7 +1631,7 @@ def deepseek_chip_text(text):
     return f"DeepSeek筹码结论\n{text}\n\n"
 
 
-def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis=""):
+def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis="", kline_analysis_text=""):
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
     sm_stats = stats.get("holder_tag_stats", {}).get("smart_degen", {})
     kol_stats = stats.get("holder_tag_stats", {}).get("renowned", {})
@@ -1395,6 +1671,7 @@ def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepse
         f"Dev数据\n"
         f"{dev_detail}\n\n"
         f"{bottom_chip_history_text(bottom_analysis)}\n\n"
+        f"{kline_analysis_text}"
         f"{deepseek_chip_text(deepseek_analysis)}"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
@@ -1410,12 +1687,18 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
     # DeepSeek analysis is disabled for now to avoid API usage.
     # deepseek_analysis = call_deepseek_chip_analysis(chain, address, stats, bottom_analysis)
     deepseek_analysis = ""
+
+    # K-line volume & pattern analysis (golden dog patterns)
+    kline_analysis = analyze_kline_volume_pattern(address, stats)
+    kline_text = kline_volume_analysis_text(kline_analysis)
+
     msg = build_chip_alert_message(
         chain,
         address,
         stats,
         bottom_analysis=bottom_analysis,
         deepseek_analysis=deepseek_analysis,
+        kline_analysis_text=kline_text,
     )
     send_long_message(chat_id, msg, message_id)
     return

@@ -29,17 +29,23 @@ from db_client import db_op
 # Config
 # ---------------------------------------------------------------------------
 CHAIN = "sol"
-KLINE_RESOLUTION = "1h"
-LOOKBACK_DAYS = int(os.getenv("KLINE_PATTERN_LOOKBACK_DAYS", "14"))
+LOOKBACK_DAYS = int(os.getenv("KLINE_PATTERN_LOOKBACK_DAYS", "90"))
 LOOKBACK_SEC = LOOKBACK_DAYS * 24 * 3600
 RATE_LIMIT_DELAY = float(os.getenv("KLINE_PATTERN_RATE_DELAY", "2.5"))
 OUTPUT_DIR = Path(os.getenv("KLINE_PATTERN_OUTPUT_DIR", str(ROOT_DIR / "kline_analysis_output")))
 
+# Adaptive resolution by token age
+#   1h: new tokens (< 3 days old), captures full pump lifecycle
+#   4h: mid-age (3-14 days), wider view of CTO revivals
+#   1d: old tokens (> 14 days), sees the original pump + long-term pattern
+NEW_TOKEN_AGE_SEC = 3 * 24 * 3600
+MID_TOKEN_AGE_SEC = 14 * 24 * 3600
+
 # Pump phase thresholds
-ACCUMULATION_MAX_PRICE_RATIO = 1.5    # price <= 1.5x start = accumulation zone
-BREAKOUT_MIN_GAIN_PCT = 30            # single-hour gain >= 30% = breakout signal
-CLIMAX_VOLUME_MULTIPLIER = 3.0        # volume >= 3x avg = climax volume
-DISTRIBUTION_MIN_DRAWDOWN_PCT = 25    # drop from peak >= 25% = distribution
+ACCUMULATION_MAX_PRICE_RATIO = 1.5
+BREAKOUT_MIN_GAIN_PCT = 30
+CLIMAX_VOLUME_MULTIPLIER = 3.0
+DISTRIBUTION_MIN_DRAWDOWN_PCT = 25
 
 
 def to_float(value, default=0.0):
@@ -135,14 +141,25 @@ def fetch_token_info(address):
     return {}
 
 
-def fetch_1h_kline(address, lookback_sec=None):
+def pick_resolution(age_seconds):
+    """Adapt resolution to token age so old tokens don't get misclassified."""
+    if age_seconds <= 0:
+        return "1h", "1h"
+    if age_seconds <= NEW_TOKEN_AGE_SEC:
+        return "1h", "1h"
+    if age_seconds <= MID_TOKEN_AGE_SEC:
+        return "4h", "4h"
+    return "1d", "1d"
+
+
+def fetch_kline(address, resolution, lookback_sec=None):
     lookback = lookback_sec or LOOKBACK_SEC
     end = now_ts()
     start = end - lookback
     data = run_gmgn(
         [
             "market", "kline", "--chain", CHAIN, "--address", address,
-            "--resolution", KLINE_RESOLUTION,
+            "--resolution", resolution,
             "--from", str(start), "--to", str(end),
         ],
         timeout=90,
@@ -414,7 +431,7 @@ def print_token_report(result):
         print(f"  [SKIP] {p['error']} (candles={p.get('candle_count', 0)})")
         return
 
-    print(f"  蜡烛数: {p['candle_count']} | 质量: {p['quality']}")
+    print(f"  蜡烛数: {p['candle_count']} | 周期: {p.get('resolution', '?')} | 代币年龄: {p.get('token_age_days', '?')}天 | 质量: {p['quality']}")
     print(f"  首价: {p['first_price']:.12f} → 峰值: {p['peak_price']:.12f} → 现价: {p['current_price']:.12f}")
     print(f"  总涨幅: {p['total_gain_pct']:+.1f}% | 波动范围: {p['total_range_pct']:.0f}%")
     print(f"  峰值回撤(最大): {p['drawdown_from_peak_max_pct']:.1f}% | 峰值回撤(当前): {p['drawdown_from_peak_pct']:.1f}%")
@@ -454,15 +471,22 @@ def main():
         ca = token["ca"]
         print(f"\n[{i + 1}/{len(tokens)}] Fetching {ca[:16]}...")
 
-        # Token info
+        # Token info (to get creation time for adaptive resolution)
         info = fetch_token_info(ca)
         token["symbol"] = info.get("symbol", "?")
         token["name"] = info.get("name", "")
         token["holder_count"] = info.get("holder_count", 0)
 
+        # Adaptive resolution based on token age
+        age_seconds = max(0, now_ts() - info.get("created_ts", now_ts()))
+        resolution, res_label = pick_resolution(age_seconds)
+        token["kline_resolution"] = resolution
+
         # K-line
-        candles = fetch_1h_kline(ca, args.lookback_days * 24 * 3600)
+        candles = fetch_kline(ca, resolution, args.lookback_days * 24 * 3600)
         pattern = analyze_kline_pattern(candles, token)
+        pattern["resolution"] = resolution
+        pattern["token_age_days"] = round(age_seconds / 86400, 1)
 
         result = {"token": token, "info": info, "pattern": pattern, "candles": candles}
         results.append(result)

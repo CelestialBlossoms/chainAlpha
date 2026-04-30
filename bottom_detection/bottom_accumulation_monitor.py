@@ -1045,24 +1045,29 @@ def analyze_abnormal_snapshot(
                 f"未命中老币异动: 创建{token_age / 3600:.1f}h, "
                 f"当前市值${current_mcap:,.0f}<${BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD:,.0f}或涨幅/池子不足"
             )
-    reasons = [
-        rule_reason,
-        (
-            f"价格上涨{price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
-            if price_ready
-            else f"价格上涨{price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
-        ),
-        (
-            f"池子${pool_liquidity:,.0f}>=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f}"
-            if pool_liquidity_ready
-            else f"池子${pool_liquidity:,.0f}<${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f}"
-        ),
-        (
-            f"池/市值{pool_ratio:.1%}>={BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
-            if pool_ratio_ready
-            else f"池/市值{pool_ratio:.1%}<{BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
-        ),
-    ]
+    reasons = [rule_reason]
+    if not signal_type.startswith("drop_"):
+        reasons.append(
+            (
+                f"价格上涨{price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+                if price_ready
+                else f"价格上涨{price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+            )
+        )
+    reasons.extend(
+        [
+            (
+                f"池子${pool_liquidity:,.0f}>=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f}"
+                if pool_liquidity_ready
+                else f"池子${pool_liquidity:,.0f}<${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f}"
+            ),
+            (
+                f"池/市值{pool_ratio:.1%}>={BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
+                if pool_ratio_ready
+                else f"池/市值{pool_ratio:.1%}<{BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
+            ),
+        ]
+    )
     return {
         "score": 100 if signal_type != "watch" else 0,
         "signal_type": signal_type,
@@ -1075,7 +1080,7 @@ def analyze_abnormal_snapshot(
         "pool_liquidity_confirmation_ready": pool_liquidity_ready,
         "pool_ratio_confirmation_ready": pool_ratio_ready,
         "price_change_pct": price_change_pct,
-        "required_price_change_pct": BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT,
+        "required_price_change_pct": 0 if signal_type.startswith("drop_") else BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT,
         "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
         "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
         "current_mcap": current_mcap,
@@ -1168,7 +1173,8 @@ def signal_type_text(signal_type: str) -> str:
 def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
     max_mcap = to_float(analysis.get("max_abnormal_mcap"))
-    if analysis.get("signal_type", "").startswith("drop_"):
+    is_drop_signal = analysis.get("signal_type", "").startswith("drop_")
+    if is_drop_signal:
         mcap_line = (
             f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | "
             f"跌破: ${analysis.get('drop_level_mcap', 0):,.0f}\n"
@@ -1183,6 +1189,11 @@ def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str
             f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | "
             f"要求: >=${analysis.get('min_abnormal_mcap', 0):,.0f}\n"
         )
+    price_line = (
+        ""
+        if is_drop_signal
+        else f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
+    )
     return (
         f"底部异动检测 | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"类型: {signal_type_text(analysis.get('signal_type'))}\n"
@@ -1190,7 +1201,7 @@ def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str
         f"CA: {address}\n"
         f"历史最高市值: ${analysis.get('ath_mcap', 0):,.0f} | 要求: >${analysis.get('min_ath_mcap', 0):,.0f}\n"
         f"{mcap_line}"
-        f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
+        f"{price_line}"
         f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 要求: >=${analysis.get('required_pool_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | 要求: >={analysis.get('required_pool_mcap_ratio', 0):.1%}\n"
         f"Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 净买入${analysis.get('netflow_usd', 0):,.0f}\n"
         f"理由: {', '.join(analysis.get('reasons') or []) or '无'}\n"

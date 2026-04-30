@@ -1,0 +1,27 @@
+[
+  {
+    "symbol": "Goblin",
+    "ca": "3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump",
+    "stats": {
+      "total_bars": 29,
+      "up_bars": 12,
+      "down_bars": 16,
+      "avg_up_vol": 600203.83,
+      "avg_down_vol": 209947.79,
+      "vol_asymmetry": 1.86,
+      "vol_asymmetry_desc": "上涨放量>下跌 (多头主导)",
+      "absorption_events": 1,
+      "exhaustion_events": 1,
+      "climax_events": 2,
+      "equal_volume_events": 0,
+      "absorption_score": 5,
+      "phase_interpretation": "拉升后换手 — 量能顶点后出现吸筹信号，可能是洗盘换手"
+    },
+    "zone_count": 0,
+    "event_summary": {
+      "缩量下跌": 13,
+      "量能顶点(放量拉升)": 2,
+      "放量滞跌(吸筹信号)": 1
+    }
+  }
+]
