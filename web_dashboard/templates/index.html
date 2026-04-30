@@ -551,6 +551,7 @@
                 ${badges}
               </div>
               <span class="card-time">${htmlEscape(signal.time || "-")}</span>
+              <button class="card-close" type="button" data-address="${htmlEscape(signal.address)}" title="移除">✕</button>
             </div>
             <div class="card-subtitle">${htmlEscape(signal.narrative || signal.name || "-")}</div>
             <div class="card-stats">
@@ -639,6 +640,18 @@
     function pushItem(item, flash = false) {
       if (isTestItem(item)) return;
       if (!item || !item.id || state.seenIds.has(item.id)) return;
+
+      // Handle blacklist removal: delete CA from frontend memory
+      if (item.source === "blacklist_removal") {
+        const addr = (item.extra && item.extra.address) || item.ca || "";
+        if (addr && state.byAddress.has(addr)) {
+          state.byAddress.delete(addr);
+          if (state.expandedTokenId === addr) state.expandedTokenId = "";
+          state.seenIds.add(item.id);
+          render();
+        }
+        return;
+      }
       state.seenIds.add(item.id);
       const signal = normalizeItem(item);
       if (!signal) return;
@@ -667,6 +680,18 @@
     }
 
     grid.addEventListener("click", (event) => {
+      const closeBtn = event.target.closest(".card-close");
+      if (closeBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const addr = closeBtn.dataset.address;
+        if (addr && state.byAddress.has(addr)) {
+          state.byAddress.delete(addr);
+          if (state.expandedTokenId === addr) state.expandedTokenId = "";
+          render();
+        }
+        return;
+      }
       const copyBtn = event.target.closest(".copy-btn");
       if (copyBtn) {
         event.preventDefault();

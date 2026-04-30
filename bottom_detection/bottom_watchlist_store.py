@@ -247,7 +247,6 @@ def clean_redis_stream_for_ca(address: str) -> int:
         return 0
 
     deleted = 0
-    # Scan stream entries (max 1000 recent ones)
     try:
         rows = client.xrange(TG_ALERT_STREAM_KEY, count=1000)
         for stream_id, fields in rows:
@@ -264,7 +263,12 @@ def clean_redis_stream_for_ca(address: str) -> int:
     except Exception as exc:
         print(f"Redis cleanup error: {exc}")
 
-    print(f"Cleaned {deleted} Redis Stream entries for {address[:16]}...")
+    # Push removal event so frontend drops this CA from memory
+    from tg_alert_stream import publish_tg_alert
+    publish_tg_alert(f"blacklisted {address[:16]}...", "blacklist_removal", status="removed",
+                     ca=address, extra={"address": address})
+
+    print(f"Cleaned {deleted} Redis Stream entries + pushed removal for {address[:16]}...")
     return deleted
 
 

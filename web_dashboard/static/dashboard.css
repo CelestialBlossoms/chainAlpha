@@ -369,6 +369,23 @@ h1 {
   white-space: nowrap;
 }
 
+.card-close {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.card-close:hover {
+  color: #dc2626;
+  background: #fef2f2;
+}
+
 .card-subtitle {
   margin-top: 4px;
   color: var(--muted);
