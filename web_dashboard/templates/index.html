@@ -503,12 +503,11 @@
 
     function render() {
       const rows = sortedSignals();
+      if (state.expandedTokenId && !rows.some((s) => s.address === state.expandedTokenId)) {
+        state.expandedTokenId = "";
+      }
       grid.innerHTML = rows.map(renderCard).join("");
       empty.hidden = rows.length > 0;
-      if (rows.length && !rows.some((s) => s.address === state.expandedTokenId)) {
-        state.expandedTokenId = rows[0].address;
-        grid.innerHTML = rows.map(renderCard).join("");
-      }
       updateQuickBar();
     }
 
