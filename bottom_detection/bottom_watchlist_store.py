@@ -21,7 +21,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at, ath_mcap
+            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false)
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -37,6 +37,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "daily_mcap_date": row[6],
                 "token_created_at": row[7] if len(row) > 7 else None,
                 "ath_mcap": row[8] if len(row) > 8 else None,
+                "blacklisted": bool(row[9]) if len(row) > 9 else False,
             }
             for row in cur.fetchall()
         ]
@@ -224,6 +225,47 @@ def delete_watchlist_token(address: str) -> int:
         return cur.rowcount
 
     return int(db_op(_op) or 0)
+
+
+def set_watchlist_blacklisted(address: str, blacklisted: bool = True) -> None:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute("UPDATE bottom_watchlist_tokens SET blacklisted = %s WHERE ca = %s", (blacklisted, address))
+        print(f"blacklisted={blacklisted} for {address[:16]}... (rows affected: {cur.rowcount})")
+    db_op(_op)
+
+
+def clean_redis_stream_for_ca(address: str) -> int:
+    """Remove all Redis Stream entries for a given CA address."""
+    from redis_client import get_redis_client
+    from tg_alert_stream import TG_ALERT_STREAM_KEY
+    import json
+
+    client = get_redis_client()
+    if client is None:
+        print("Redis not available")
+        return 0
+
+    deleted = 0
+    # Scan stream entries (max 1000 recent ones)
+    try:
+        rows = client.xrange(TG_ALERT_STREAM_KEY, count=1000)
+        for stream_id, fields in rows:
+            ca = str(fields.get(b"ca", fields.get("ca", ""))).strip()
+            extra_raw = fields.get(b"extra", fields.get("extra", "{}"))
+            try:
+                extra = json.loads(extra_raw) if isinstance(extra_raw, (str, bytes)) else {}
+            except (json.JSONDecodeError, TypeError):
+                extra = {}
+            stream_ca = ca or extra.get("address", "")
+            if stream_ca == address:
+                client.xdel(TG_ALERT_STREAM_KEY, stream_id)
+                deleted += 1
+    except Exception as exc:
+        print(f"Redis cleanup error: {exc}")
+
+    print(f"Cleaned {deleted} Redis Stream entries for {address[:16]}...")
+    return deleted
 
 
 def update_watchlist_seen(address: str, mcap: float) -> None:

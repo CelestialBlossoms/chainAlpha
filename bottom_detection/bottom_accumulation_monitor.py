@@ -29,6 +29,7 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
+    clean_redis_stream_for_ca,
     daily_mcap_watchlist_needs_notify,
     delete_watchlist_token,
     ensure_watchlist_daily_mcap_columns,
@@ -36,6 +37,7 @@ from bottom_detection.bottom_watchlist_store import (
     fill_watchlist_create_at as store_fill_watchlist_create_at,
     fill_watchlist_token_created_at as store_fill_token_created_at,
     mark_daily_mcap_watchlist_notified,
+    set_watchlist_blacklisted,
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
 )
@@ -1474,6 +1476,10 @@ def scan_once(args: argparse.Namespace) -> None:
         try:
             address = token_address(token)
             is_watchlist = "watchlist" in set(token.get("_sources", []))
+            if token.get("blacklisted"):
+                print(f"{token_label(token)} blacklisted, skipped")
+                skipped += 1
+                continue
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
