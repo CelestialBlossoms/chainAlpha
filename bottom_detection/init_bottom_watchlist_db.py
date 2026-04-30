@@ -41,6 +41,8 @@ def init_bottom_watchlist_table(conn):
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS fee_sol NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS token_created_at BIGINT DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS daily_mcap_date DATE;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS daily_mcap_threshold NUMERIC DEFAULT 1000000;

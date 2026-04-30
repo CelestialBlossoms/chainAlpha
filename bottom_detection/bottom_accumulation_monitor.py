@@ -246,6 +246,8 @@ def token_created_ts(row: dict[str, Any]) -> int:
     value = first_value(
         row,
         (
+            "_gmgn_created_ts",
+            "token_created_at",
             "watchlist_create_at",
             "created_at",
             "creation_timestamp",

@@ -190,6 +190,9 @@
         const address = extra.address || item.ca || "";
         if (!address) return null;
         const signalType = extra.signal_type || "watch";
+        const poolLiquidity = safeNum(extra.pool_total_liquidity);
+        const poolMcapRatio = safeNum(extra.pool_mcap_ratio);
+        if (signalType === "watch" || poolLiquidity < 4000 || poolMcapRatio < 0.10) return null;
         const isAbnormal = signalType === "abnormal";
         return {
           id: item.id,
@@ -214,7 +217,7 @@
           capPath: `ATH $${formatCap(extra.ath_mcap)} → 当前 $${formatCap(extra.current_mcap)}`,
           holderDelta: 0,
           pool: extra.pool_main_exchange || "",
-          liquidity: safeNum(extra.pool_total_liquidity),
+          liquidity: poolLiquidity,
           createdTime: "",
           age: "",
           verdict: signalType === "abnormal" ? "底部异动" : "底部观察",
@@ -237,7 +240,7 @@
           isBottom: true,
           athMcap: safeNum(extra.ath_mcap),
           abnormalRule: extra.abnormal_rule || "",
-          poolMcapRatio: safeNum(extra.pool_mcap_ratio),
+          poolMcapRatio,
           poolMcapRatioText: extra.pool_mcap_ratio_text || "",
           accumulationPct: safeNum(extra.accumulation_pct_delta),
           distributionPct: safeNum(extra.distribution_pct_delta),
