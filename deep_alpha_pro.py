@@ -2382,13 +2382,6 @@ def scan_pro():
                         previous_holders = int(existing_candidate.get("holder_count") or 0)
                         observation_holder_delta = int(price_observation.get("holder_count_delta") or 0)
                         db_holder_delta = int(s["holder_count"]) - previous_holders
-                        if observation_holder_delta <= 0:
-                            print(
-                                f"  [观察跳过] 已推送代币三次观察持有人未上升 ${s['symbol']} {addr}: "
-                                f"{price_observation.get('current_holder_count', 0)} <= {price_observation.get('first_holder_count', 0)} "
-                                f"(上次推送库内持有人={previous_holders}, 当前深度查询={s['holder_count']})"
-                            )
-                            continue
                         s["repeat_alert"] = True
                         s["previous_holder_count"] = previous_holders
                         s["holder_count_delta"] = observation_holder_delta
