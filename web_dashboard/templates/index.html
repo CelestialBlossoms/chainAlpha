@@ -51,37 +51,13 @@
         </div>
       </section>
 
-      <section class="dashboard-grid">
-        <div class="card table-card">
-          <table class="signal-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>代币</th>
-                <th>CA</th>
-                <th>市值</th>
-                <th>涨幅</th>
-                <th>持有人</th>
-                <th>复推</th>
-                <th>风险</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="table-body"></tbody>
-          </table>
-          <div id="empty" class="empty" hidden>没有结构化报警数据</div>
-        </div>
-
-        <aside id="detail" class="card detail-panel">
-          <div class="detail-empty">选择一条代币查看详情</div>
-        </aside>
-      </section>
+      <section id="card-grid" class="card-grid"></section>
+      <div id="empty" class="empty" hidden>没有结构化报警数据</div>
     </div>
   </div>
 
   <script>
-    const tbody = document.querySelector("#table-body");
-    const detail = document.querySelector("#detail");
+    const grid = document.querySelector("#card-grid");
     const empty = document.querySelector("#empty");
     const queryInput = document.querySelector("#query");
     const sortSelect = document.querySelector("#sort");
@@ -95,7 +71,7 @@
     const connText = document.querySelector("#conn-text");
     const tabs = Array.from(document.querySelectorAll(".tab"));
     const MAX_VISIBLE_SIGNALS = 10;
-    const state = { byAddress: new Map(), seenIds: new Set(), tab: "all", selected: "", flashed: new Set() };
+    const state = { byAddress: new Map(), seenIds: new Set(), tab: "all", expandedTokenId: "", flashed: new Set() };
 
     function safeNum(value, fallback = 0) {
       const n = Number(value);
@@ -187,7 +163,6 @@
       const extra = item.extra || {};
       const source = item.source || "";
 
-      // bottom_abnormal signals: structured extra directly (no stats wrapper)
       if (source === "bottom_abnormal") {
         const address = extra.address || item.ca || "";
         if (!address) return null;
@@ -236,7 +211,6 @@
           rawText: item.text || "",
           rawStats: extra,
           isNew: false,
-          // bottom-specific fields
           isBottom: true,
           athMcap: safeNum(extra.ath_mcap),
           abnormalRule: extra.abnormal_rule || "",
@@ -250,7 +224,6 @@
         };
       }
 
-      // deep_alpha signals: stats in extra.stats
       const stats = extra.stats || {};
       if (!stats || !Object.keys(stats).length) return null;
       const address = item.ca || extra.address || stats.address || "";
@@ -308,7 +281,7 @@
       if (!prev || signal.ts >= prev.ts) {
         signal.isNew = flash;
         state.byAddress.set(signal.address, signal);
-        if (!state.selected) state.selected = signal.address;
+        if (!state.expandedTokenId) state.expandedTokenId = signal.address;
         if (flash) {
           state.flashed.add(signal.address);
           setTimeout(() => {
@@ -350,58 +323,11 @@
       return rows.sort(sorters[key] || sorters.time_desc).slice(0, MAX_VISIBLE_SIGNALS);
     }
 
-    function tableRow(signal) {
-      const selected = signal.address === state.selected ? " selected" : "";
-      const flashed = state.flashed.has(signal.address) || signal.isNew ? " new-row" : "";
-      const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
-
-      if (signal.isBottom) {
-        const isAbnormal = signal.verdict === "底部异动";
-        const badge = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
-        return `
-          <tr class="signal-row${selected}${flashed}" data-address="${htmlEscape(signal.address)}">
-            <td>${htmlEscape(signal.time || "-")}</td>
-            <td><b>$${htmlEscape(signal.symbol)}</b>${badge}<span>${htmlEscape(signal.abnormalRule || signal.repeatType)}</span></td>
-            <td><code class="ca-short">${htmlEscape(shortAddress(signal.address))}</code></td>
-            <td>${formatCap(signal.mcap)}</td>
-            <td class="${priceClass}">${formatPct(signal.priceChange)}</td>
-            <td>-</td>
-            <td>${htmlEscape(signal.abnormalRule || "-")}</td>
-            <td>ATH ${formatCap(signal.athMcap)}<span>池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span></td>
-            <td>
-              <div class="row-actions">
-                <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
-                <a class="mini-link gmgn-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
-              </div>
-            </td>
-          </tr>`;
-      }
-
-      const riskText = `Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% / 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%`;
-      return `
-        <tr class="signal-row${selected}${flashed}" data-address="${htmlEscape(signal.address)}">
-          <td>${htmlEscape(signal.time || "-")}</td>
-          <td><b>$${htmlEscape(signal.symbol)}</b><span>${htmlEscape(signal.narrative || signal.name || "-")}</span></td>
-          <td><code class="ca-short">${htmlEscape(shortAddress(signal.address))}</code></td>
-          <td>${formatCap(signal.mcap)}</td>
-          <td class="${priceClass}">${formatPct(signal.priceChange)}</td>
-          <td>${safeNum(signal.holders)}</td>
-          <td>${signal.repeatCount > 1 ? `第${signal.repeatCount}次` : "首推"}</td>
-          <td>${htmlEscape(signal.verdict || "-")}<span>${htmlEscape(riskText)}</span></td>
-          <td>
-            <div class="row-actions">
-              <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
-              <a class="mini-link gmgn-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
-            </div>
-          </td>
-        </tr>`;
-    }
-
     function metric(label, value, cls = "") {
       return `<div class="metric"><span>${label}</span><b class="${cls}">${htmlEscape(value)}</b></div>`;
     }
 
-    function tagLine(label, data) {
+    function tagRow(label, data) {
       const d = data || {};
       return `
         <tr>
@@ -414,33 +340,13 @@
         </tr>`;
     }
 
-    function renderDetail(signal) {
-      if (!signal) {
-        detail.innerHTML = `<div class="detail-empty">选择一条代币查看详情</div>`;
-        return;
-      }
-
+    function renderDetailHtml(signal) {
       if (signal.isBottom) {
-        const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
-        const isAbnormal = signal.verdict === "底部异动";
-        const badge = isAbnormal ? '<span class="badge badge-orange">底部异动</span>' : '<span class="badge">底部观察</span>';
         const reasonsHtml = (signal.reasons || []).map((r) => `<li>${htmlEscape(r)}</li>`).join("");
-        detail.innerHTML = `
-          <div class="detail-sticky">
-            <div>
-              <h2>$${htmlEscape(signal.symbol)} ${badge}</h2>
-              <p>CA: <code>${htmlEscape(shortAddress(signal.address))}</code></p>
-              <p>档位: ${htmlEscape(signal.abnormalRule || "未命中")}</p>
-            </div>
-            <div class="sticky-actions">
-              <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
-              <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
-              <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
-            </div>
-          </div>
+        return `
           <div class="metric-grid">
             ${metric("当前市值", formatCap(signal.mcap))}
-            ${metric("价格变化", formatPct(signal.priceChange), priceClass)}
+            ${metric("价格变化", formatPct(signal.priceChange), signal.priceChange >= 0 ? "green-text" : "red-text")}
             ${metric("ATH市值", formatCap(signal.athMcap))}
             ${metric("池/市值", `${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% (${htmlEscape(signal.poolMcapRatioText)})`)}
             ${metric("流动性", formatCap(signal.liquidity))}
@@ -458,29 +364,14 @@
           </section>
           <section class="detail-section">
             <h3>筹码变化</h3>
-            <p>Top100 持仓变化: 增持 ${safeNum(signal.accumulationPct * 100).toFixed(2)}% | 减持 ${safeNum(signal.distributionPct * 100).toFixed(2)}%</p>
+            <p>Top100 增持 ${safeNum(signal.accumulationPct * 100).toFixed(2)}% | 减持 ${safeNum(signal.distributionPct * 100).toFixed(2)}%</p>
             <p>净流入: ${formatCap(signal.netflowUsd)}</p>
           </section>
-          <div class="ca-line">CA: ${htmlEscape(signal.address)}</div>
-          <details class="raw"><summary>原始 TG 文本</summary><pre>${htmlEscape(signal.rawText || "")}</pre></details>
         `;
-        return;
       }
 
       const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
-      detail.innerHTML = `
-        <div class="detail-sticky">
-          <div>
-            <h2>$${htmlEscape(signal.symbol)}</h2>
-            <p>CA: <code>${htmlEscape(shortAddress(signal.address))}</code></p>
-            <p>${htmlEscape(signal.name || signal.narrative || "无叙事")}</p>
-          </div>
-          <div class="sticky-actions">
-            <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
-            <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
-            <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
-          </div>
-        </div>
+      return `
         <div class="metric-grid">
           ${metric("市值", formatCap(signal.mcap))}
           ${metric("涨幅", formatPct(signal.priceChange), priceClass)}
@@ -509,12 +400,12 @@
           <table class="mini-table">
             <thead><tr><th>类型</th><th>数量</th><th>持仓</th><th>金额</th><th>盈利</th><th>卖出</th></tr></thead>
             <tbody>
-              ${tagLine("聪明钱", signal.tags.smart)}
-              ${tagLine("KOL", signal.tags.kol)}
-              ${tagLine("捆绑", signal.tags.bundle)}
-              ${tagLine("老鼠仓", signal.tags.rat)}
-              ${tagLine("新钱包", signal.tags.fresh)}
-              ${tagLine("同批簇", signal.tags.cluster)}
+              ${tagRow("聪明钱", signal.tags.smart)}
+              ${tagRow("KOL", signal.tags.kol)}
+              ${tagRow("捆绑", signal.tags.bundle)}
+              ${tagRow("老鼠仓", signal.tags.rat)}
+              ${tagRow("新钱包", signal.tags.fresh)}
+              ${tagRow("同批簇", signal.tags.cluster)}
             </tbody>
           </table>
         </section>
@@ -533,9 +424,63 @@
           <p>盈利钱包: ${safeNum(signal.bottomProfit.count)}个 | 持仓${safeNum(signal.bottomProfit.hold_pct).toFixed(2)}% | 盈利${formatPct(signal.bottomProfit.profit_pct)}</p>
           <p>卖出观察: ${safeNum(signal.bottomProfit.seller_count)}个 | 剩余持仓${safeNum(signal.bottomProfit.seller_hold_pct).toFixed(2)}% | 卖出进度${safeNum(signal.bottomProfit.seller_progress).toFixed(1)}%</p>
         </section>
-        <div class="ca-line">CA: ${htmlEscape(signal.address)}</div>
-        <details class="raw"><summary>原始 TG 文本</summary><pre>${htmlEscape(signal.rawText || "")}</pre></details>
       `;
+    }
+
+    function renderCard(signal) {
+      const isExpanded = signal.address === state.expandedTokenId;
+      const flashed = state.flashed.has(signal.address) || signal.isNew;
+      const priceClass = signal.priceChange >= 0 ? "green-text" : "red-text";
+      const expandedClass = isExpanded ? " expanded" : "";
+      const flashClass = flashed ? " new-card" : "";
+
+      let badges = "";
+      if (signal.isBottom) {
+        const isAbnormal = signal.verdict === "底部异动";
+        badges = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
+      } else if (signal.repeatCount > 1) {
+        badges = `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>`;
+      } else {
+        badges = '<span class="badge badge-green">首推</span>';
+      }
+
+      const riskLine = signal.isBottom
+        ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span>`
+        : `<span>${htmlEscape(signal.verdict || "-")} · Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% · 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%</span>`;
+
+      return `
+        <article class="card signal-card${expandedClass}${flashClass}" data-address="${htmlEscape(signal.address)}">
+          <div class="card-main" data-action="toggle">
+            <div class="card-top">
+              <div class="card-title">
+                <span class="symbol-name">$${htmlEscape(signal.symbol)}</span>
+                ${badges}
+              </div>
+              <span class="card-time">${htmlEscape(signal.time || "-")}</span>
+            </div>
+            <div class="card-subtitle">${htmlEscape(signal.narrative || signal.name || "-")}</div>
+            <div class="card-stats">
+              <div class="card-stat"><span>市值</span><b>${formatCap(signal.mcap)}</b></div>
+              <div class="card-stat"><span>涨幅</span><b class="${priceClass}">${formatPct(signal.priceChange)}</b></div>
+              <div class="card-stat"><span>持有人</span><b>${signal.isBottom ? "-" : safeNum(signal.holders)}</b></div>
+              <div class="card-stat"><span>${signal.isBottom ? "档位" : "复推"}</span><b>${signal.isBottom ? htmlEscape(signal.abnormalRule || "-") : (signal.repeatCount > 1 ? `${signal.repeatCount}次` : "首推")}</b></div>
+            </div>
+            <div class="card-risk">${riskLine}</div>
+            <div class="card-ca">
+              <code class="ca-short" title="${htmlEscape(signal.address)}">${htmlEscape(shortAddress(signal.address))}</code>
+              <div class="card-actions">
+                <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+                <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
+              </div>
+            </div>
+            <div class="expand-hint">${isExpanded ? "点击收起 ▲" : "点击展开详情 ▼"}</div>
+          </div>
+          <div class="card-detail">
+            ${renderDetailHtml(signal)}
+            <details class="raw"><summary>原始 TG 文本</summary><pre>${htmlEscape(signal.rawText || "")}</pre></details>
+          </div>
+        </article>`;
     }
 
     function updateQuickBar() {
@@ -558,10 +503,12 @@
 
     function render() {
       const rows = sortedSignals();
-      tbody.innerHTML = rows.map(tableRow).join("");
+      grid.innerHTML = rows.map(renderCard).join("");
       empty.hidden = rows.length > 0;
-      if (rows.length && !rows.some((s) => s.address === state.selected)) state.selected = rows[0].address;
-      renderDetail(state.byAddress.get(state.selected));
+      if (rows.length && !rows.some((s) => s.address === state.expandedTokenId)) {
+        state.expandedTokenId = rows[0].address;
+        grid.innerHTML = rows.map(renderCard).join("");
+      }
       updateQuickBar();
     }
 
@@ -602,28 +549,46 @@
       es.addEventListener("error", () => setStatus("bad", "重连中"));
     }
 
-    tbody.addEventListener("click", (event) => {
-      if (event.target.closest("a, button")) return;
-      const row = event.target.closest(".signal-row");
-      if (!row) return;
-      state.selected = row.dataset.address;
-      copyAddress(state.selected);
+    grid.addEventListener("click", (event) => {
+      const copyBtn = event.target.closest(".copy-btn");
+      if (copyBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        copyAddress(copyBtn.dataset.address || "");
+        return;
+      }
+      if (event.target.closest("a")) return;
+      if (event.target.closest("details")) return;
+
+      const toggleArea = event.target.closest("[data-action='toggle']");
+      if (!toggleArea) return;
+      const card = toggleArea.closest(".signal-card");
+      if (!card) return;
+      const address = card.dataset.address;
+      if (state.expandedTokenId === address) {
+        state.expandedTokenId = "";
+      } else {
+        state.expandedTokenId = address;
+      }
       render();
     });
-    tbody.addEventListener("dblclick", (event) => {
-      if (event.target.closest("a, button")) return;
-      const row = event.target.closest(".signal-row");
-      if (!row) return;
-      const signal = state.byAddress.get(row.dataset.address);
+
+    grid.addEventListener("dblclick", (event) => {
+      if (event.target.closest("a, button, details")) return;
+      const card = event.target.closest(".signal-card");
+      if (!card) return;
+      const signal = state.byAddress.get(card.dataset.address);
       if (signal) window.open(gmgnUrl(signal), "_blank", "noopener");
     });
+
     document.addEventListener("click", (event) => {
-      const btn = event.target.closest(".copy-btn, #quick-copy");
+      const btn = event.target.closest("#quick-copy");
       if (!btn) return;
       event.preventDefault();
       event.stopPropagation();
       copyAddress(btn.dataset.address || "");
     });
+
     queryInput.addEventListener("input", render);
     sortSelect.addEventListener("change", render);
     tabs.forEach((btn) => {
@@ -636,7 +601,7 @@
     clearBtn.addEventListener("click", () => {
       state.byAddress.clear();
       state.seenIds.clear();
-      state.selected = "";
+      state.expandedTokenId = "";
       render();
     });
 
