@@ -1200,6 +1200,7 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
         "address": token_address(token),
         "current_mcap": current_mcap,
         "peak_mcap": peak_mcap,
+        "ath_mcap": max(to_float(token.get("_gmgn_ath_mcap") or token.get("ath_mcap")), peak_mcap),
         "milestone_date": milestone_date,
         "zone": zone,
         "zone_label": zone_label,
@@ -1212,7 +1213,9 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
 
 
 def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float, notify: bool) -> None:
-    if current_mcap < DAILY_MCAP_MILESTONE_USD:
+    ath_mcap = calc_ath_mcap(token)
+    peak_mcap = max(current_mcap, ath_mcap, to_float(token.get("peak_mcap")), to_float(token.get("watchlist_peak_mcap")))
+    if peak_mcap < DAILY_MCAP_MILESTONE_USD:
         return
     age_sec = token_age_sec(token)
     if age_sec <= 0 or age_sec > NEW_TOKEN_AGE_CUTOFF_SEC:
@@ -1242,18 +1245,20 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
     upsert_daily_mcap_watchlist_token(
         address,
         token_created_ts(token),
-        current_mcap,
+        peak_mcap,
         current_fee_sol,
         symbol=token.get("symbol"),
         threshold_mcap=DAILY_MCAP_MILESTONE_USD,
     )
-    print(f"{token_label(token)} watchlist daily 1M recorded mcap=${current_mcap:,.0f} fee={current_fee_sol:.2f} SOL")
+    print(f"{token_label(token)} watchlist daily 1M recorded peak=${peak_mcap:,.0f} cur=${current_mcap:,.0f} fee={current_fee_sol:.2f} SOL")
     if notify and daily_mcap_watchlist_needs_notify(address):
         extra = {
             "signal_type": "daily_mcap_over_1m",
             "address": address,
             "symbol": token.get("symbol"),
             "current_mcap": current_mcap,
+            "peak_mcap": peak_mcap,
+            "ath_mcap": ath_mcap,
             "threshold_mcap": DAILY_MCAP_MILESTONE_USD,
             "fee_sol": current_fee_sol,
             "required_fee_sol": DAILY_MCAP_MIN_FEE_SOL,
@@ -1419,9 +1424,11 @@ def scan_once(args: argparse.Namespace) -> None:
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
             gmgn_created_ts = int(to_float(info.get("creation_timestamp") or info.get("open_timestamp") or 0))
-            if gmgn_created_ts > 0:
-                store_fill_token_created_at(address, gmgn_created_ts)
+            gmgn_ath_mcap = to_float((info.get("dev") or {}).get("ath_token_info", {}).get("ath_mc"))
+            if gmgn_created_ts > 0 or gmgn_ath_mcap > 0:
+                store_fill_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap)
                 token["_gmgn_created_ts"] = gmgn_created_ts
+                token["_gmgn_ath_mcap"] = gmgn_ath_mcap
             current_mcap = calc_mcap(token)
             pool_data = fetch_token_pool(address)
             token = attach_token_pool(token, pool_data)

@@ -21,7 +21,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at
+            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at, ath_mcap
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -36,6 +36,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "last_mcap": row[5],
                 "daily_mcap_date": row[6],
                 "token_created_at": row[7] if len(row) > 7 else None,
+                "ath_mcap": row[8] if len(row) > 8 else None,
             }
             for row in cur.fetchall()
         ]
@@ -65,6 +66,7 @@ def upsert_watchlist_token(
                 source = COALESCE(bottom_watchlist_tokens.source, EXCLUDED.source),
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
+                ath_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.ath_mcap, 0), EXCLUDED.peak_mcap),
                 note = EXCLUDED.note
             """,
             (
@@ -81,15 +83,15 @@ def upsert_watchlist_token(
     db_op(_op)
 
 
-def save_token_created_at(address: str, gmgn_created_ts: int) -> None:
-    """Save GMGN's creation_timestamp to the DB for accurate age checks."""
-    if gmgn_created_ts <= 0:
+def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: float = 0) -> None:
+    """Save GMGN's creation_timestamp (always overwrite) and ATH MCap (take max) to the DB."""
+    if gmgn_created_ts <= 0 and gmgn_ath_mcap <= 0:
         return
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            "UPDATE bottom_watchlist_tokens SET token_created_at = %s WHERE ca = %s AND (token_created_at IS NULL OR token_created_at = 0)",
-            (gmgn_created_ts, address),
+            "UPDATE bottom_watchlist_tokens SET token_created_at = %s, ath_mcap = GREATEST(COALESCE(ath_mcap, 0), %s) WHERE ca = %s",
+            (gmgn_created_ts if gmgn_created_ts > 0 else None, gmgn_ath_mcap, address),
         )
     db_op(_op)
 
@@ -153,6 +155,7 @@ def upsert_daily_mcap_watchlist_token(
                 symbol = COALESCE(EXCLUDED.symbol, bottom_watchlist_tokens.symbol),
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
+                ath_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.ath_mcap, 0), EXCLUDED.peak_mcap),
                 fee_sol = GREATEST(COALESCE(bottom_watchlist_tokens.fee_sol, 0), EXCLUDED.fee_sol),
                 daily_mcap_date = CURRENT_DATE,
                 daily_mcap_threshold = EXCLUDED.daily_mcap_threshold,
