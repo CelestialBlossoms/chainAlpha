@@ -17,6 +17,8 @@ from db_client import db_op
 
 
 def fetch_watchlist_records() -> list[dict[str, Any]]:
+    ensure_watchlist_daily_mcap_columns()
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
@@ -120,6 +122,10 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS daily_mcap_notified_date DATE;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS daily_mcap_notified_at TIMESTAMPTZ;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS ath_mcap NUMERIC DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
             """
         )
 
@@ -228,11 +234,44 @@ def delete_watchlist_token(address: str) -> int:
 
 
 def set_watchlist_blacklisted(address: str, blacklisted: bool = True) -> None:
+    ensure_watchlist_daily_mcap_columns()
+
     def _op(conn):
         cur = conn.cursor()
-        cur.execute("UPDATE bottom_watchlist_tokens SET blacklisted = %s WHERE ca = %s", (blacklisted, address))
-        print(f"blacklisted={blacklisted} for {address[:16]}... (rows affected: {cur.rowcount})")
+        cur.execute(
+            """
+            INSERT INTO bottom_watchlist_tokens (
+                ca, added_at, last_seen_at, source, blacklisted, note
+            ) VALUES (
+                %s, now(), now(), 'manual_blacklist', %s, %s
+            )
+            ON CONFLICT (ca) DO UPDATE SET
+                last_seen_at = now(),
+                blacklisted = EXCLUDED.blacklisted,
+                note = CASE
+                    WHEN EXCLUDED.blacklisted THEN 'manual blacklist'
+                    ELSE bottom_watchlist_tokens.note
+                END
+            """,
+            (address, blacklisted, "manual blacklist" if blacklisted else None),
+        )
+        print(f"blacklisted={blacklisted} for {address[:16]}... (upserted)")
     db_op(_op)
+
+
+def is_watchlist_blacklisted(address: str) -> bool:
+    ensure_watchlist_daily_mcap_columns()
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(blacklisted, false) FROM bottom_watchlist_tokens WHERE ca = %s LIMIT 1",
+            (address,),
+        )
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+    return bool(db_op(_op))
 
 
 def clean_redis_stream_for_ca(address: str) -> int:
@@ -248,18 +287,24 @@ def clean_redis_stream_for_ca(address: str) -> int:
 
     deleted = 0
     try:
-        rows = client.xrange(TG_ALERT_STREAM_KEY, count=1000)
-        for stream_id, fields in rows:
-            ca = str(fields.get(b"ca", fields.get("ca", ""))).strip()
-            extra_raw = fields.get(b"extra", fields.get("extra", "{}"))
-            try:
-                extra = json.loads(extra_raw) if isinstance(extra_raw, (str, bytes)) else {}
-            except (json.JSONDecodeError, TypeError):
-                extra = {}
-            stream_ca = ca or extra.get("address", "")
-            if stream_ca == address:
-                client.xdel(TG_ALERT_STREAM_KEY, stream_id)
-                deleted += 1
+        start = "-"
+        while True:
+            rows = client.xrange(TG_ALERT_STREAM_KEY, min=start, count=500)
+            if not rows:
+                break
+            last_id = rows[-1][0]
+            for stream_id, fields in rows:
+                ca = str(fields.get(b"ca", fields.get("ca", ""))).strip()
+                extra_raw = fields.get(b"extra", fields.get("extra", "{}"))
+                try:
+                    extra = json.loads(extra_raw) if isinstance(extra_raw, (str, bytes)) else {}
+                except (json.JSONDecodeError, TypeError):
+                    extra = {}
+                stream_ca = ca or extra.get("address", "")
+                if stream_ca == address:
+                    client.xdel(TG_ALERT_STREAM_KEY, stream_id)
+                    deleted += 1
+            start = f"({last_id.decode() if isinstance(last_id, bytes) else last_id}"
     except Exception as exc:
         print(f"Redis cleanup error: {exc}")
 

@@ -50,6 +50,10 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS daily_mcap_notified_date DATE;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS daily_mcap_notified_at TIMESTAMPTZ;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS ath_mcap NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
         """
     )
     print("Initialized bottom_watchlist_tokens")

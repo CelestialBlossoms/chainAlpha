@@ -36,6 +36,7 @@ from bottom_detection.bottom_watchlist_store import (
     fetch_watchlist_records,
     fill_watchlist_create_at as store_fill_watchlist_create_at,
     fill_watchlist_token_created_at as store_fill_token_created_at,
+    is_watchlist_blacklisted,
     mark_daily_mcap_watchlist_notified,
     set_watchlist_blacklisted,
     update_watchlist_seen,
@@ -421,6 +422,7 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "watchlist_source": row.get("source"),
             "watchlist_peak_mcap": to_float(row.get("peak_mcap")),
             "watchlist_last_mcap": to_float(row.get("last_mcap")),
+            "blacklisted": bool(row.get("blacklisted")),
         }
         if create_at:
             created_ts = int(create_at.timestamp()) if isinstance(create_at, datetime) else parse_timestamp(create_at)
@@ -1457,6 +1459,11 @@ def scan_once(args: argparse.Namespace) -> None:
     filtered_trending = []
     prefilter_skipped = 0
     for row in trending_raw:
+        address = token_address(row)
+        if address and is_watchlist_blacklisted(address):
+            print(f"{address[:8]} trending blacklisted, skipped")
+            prefilter_skipped += 1
+            continue
         reason = prefilter_trending_token(row)
         if reason:
             prefilter_skipped += 1
