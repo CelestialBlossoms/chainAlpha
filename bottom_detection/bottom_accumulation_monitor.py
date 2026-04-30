@@ -34,6 +34,7 @@ from bottom_detection.bottom_watchlist_store import (
     ensure_watchlist_daily_mcap_columns,
     fetch_watchlist_records,
     fill_watchlist_create_at as store_fill_watchlist_create_at,
+    fill_watchlist_token_created_at as store_fill_token_created_at,
     mark_daily_mcap_watchlist_notified,
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
@@ -1415,6 +1416,10 @@ def scan_once(args: argparse.Namespace) -> None:
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
+            gmgn_created_ts = int(to_float(info.get("creation_timestamp") or info.get("open_timestamp") or 0))
+            if gmgn_created_ts > 0:
+                store_fill_token_created_at(address, gmgn_created_ts)
+                token["_gmgn_created_ts"] = gmgn_created_ts
             current_mcap = calc_mcap(token)
             pool_data = fetch_token_pool(address)
             token = attach_token_pool(token, pool_data)
@@ -1423,8 +1428,15 @@ def scan_once(args: argparse.Namespace) -> None:
                 update_watchlist_seen(address, current_mcap)
                 daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
                 if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
-                    peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
-                    publish_daily_1m_frontend_update(token, current_mcap, peak)
+                    gmgn_ts = int(to_float(token.get("_gmgn_created_ts") or info.get("creation_timestamp") or info.get("open_timestamp") or 0))
+                    age_sec = (now_ts() - gmgn_ts) if gmgn_ts > 0 else 0
+                    if 0 < age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC:
+                        pool_summary = summarize_pools(token)
+                        pool_liq = to_float(pool_summary.get("total_liquidity"))
+                        pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+                        if pool_liq >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD and pool_ratio >= BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:
+                            peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
+                            publish_daily_1m_frontend_update(token, current_mcap, peak)
                 if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
                     if token.get("watchlist_daily_mcap_date"):
                         skipped += 1

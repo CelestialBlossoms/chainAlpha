@@ -21,7 +21,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date
+            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -35,6 +35,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "peak_mcap": row[4],
                 "last_mcap": row[5],
                 "daily_mcap_date": row[6],
+                "token_created_at": row[7] if len(row) > 7 else None,
             }
             for row in cur.fetchall()
         ]
@@ -78,6 +79,23 @@ def upsert_watchlist_token(
         )
 
     db_op(_op)
+
+
+def save_token_created_at(address: str, gmgn_created_ts: int) -> None:
+    """Save GMGN's creation_timestamp to the DB for accurate age checks."""
+    if gmgn_created_ts <= 0:
+        return
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bottom_watchlist_tokens SET token_created_at = %s WHERE ca = %s AND (token_created_at IS NULL OR token_created_at = 0)",
+            (gmgn_created_ts, address),
+        )
+    db_op(_op)
+
+
+def fill_watchlist_token_created_at(address: str, gmgn_created_ts: int) -> None:
+    save_token_created_at(address, gmgn_created_ts)
 
 
 def ensure_watchlist_daily_mcap_columns() -> None:
