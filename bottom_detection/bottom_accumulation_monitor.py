@@ -1167,11 +1167,15 @@ def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_f
     address = token_address(token)
     created_ts = token_created_ts(token)
     age_text = f"{token_age_sec(token) / 3600:.1f}h" if created_ts > 0 else "未知"
+    pool_summary = summarize_pools(token)
+    pool_liquidity = to_float(pool_summary.get("total_liquidity"))
+    pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
     return (
         f"每日过1M市值 | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"CA: {address}\n"
         f"市值: ${current_mcap:,.0f} | 要求: >=${DAILY_MCAP_MILESTONE_USD:,.0f}\n"
         f"手续费: {current_fee_sol:.2f} SOL | 要求: >={DAILY_MCAP_MIN_FEE_SOL:.2f} SOL\n"
+        f"池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%} | 要求: >=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} / >={BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}\n"
         f"创建年龄: {age_text}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
@@ -1186,12 +1190,14 @@ def daily_1m_zone(mcap: float):
 def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
     zone, zone_label = daily_1m_zone(current_mcap)
     drop = round((1 - current_mcap / max(peak_mcap, 1)) * 100, 1)
+    milestone_date = token.get("watchlist_daily_mcap_date") or ""
     extra = {
         "source_type": "daily_1m",
         "symbol": token.get("symbol"),
         "address": token_address(token),
         "current_mcap": current_mcap,
         "peak_mcap": peak_mcap,
+        "milestone_date": milestone_date,
         "zone": zone,
         "zone_label": zone_label,
         "drop_from_peak_pct": drop,
@@ -1205,12 +1211,29 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
 def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float, notify: bool) -> None:
     if current_mcap < DAILY_MCAP_MILESTONE_USD:
         return
+    age_sec = token_age_sec(token)
+    if age_sec <= 0 or age_sec > NEW_TOKEN_AGE_CUTOFF_SEC:
+        print(
+            f"{token_label(token)} daily 1M skip age "
+            f"{age_sec / 3600:.1f}h>{NEW_TOKEN_AGE_CUTOFF_SEC / 3600:.1f}h"
+        )
+        return
     current_fee_sol = fee_sol(token) or 0.0
     address = token_address(token)
     if current_fee_sol < DAILY_MCAP_MIN_FEE_SOL:
         print(
             f"{token_label(token)} daily 1M skip fee "
             f"{current_fee_sol:.2f} SOL<{DAILY_MCAP_MIN_FEE_SOL:.2f} SOL"
+        )
+        return
+    pool_summary = summarize_pools(token)
+    pool_liquidity = to_float(pool_summary.get("total_liquidity"))
+    pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+    if pool_liquidity < BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD or pool_ratio < BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:
+        print(
+            f"{token_label(token)} daily 1M skip pool "
+            f"liq=${pool_liquidity:,.0f}/${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} "
+            f"pool/mcap={pool_ratio:.1%}/{BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
         )
         return
     upsert_daily_mcap_watchlist_token(
@@ -1231,8 +1254,12 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
             "threshold_mcap": DAILY_MCAP_MILESTONE_USD,
             "fee_sol": current_fee_sol,
             "required_fee_sol": DAILY_MCAP_MIN_FEE_SOL,
+            "pool_total_liquidity": pool_liquidity,
+            "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
+            "pool_mcap_ratio": pool_ratio,
+            "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
             "created_ts": token_created_ts(token),
-            "age_sec": token_age_sec(token),
+            "age_sec": age_sec,
         }
         send_tg(daily_mcap_signal_text(token, current_mcap, current_fee_sol), extra=extra)
         mark_daily_mcap_watchlist_notified(address)
@@ -1389,10 +1416,13 @@ def scan_once(args: argparse.Namespace) -> None:
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
             current_mcap = calc_mcap(token)
+            pool_data = fetch_token_pool(address)
+            token = attach_token_pool(token, pool_data)
             maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
             if is_watchlist:
                 update_watchlist_seen(address, current_mcap)
-                if current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
+                daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
+                if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
                     peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
                     publish_daily_1m_frontend_update(token, current_mcap, peak)
                 if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
@@ -1427,8 +1457,6 @@ def scan_once(args: argparse.Namespace) -> None:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
                 continue
-            pool_data = fetch_token_pool(address)
-            token = attach_token_pool(token, pool_data)
             if handle_token(scan_id, token, args.notify):
                 processed += 1
         except Exception as exc:

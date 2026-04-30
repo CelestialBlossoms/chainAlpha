@@ -161,6 +161,12 @@
       }).format(new Date(ms));
     }
 
+    function isRecentDaily1m(item) {
+      const ts = safeNum(item && item.ts);
+      if (!ts) return false;
+      return Date.now() / 1000 - ts <= 24 * 60 * 60;
+    }
+
     function tag(stats, key) {
       return (stats.holder_tag_stats && stats.holder_tag_stats[key]) || {};
     }
@@ -243,6 +249,7 @@
 
       // daily_1m: tokens that crossed $1M, tracked for MCap decline
       if (source === "daily_1m") {
+        if (!isRecentDaily1m(item)) return null;
         const address = extra.address || item.ca || "";
         if (!address) return null;
         const mcap = safeNum(extra.current_mcap);
