@@ -29,11 +29,14 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
+    daily_mcap_watchlist_needs_notify,
     delete_watchlist_token,
+    ensure_watchlist_daily_mcap_columns,
     fetch_watchlist_records,
     fill_watchlist_create_at as store_fill_watchlist_create_at,
+    mark_daily_mcap_watchlist_notified,
     update_watchlist_seen,
-    upsert_watchlist_token,
+    upsert_daily_mcap_watchlist_token,
 )
 
 
@@ -47,9 +50,9 @@ NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(
 MID_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_MID_TOKEN_AGE_CUTOFF_SEC", str(5 * 24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
-NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "2m")
-YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", "10m")
-MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "15m")
+NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m")
+YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", "15m")
+MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "1h")
 KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(24 * 3600)))
 KLINE_INCREMENT_OVERLAP_BARS = int(os.getenv("BOTTOM_KLINE_INCREMENT_OVERLAP_BARS", "10"))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
@@ -67,8 +70,9 @@ BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_ATH_MC
 BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD", "50000"))
 BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD", "500000"))
 BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT = float(os.getenv("BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT", "30"))
-WATCHLIST_AUTO_ADD_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_AUTO_ADD_MCAP_USD", "1000000"))
 WATCHLIST_DELETE_BELOW_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_MCAP_USD", "40000"))
+DAILY_MCAP_MILESTONE_USD = float(os.getenv("BOTTOM_DAILY_MCAP_MILESTONE_USD", "1000000"))
+DAILY_MCAP_MIN_FEE_SOL = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_FEE_SOL", "20"))
 MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", "0"))
 MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "0"))
 BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD", "4000"))
@@ -281,9 +285,7 @@ def token_kline_resolution(row: dict[str, Any]) -> str:
 def kline_resolution_seconds(resolution: str) -> int:
     mapping = {
         "1m": 60,
-        "2m": 2 * 60,
         "5m": 5 * 60,
-        "10m": 10 * 60,
         "15m": 15 * 60,
         "30m": 30 * 60,
         "1h": 60 * 60,
@@ -302,6 +304,8 @@ def fee_sol(row: dict[str, Any]) -> float | None:
             "fees_sol",
             "swap_fee_sol",
             "trade_fee_sol",
+            "gas_fee_sol",
+            "gas_fee",
             "fee",
             "fees",
             "total_fee",
@@ -378,6 +382,8 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             token["created_at"] = created_ts
         if added_at:
             token["watchlist_added_at"] = int(added_at.timestamp()) if isinstance(added_at, datetime) else parse_timestamp(added_at)
+        if row.get("daily_mcap_date"):
+            token["watchlist_daily_mcap_date"] = str(row.get("daily_mcap_date"))
         tokens.append(token)
     return tokens
 
@@ -1157,6 +1163,56 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
 
 
+def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_fee_sol: float) -> str:
+    address = token_address(token)
+    created_ts = token_created_ts(token)
+    age_text = f"{token_age_sec(token) / 3600:.1f}h" if created_ts > 0 else "未知"
+    return (
+        f"每日过1M市值 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"CA: {address}\n"
+        f"市值: ${current_mcap:,.0f} | 要求: >=${DAILY_MCAP_MILESTONE_USD:,.0f}\n"
+        f"手续费: {current_fee_sol:.2f} SOL | 要求: >={DAILY_MCAP_MIN_FEE_SOL:.2f} SOL\n"
+        f"创建年龄: {age_text}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float, notify: bool) -> None:
+    if current_mcap < DAILY_MCAP_MILESTONE_USD:
+        return
+    current_fee_sol = fee_sol(token) or 0.0
+    address = token_address(token)
+    if current_fee_sol < DAILY_MCAP_MIN_FEE_SOL:
+        print(
+            f"{token_label(token)} daily 1M skip fee "
+            f"{current_fee_sol:.2f} SOL<{DAILY_MCAP_MIN_FEE_SOL:.2f} SOL"
+        )
+        return
+    upsert_daily_mcap_watchlist_token(
+        address,
+        token_created_ts(token),
+        current_mcap,
+        current_fee_sol,
+        symbol=token.get("symbol"),
+        threshold_mcap=DAILY_MCAP_MILESTONE_USD,
+    )
+    print(f"{token_label(token)} watchlist daily 1M recorded mcap=${current_mcap:,.0f} fee={current_fee_sol:.2f} SOL")
+    if notify and daily_mcap_watchlist_needs_notify(address):
+        extra = {
+            "signal_type": "daily_mcap_over_1m",
+            "address": address,
+            "symbol": token.get("symbol"),
+            "current_mcap": current_mcap,
+            "threshold_mcap": DAILY_MCAP_MILESTONE_USD,
+            "fee_sol": current_fee_sol,
+            "required_fee_sol": DAILY_MCAP_MIN_FEE_SOL,
+            "created_ts": token_created_ts(token),
+            "age_sec": token_age_sec(token),
+        }
+        send_tg(daily_mcap_signal_text(token, current_mcap, current_fee_sol), extra=extra)
+        mark_daily_mcap_watchlist_notified(address)
+
+
 
 
 def signal_type_text(signal_type: str) -> str:
@@ -1308,18 +1364,17 @@ def scan_once(args: argparse.Namespace) -> None:
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
             current_mcap = calc_mcap(token)
-            if current_mcap >= WATCHLIST_AUTO_ADD_MCAP_USD:
-                upsert_watchlist_token(
-                    address,
-                    token_created_ts(token),
-                    current_mcap,
-                    auto_add_threshold=WATCHLIST_AUTO_ADD_MCAP_USD,
-                )
-                if not is_watchlist:
-                    print(f"{token_label(token)} watchlist auto add mcap=${current_mcap:,.0f}")
+            maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
             if is_watchlist:
                 update_watchlist_seen(address, current_mcap)
                 if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
+                    if token.get("watchlist_daily_mcap_date"):
+                        skipped += 1
+                        print(
+                            f"{address[:8]} watchlist daily mcap record kept: "
+                            f"mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}"
+                        )
+                        continue
                     deleted = delete_watchlist_token(address)
                     if deleted:
                         print(
@@ -1375,6 +1430,7 @@ def main() -> None:
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol
     ensure_kline_cache_table()
+    ensure_watchlist_daily_mcap_columns()
     while True:
         scan_once(args)
         if args.once or not args.watch:

@@ -1253,7 +1253,7 @@ def load_bottom_snapshot_analysis(address, chain="sol", limit=100, stats=None):
         "fee_sol": (stats or {}).get("fee_sol"),
     }
     kline_resolution = bottom_monitor.token_kline_resolution(token)
-    candles = bottom_monitor.fetch_kline(address, kline_resolution)
+    candles = bottom_monitor.fetch_kline(address, kline_resolution, token)
     summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders, candles, kline_resolution)
     raw_traders = fetch_token_traders(address, chain=chain, limit=100)
     trader_scenarios = fetch_token_trader_scenarios(address, chain=chain, limit=20)
