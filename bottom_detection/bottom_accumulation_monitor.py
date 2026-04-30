@@ -44,15 +44,27 @@ DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
 RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "100"))
 NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(24 * 3600)))
+MID_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_MID_TOKEN_AGE_CUTOFF_SEC", str(5 * 24 * 3600)))
+OLD_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_AGE_CUTOFF_SEC", str(10 * 24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
-NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m")
-OLD_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_OLD_TOKEN_KLINE_RESOLUTION", "15m")
-KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(6 * 3600)))
+NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "1m")
+YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", "5m")
+MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "15m")
+OLD_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_OLD_TOKEN_KLINE_RESOLUTION", "1h")
+KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(24 * 3600)))
+KLINE_INCREMENT_OVERLAP_BARS = int(os.getenv("BOTTOM_KLINE_INCREMENT_OVERLAP_BARS", "10"))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD", "1000000"))
 BOTTOM_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MAX_MCAP_USD", "200000"))
+BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD", "400000"))
+BOTTOM_NEW_DROP_ATH_MCAP_USD = float(os.getenv("BOTTOM_NEW_DROP_ATH_MCAP_USD", "1000000"))
+BOTTOM_NEW_DROP_LEVELS = tuple(
+    float(item.strip())
+    for item in os.getenv("BOTTOM_NEW_DROP_LEVELS", "500000,400000").split(",")
+    if item.strip()
+)
 BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD", "5000000"))
 BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD", "50000"))
 BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD", "500000"))
@@ -79,6 +91,7 @@ BOTTOM_ABNORMAL_RULES = [
 ]
 
 SOL_CA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,50}$")
+_KLINE_CACHE_TABLE_READY = False
 
 
 def now_ts() -> int:
@@ -194,10 +207,6 @@ def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = No
     return calc_mcap(row)
 
 
-def abnormal_max_mcap_usd() -> float:
-    return max(rule["max_mcap"] for rule in BOTTOM_ABNORMAL_RULES)
-
-
 def match_abnormal_rule(ath_mcap: float, current_mcap: float) -> dict[str, Any] | None:
     for rule in sorted(BOTTOM_ABNORMAL_RULES, key=lambda item: item["min_ath_mcap"], reverse=True):
         if ath_mcap >= rule["min_ath_mcap"] and rule["min_mcap"] <= current_mcap <= rule["max_mcap"]:
@@ -262,7 +271,26 @@ def token_snapshot_interval_sec(row: dict[str, Any]) -> int:
 
 
 def token_kline_resolution(row: dict[str, Any]) -> str:
-    return NEW_TOKEN_KLINE_RESOLUTION if is_new_token(row) else OLD_TOKEN_KLINE_RESOLUTION
+    age = token_age_sec(row)
+    if age <= 0 or age <= NEW_TOKEN_AGE_CUTOFF_SEC:
+        return NEW_TOKEN_KLINE_RESOLUTION
+    if age <= MID_TOKEN_AGE_CUTOFF_SEC:
+        return YOUNG_TOKEN_KLINE_RESOLUTION
+    if age <= OLD_TOKEN_AGE_CUTOFF_SEC:
+        return MID_TOKEN_KLINE_RESOLUTION
+    return OLD_TOKEN_KLINE_RESOLUTION
+
+
+def kline_resolution_seconds(resolution: str) -> int:
+    mapping = {
+        "1m": 60,
+        "5m": 5 * 60,
+        "15m": 15 * 60,
+        "1h": 60 * 60,
+        "4h": 4 * 60 * 60,
+        "1d": 24 * 60 * 60,
+    }
+    return mapping.get(str(resolution), 60)
 
 
 def fee_sol(row: dict[str, Any]) -> float | None:
@@ -290,9 +318,6 @@ def token_basic_filter_reason(row: dict[str, Any]) -> str | None:
     mcap = calc_mcap(row)
     if mcap < MIN_MCAP_USD:
         return f"市值${mcap:,.0f}<{MIN_MCAP_USD:,.0f}"
-    max_mcap = abnormal_max_mcap_usd()
-    if mcap > max_mcap:
-        return f"市值${mcap:,.0f}>{max_mcap:,.0f}"
     age = token_age_sec(row)
     if age and age < MIN_TOKEN_AGE_SEC:
         return f"创建{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
@@ -524,9 +549,136 @@ def extract_kline_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str
     return candles
 
 
-def fetch_kline(address: str, resolution: str) -> list[dict[str, Any]]:
-    end_ts = now_ts()
-    start_ts = end_ts - KLINE_LOOKBACK_SEC
+def ensure_kline_cache_table() -> None:
+    global _KLINE_CACHE_TABLE_READY
+    if _KLINE_CACHE_TABLE_READY:
+        return
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bottom_kline_cache (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
+                ON bottom_kline_cache(address, resolution, ts);
+            """
+        )
+
+    db_op(_op)
+    _KLINE_CACHE_TABLE_READY = True
+
+
+def latest_cached_kline_ts(address: str, resolution: str) -> int:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT MAX(ts)
+            FROM bottom_kline_cache
+            WHERE chain=%s AND address=%s AND resolution=%s
+            """,
+            (CHAIN, address, resolution),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    return int(db_op(_op) or 0)
+
+
+def save_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
+    if not candles:
+        return 0
+
+    def _op(conn):
+        cur = conn.cursor()
+        rows = [
+            (
+                CHAIN,
+                address,
+                resolution,
+                int(candle["ts"]),
+                candle.get("open"),
+                candle.get("high"),
+                candle.get("low"),
+                candle.get("close"),
+                candle.get("volume"),
+                candle.get("amount"),
+            )
+            for candle in candles
+            if to_int(candle.get("ts")) > 0
+        ]
+        if not rows:
+            return 0
+        cur.executemany(
+            """
+            INSERT INTO bottom_kline_cache (
+                chain, address, resolution, ts, open, high, low, close, volume, amount
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (chain, address, resolution, ts) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                updated_at = NOW()
+            """,
+            rows,
+        )
+        return len(rows)
+
+    return int(db_op(_op) or 0)
+
+
+def load_kline_cache(address: str, resolution: str) -> list[dict[str, Any]]:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, volume, amount
+            FROM bottom_kline_cache
+            WHERE chain=%s AND address=%s AND resolution=%s
+            ORDER BY ts ASC
+            """,
+            (CHAIN, address, resolution),
+        )
+        return [
+            {
+                "ts": int(row[0]),
+                "open": to_float(row[1]),
+                "high": to_float(row[2]),
+                "low": to_float(row[3]),
+                "close": to_float(row[4]),
+                "volume": to_float(row[5]),
+                "amount": to_float(row[6]),
+            }
+            for row in cur.fetchall()
+        ]
+
+    return db_op(_op) or []
+
+
+def initial_kline_start_ts(token: dict[str, Any], end_ts: int) -> int:
+    created_ts = token_created_ts(token)
+    if created_ts > 0:
+        return min(created_ts, end_ts - kline_resolution_seconds(token_kline_resolution(token)))
+    return end_ts - KLINE_LOOKBACK_SEC
+
+
+def fetch_kline_range(address: str, resolution: str, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
     data = run_gmgn(
         [
             "market",
@@ -545,6 +697,25 @@ def fetch_kline(address: str, resolution: str) -> list[dict[str, Any]]:
         timeout=75,
     )
     return extract_kline_rows(data)
+
+
+def fetch_kline(address: str, resolution: str, token: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    ensure_kline_cache_table()
+    end_ts = now_ts()
+    latest_ts = latest_cached_kline_ts(address, resolution)
+    step = kline_resolution_seconds(resolution)
+    if latest_ts > 0:
+        start_ts = max(0, latest_ts - KLINE_INCREMENT_OVERLAP_BARS * step)
+    else:
+        start_ts = initial_kline_start_ts(token or {"address": address}, end_ts)
+    fresh = fetch_kline_range(address, resolution, start_ts, end_ts)
+    saved = save_kline_cache(address, resolution, fresh)
+    cached = load_kline_cache(address, resolution)
+    print(
+        f"{address[:8]} kline {resolution}: fetch_from={datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M:%S')} "
+        f"fresh={len(fresh)} saved={saved} cached={len(cached)}"
+    )
+    return cached
 
 
 def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
@@ -662,7 +833,6 @@ def build_snapshot_json(
         "age_sec": token_age_sec(token),
         "fee_sol": fee_sol(token),
         "kline": summarize_kline(candles or [], kline_resolution or token_kline_resolution(token)),
-        "kline_candles": candles or [],
     }
     return summary, holders
 
@@ -803,11 +973,29 @@ def analyze_abnormal_snapshot(
     price_change_pct = to_float(kline_summary.get("change_pct"))
     current_mcap = to_float(current_summary.get("mcap"))
     ath_mcap = to_float(current_summary.get("ath_mcap"))
-    matched_rule = match_abnormal_rule(ath_mcap, current_mcap)
+    token_age = to_int(current_summary.get("age_sec"))
+    is_under_24h = token_age <= 0 or token_age <= NEW_TOKEN_AGE_CUTOFF_SEC
     price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
     pool_ratio = to_float(pool_stats.get("pool_mcap_ratio"))
     pool_ready = pool_ratio >= BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO
-    signal_type = "abnormal" if matched_rule and price_ready and pool_ready else "watch"
+    drop_level = 0.0
+    if is_under_24h and ath_mcap >= BOTTOM_NEW_DROP_ATH_MCAP_USD:
+        for level in sorted(BOTTOM_NEW_DROP_LEVELS):
+            if current_mcap <= level:
+                drop_level = level
+                break
+    old_abnormal_ready = (
+        not is_under_24h
+        and current_mcap >= BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
+        and price_ready
+        and pool_ready
+    )
+    if drop_level > 0:
+        signal_type = f"drop_{int(drop_level / 10000)}w"
+    elif old_abnormal_ready:
+        signal_type = "abnormal"
+    else:
+        signal_type = "watch"
     previous_holders = recent_history[0].get("holders") if recent_history else []
     holder_change = (
         compare_holder_sets(current_holders, previous_holders)
@@ -820,21 +1008,39 @@ def analyze_abnormal_snapshot(
             "netflow_usd": 0.0,
         }
     )
-    if matched_rule:
-        rule_name = matched_rule["name"]
-        min_ath_mcap = matched_rule["min_ath_mcap"]
-        min_mcap = matched_rule["min_mcap"]
-        max_mcap = matched_rule["max_mcap"]
+    if drop_level > 0:
+        rule_name = f"NEW_ATH1M_DROP_{int(drop_level / 10000)}W"
+        min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD
+        min_mcap = 0
+        max_mcap = drop_level
         rule_reason = (
-            f"命中{rule_name}: ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, "
-            f"当前市值${current_mcap:,.0f}在{min_mcap:,.0f}-{max_mcap:,.0f}"
+            f"新币回落{rule_name}: 创建{token_age / 3600:.1f}h, "
+            f"ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}<=${drop_level:,.0f}"
+        )
+    elif old_abnormal_ready:
+        rule_name = "OLD_MCAP_40W_UP30"
+        min_ath_mcap = 0
+        min_mcap = BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
+        max_mcap = 0
+        rule_reason = (
+            f"老币异动: 创建{token_age / 3600:.1f}h, "
+            f"当前市值${current_mcap:,.0f}>=${min_mcap:,.0f}, 价格上涨{price_change_pct:.1f}%"
         )
     else:
         rule_name = "未命中"
-        min_ath_mcap = BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD
-        min_mcap = BOTTOM_ABNORMAL_MIN_MCAP_USD
-        max_mcap = abnormal_max_mcap_usd()
-        rule_reason = f"未命中异动市值档位: ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}"
+        min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD if is_under_24h else 0
+        min_mcap = 0 if is_under_24h else BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
+        max_mcap = 0
+        if is_under_24h:
+            rule_reason = (
+                f"未命中新币回落: 创建{token_age / 3600:.1f}h, "
+                f"ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}"
+            )
+        else:
+            rule_reason = (
+                f"未命中老币异动: 创建{token_age / 3600:.1f}h, "
+                f"当前市值${current_mcap:,.0f}<${BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD:,.0f}或涨幅/池子不足"
+            )
     reasons = [
         rule_reason,
         (
@@ -849,10 +1055,12 @@ def analyze_abnormal_snapshot(
         ),
     ]
     return {
-        "score": 100 if signal_type == "abnormal" else 0,
+        "score": 100 if signal_type != "watch" else 0,
         "signal_type": signal_type,
         "reasons": reasons,
         "history_count": len(recent_history),
+        "is_under_24h": is_under_24h,
+        "drop_level_mcap": drop_level,
         "price_confirmation_ready": price_ready,
         "pool_confirmation_ready": pool_ready,
         "price_change_pct": price_change_pct,
@@ -864,7 +1072,7 @@ def analyze_abnormal_snapshot(
         "min_ath_mcap": min_ath_mcap,
         "min_abnormal_mcap": min_mcap,
         "max_abnormal_mcap": max_mcap,
-        "token_age_sec": to_int(current_summary.get("age_sec")),
+        "token_age_sec": token_age,
         **pool_stats,
         "window_pool_liquidity_delta": window_pool_stats["pool_liquidity_delta"],
         "window_pool_liquidity_delta_pct": window_pool_stats["pool_liquidity_delta_pct"],
@@ -939,19 +1147,37 @@ def signal_type_text(signal_type: str) -> str:
     mapping = {
         "watch": "观察",
         "abnormal": "异动检测",
+        "drop_50w": "新币跌破50W",
+        "drop_40w": "新币跌破40W",
     }
     return mapping.get(signal_type, signal_type or "未知")
 
 
 def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str:
     address = token_address(token)
+    max_mcap = to_float(analysis.get("max_abnormal_mcap"))
+    if analysis.get("signal_type", "").startswith("drop_"):
+        mcap_line = (
+            f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | "
+            f"跌破: ${analysis.get('drop_level_mcap', 0):,.0f}\n"
+        )
+    elif max_mcap > 0:
+        mcap_line = (
+            f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | "
+            f"区间: ${analysis.get('min_abnormal_mcap', 0):,.0f}-${max_mcap:,.0f}\n"
+        )
+    else:
+        mcap_line = (
+            f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | "
+            f"要求: >=${analysis.get('min_abnormal_mcap', 0):,.0f}\n"
+        )
     return (
         f"底部异动检测 | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"类型: {signal_type_text(analysis.get('signal_type'))}\n"
         f"档位: {analysis.get('abnormal_rule') or '未命中'}\n"
         f"CA: {address}\n"
         f"历史最高市值: ${analysis.get('ath_mcap', 0):,.0f} | 要求: >${analysis.get('min_ath_mcap', 0):,.0f}\n"
-        f"当前市值: ${analysis.get('current_mcap', calc_mcap(token)):,.0f} | 区间: ${analysis.get('min_abnormal_mcap', 0):,.0f}-${analysis.get('max_abnormal_mcap', 0):,.0f}\n"
+        f"{mcap_line}"
         f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
         f"池子: ${analysis.get('pool_total_liquidity', 0):,.0f} | 池/市值: {analysis.get('pool_mcap_ratio', 0):.1%} ({analysis.get('pool_mcap_ratio_text', 'N/A')}) | 要求: >={analysis.get('required_pool_mcap_ratio', 0):.1%}\n"
         f"Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 净买入${analysis.get('netflow_usd', 0):,.0f}\n"
@@ -960,7 +1186,27 @@ def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str
     )
 
 def should_notify(analysis: dict[str, Any]) -> bool:
-    return analysis.get("signal_type") == "abnormal"
+    return analysis.get("signal_type") != "watch"
+
+
+def previous_signal_exists(address: str, signal_type: str) -> bool:
+    if not signal_type or signal_type == "watch":
+        return False
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s AND signal_type=%s
+            LIMIT 1
+            """,
+            (CHAIN, address, signal_type),
+        )
+        return cur.fetchone() is not None
+
+    return bool(db_op(_op))
 
 
 def notify_skip_reason(analysis: dict[str, Any]) -> str:
@@ -974,10 +1220,11 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
         print(f"{token_label(token)} no holders")
         return False
     kline_resolution = token_kline_resolution(token)
-    candles = fetch_kline(address, kline_resolution)
+    candles = fetch_kline(address, kline_resolution, token)
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
+    already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
         f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
@@ -988,7 +1235,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
         f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
-    if notify and should_notify(analysis):
+    if notify and should_notify(analysis) and not already_notified:
         pool_summary = summary.get("pool") or {}
         web_extra = {
             "signal_type": analysis.get("signal_type"),
@@ -1014,6 +1261,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
             "address": token_address(token),
         }
         send_tg(abnormal_signal_text(token, analysis), extra=web_extra)
+    elif notify and should_notify(analysis) and already_notified:
+        print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
     return True
 
 
@@ -1102,6 +1351,7 @@ def main() -> None:
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol
+    ensure_kline_cache_table()
     while True:
         scan_once(args)
         if args.once or not args.watch:

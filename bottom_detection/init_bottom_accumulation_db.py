@@ -43,9 +43,27 @@ def init_bottom_accumulation_tables(conn):
             ON bottom_top100_snapshots(scan_id);
         CREATE INDEX idx_bottom_top100_signal
             ON bottom_top100_snapshots(signal_type, signal_score DESC, created_at DESC);
+
+        CREATE TABLE bottom_kline_cache (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            resolution TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            amount NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, resolution, ts)
+        );
+
+        CREATE INDEX idx_bottom_kline_cache_addr_res_ts
+            ON bottom_kline_cache(address, resolution, ts);
         """
     )
-    print("Initialized single-table Top100 holder snapshot monitor")
+    print("Initialized Top100 holder snapshot monitor and kline cache")
 
 
 if __name__ == "__main__":

@@ -1658,9 +1658,13 @@ def holder_short_addr(holder):
 def analyze_bottom_profit_wallets(holders_list):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     profitable = [h for h in non_pool if safe_float(h.get("profit")) > 0]
+    losing = [h for h in non_pool if safe_float(h.get("profit")) < 0]
     profitable.sort(
         key=lambda h: (holder_profit_pct(h), safe_float(h.get("amount_percentage"))),
         reverse=True,
+    )
+    losing.sort(
+        key=lambda h: (holder_profit_pct(h), safe_float(h.get("amount_percentage"))),
     )
     sellers = [
         h for h in non_pool
@@ -1676,7 +1680,19 @@ def analyze_bottom_profit_wallets(holders_list):
     total_profit = sum(safe_float(h.get("profit")) for h in profitable)
     total_buy = sum(safe_float(h.get("buy_volume_cur")) for h in profitable)
     profit_pct = (total_profit / total_buy * 100) if total_buy > 0 else 0.0
+    avg_cost = weighted_avg_cost(profitable)
+    losing_hold = sum(safe_float(h.get("amount_percentage")) * 100 for h in losing)
+    losing_value = sum(holder_position_value_usd(h) for h in losing)
+    losing_profit = sum(safe_float(h.get("profit")) for h in losing)
+    losing_buy = sum(safe_float(h.get("buy_volume_cur")) for h in losing)
+    losing_profit_pct = (losing_profit / losing_buy * 100) if losing_buy > 0 else 0.0
+    losing_avg_cost = weighted_avg_cost(losing)
     seller_hold = sum(safe_float(h.get("amount_percentage")) * 100 for h in sellers)
+    seller_value = sum(holder_position_value_usd(h) for h in sellers)
+    seller_profit = sum(safe_float(h.get("profit")) for h in sellers)
+    seller_buy = sum(safe_float(h.get("buy_volume_cur")) for h in sellers)
+    seller_profit_pct = (seller_profit / seller_buy * 100) if seller_buy > 0 else 0.0
+    seller_avg_cost = weighted_avg_cost(sellers)
     seller_progress = wallet_sell_progress_pct(sellers)
 
     if total_hold >= 30 and profit_pct >= 20 and len(sellers) >= 3:
@@ -1688,36 +1704,36 @@ def analyze_bottom_profit_wallets(holders_list):
     else:
         conclusion = "盈利和卖出聚合不极端，暂按观察处理。"
 
-    def wallet_line(holder):
-        return (
-            f"{holder_short_addr(holder)} 持仓{safe_float(holder.get('amount_percentage')) * 100:.2f}% "
-            f"盈利{holder_profit_pct(holder):+.1f}% 成本{format_chain_price(holder.get('avg_cost'))}"
-        )
-
-    def wallet_lines(wallets, empty_text):
-        lines = [wallet_line(holder) for holder in wallets]
-        if not lines:
-            return empty_text
-        return "\n".join(f"  - {line}" for line in lines)
-
     return {
         "count": len(profitable),
         "hold_pct": total_hold,
         "position_value": total_value,
+        "profit": total_profit,
         "profit_pct": profit_pct,
+        "avg_cost": avg_cost,
+        "losing_count": len(losing),
+        "losing_hold_pct": losing_hold,
+        "losing_position_value": losing_value,
+        "losing_profit": losing_profit,
+        "losing_profit_pct": losing_profit_pct,
+        "losing_avg_cost": losing_avg_cost,
         "seller_count": len(sellers),
         "seller_hold_pct": seller_hold,
+        "seller_position_value": seller_value,
+        "seller_profit": seller_profit,
+        "seller_profit_pct": seller_profit_pct,
+        "seller_avg_cost": seller_avg_cost,
         "seller_progress": seller_progress,
         "conclusion": conclusion,
         "top_profit_wallets": profitable[:3],
+        "top_losing_wallets": losing[:3],
         "seller_wallets": sellers[:3],
         "desc": (
             "底部盈利钱包聚合\n"
             f"- 结论: {conclusion}\n"
-            f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2f}%/${total_value:,.0f} | 盈利{profit_pct:+.1f}%\n"
-            f"- 主要盈利钱包:\n{wallet_lines(profitable[:3], '  - 暂无盈利钱包')}\n"
-            f"- 卖出观察: {len(sellers)}个 | 剩余持仓{seller_hold:.2f}% | 卖出进度{seller_progress:.1f}%\n"
-            f"- 主要卖出钱包:\n{wallet_lines(sellers[:3], '  - 暂无明显卖出钱包')}"
+            f"- 盈利钱包: {len(profitable)}个 | 持仓{total_hold:.2f}%/${total_value:,.0f} | 成本线{format_chain_price(avg_cost)} | 盈利${total_profit:,.0f} | 盈利{profit_pct:+.1f}%\n"
+            f"- 亏损钱包: {len(losing)}个 | 持仓{losing_hold:.2f}%/${losing_value:,.0f} | 成本线{format_chain_price(losing_avg_cost)} | 盈利${losing_profit:,.0f} | 盈利{losing_profit_pct:+.1f}%\n"
+            f"- 卖出钱包: {len(sellers)}个 | 持仓{seller_hold:.2f}%/${seller_value:,.0f} | 成本线{format_chain_price(seller_avg_cost)} | 盈利${seller_profit:,.0f} | 盈利{seller_profit_pct:+.1f}% | 卖出进度{seller_progress:.1f}%"
         ),
     }
 
@@ -2478,8 +2494,6 @@ def scan_pro():
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"交易量: {format_usd_short(s.get('trade_volume_usd'))}\n"
                             f"{trend_market_desc}"
-                            f"价格变化: {s['price_observation_change_pct']:+.1f}% | 波段 {s.get('price_observation_change_band_text', 'N/A')} | 回撤 {s['price_observation_drop_pct']:.1f}%\n"
-                            f"{s.get('price_observation_archive_text', '')}"
                             f"{repeat_line}"
                             f"{narrative_line}"
                             f"流动性池: {s['pool_label']}\n"
