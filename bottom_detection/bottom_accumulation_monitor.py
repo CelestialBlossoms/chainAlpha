@@ -1091,7 +1091,7 @@ def detect_ema_crossover(prices):
     return None
 
 
-def ema_crossover_signal_text(token, crossover, current_mcap, pool_liquidity, pool_ratio):
+def ema_crossover_signal_text(token, crossover, current_mcap, pool_liquidity, pool_ratio, crossover_ts=0):
     """Format EMA crossover TG alert message."""
     address = token_address(token)
     signal_label = "EMA 金叉" if crossover["type"] == "golden_cross" else "EMA 死叉"
@@ -1100,10 +1100,14 @@ def ema_crossover_signal_text(token, crossover, current_mcap, pool_liquidity, po
         if crossover["type"] == "golden_cross"
         else f"EMA9({crossover['ema9']:.10f}) 下穿 EMA26({crossover['ema26']:.10f})\n"
     )
+    time_line = ""
+    if crossover_ts > 0:
+        time_line = f"金叉时间: {datetime.fromtimestamp(crossover_ts).strftime('%Y-%m-%d %H:%M:%S')}\n"
     return (
         f"{signal_label} | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"{ema_info}"
         f"强度: {crossover['strength']} | EMA9在EMA26下方{crossover.get('bars_below_before_cross', 0)}根后金叉\n"
+        f"{time_line}"
         f"CA: {address}\n"
         f"当前市值: ${current_mcap:,.0f} | 池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%}\n"
         f"https://gmgn.ai/sol/token/{address}"
@@ -1626,9 +1630,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             first_mcap = to_float(ema_baseline.get("first_signal_mcap")) or current_mcap
             first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
             first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
+            # Extract the actual timestamp of the golden cross candle
+            crossover_bar_idx = crossover.get("bar_index", 0)
+            crossover_ts = int(candles[crossover_bar_idx]["ts"]) if 0 <= crossover_bar_idx < len(candles) else 0
             ema_extra = {
                 "signal_type": crossover_signal_type,
                 "crossover_type": crossover["type"],
+                "crossover_ts": crossover_ts,
                 "ema9": crossover["ema9"],
                 "ema26": crossover["ema26"],
                 "strength": crossover["strength"],
@@ -1643,20 +1651,18 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "pool_liquidity": pool_liq,
                 "pool_mcap_ratio": pool_rat,
             }
+            # Always push frontend update for golden cross
+            signal_text = ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat, crossover_ts)
             if not ema_already:
-                send_tg(ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat),
-                        extra=ema_extra)
-                # Save as snapshot with ema signal type
+                send_tg(signal_text, extra=ema_extra)
                 save_snapshot(scan_id + "_ema", token, summary, holders,
                               {"signal_type": crossover_signal_type, "score": 80,
                                "crossover": crossover})
-                print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)}")
+                # Push to frontend on first detection
+                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update")
+                print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)} crossover_ts={crossover_ts}")
             else:
-                publish_frontend_signal_update(
-                    ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat),
-                    ema_extra,
-                    status="frontend_update",
-                )
+                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update")
                 print(
                     f"{token_label(token)} EMA golden cross already notified, frontend updated "
                     f"mcap ${first_mcap:,.0f}->${current_mcap:,.0f} ({first_change_pct:+.1f}%)"
