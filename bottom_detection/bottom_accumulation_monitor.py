@@ -1015,6 +1015,98 @@ def pool_change(current_summary: dict[str, Any], previous_summary: dict[str, Any
 
 
 
+# ---------------------------------------------------------------------------
+# EMA crossover detection (9/26 golden cross)
+# ---------------------------------------------------------------------------
+
+def compute_ema(prices, period):
+    """Compute Exponential Moving Average for a price series."""
+    if len(prices) < period:
+        return [0] * len(prices)
+    ema = [0] * len(prices)
+    # SMA as first EMA value
+    sma = sum(prices[:period]) / period
+    ema[period - 1] = sma
+    multiplier = 2 / (period + 1)
+    for i in range(period, len(prices)):
+        ema[i] = (prices[i] - ema[i - 1]) * multiplier + ema[i - 1]
+    return ema
+
+
+def detect_ema_crossover(prices):
+    """
+    Detect EMA9/EMA26 golden cross (金叉) and death cross (死叉).
+    Returns dict with crossover info or None if no recent signal.
+    """
+    if len(prices) < 30:
+        return None
+
+    ema9 = compute_ema(prices, 9)
+    ema26 = compute_ema(prices, 26)
+
+    # Check last 3 bars for crossovers
+    for i in range(len(prices) - 1, max(len(prices) - 4, 26), -1):
+        if ema9[i] <= 0 or ema26[i] <= 0:
+            continue
+
+        prev_diff = ema9[i - 1] - ema26[i - 1]
+        curr_diff = ema9[i] - ema26[i]
+
+        # Golden cross: EMA9 crosses ABOVE EMA26
+        if prev_diff < 0 and curr_diff > 0:
+            # Calculate how long EMA9 was below EMA26 before crossing
+            bars_below = 0
+            for j in range(i - 1, max(i - 50, 26), -1):
+                if ema9[j] > 0 and ema26[j] > 0 and ema9[j] < ema26[j]:
+                    bars_below += 1
+                else:
+                    break
+
+            return {
+                "type": "golden_cross",
+                "bar_index": i,
+                "ema9": round(ema9[i], 12),
+                "ema26": round(ema26[i], 12),
+                "prev_ema9": round(ema9[i - 1], 12),
+                "prev_ema26": round(ema26[i - 1], 12),
+                "bars_below_before_cross": bars_below,
+                "strength": "strong" if bars_below >= 8 else "normal",
+            }
+
+        # Death cross: EMA9 crosses BELOW EMA26
+        if prev_diff > 0 and curr_diff < 0:
+            return {
+                "type": "death_cross",
+                "bar_index": i,
+                "ema9": round(ema9[i], 12),
+                "ema26": round(ema26[i], 12),
+                "prev_ema9": round(ema9[i - 1], 12),
+                "prev_ema26": round(ema26[i - 1], 12),
+                "strength": "normal",
+            }
+
+    return None
+
+
+def ema_crossover_signal_text(token, crossover, current_mcap, pool_liquidity, pool_ratio):
+    """Format EMA crossover TG alert message."""
+    address = token_address(token)
+    signal_label = "EMA 金叉" if crossover["type"] == "golden_cross" else "EMA 死叉"
+    ema_info = (
+        f"EMA9({crossover['ema9']:.10f}) 上穿 EMA26({crossover['ema26']:.10f})\n"
+        if crossover["type"] == "golden_cross"
+        else f"EMA9({crossover['ema9']:.10f}) 下穿 EMA26({crossover['ema26']:.10f})\n"
+    )
+    return (
+        f"{signal_label} | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"{ema_info}"
+        f"强度: {crossover['strength']} | EMA9在EMA26下方{crossover.get('bars_below_before_cross', 0)}根后金叉\n"
+        f"CA: {address}\n"
+        f"当前市值: ${current_mcap:,.0f} | 池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
 def analyze_abnormal_snapshot(
     current_holders: list[dict[str, Any]],
     recent_history: list[dict[str, Any]],
@@ -1211,6 +1303,13 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
 
 
+def publish_frontend_signal_update(text: str, extra: dict[str, Any], status: str = "frontend_update") -> None:
+    address = str((extra or {}).get("address") or "").strip()
+    if not address:
+        return
+    publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+
+
 def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_fee_sol: float) -> str:
     address = token_address(token)
     created_ts = token_created_ts(token)
@@ -1396,11 +1495,83 @@ def previous_signal_exists(address: str, signal_type: str) -> bool:
     return bool(db_op(_op))
 
 
+def first_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
+    if not signal_type or signal_type == "watch":
+        return {}
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT snapshot_ts, analysis
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s AND signal_type=%s
+            ORDER BY snapshot_ts ASC, id ASC
+            LIMIT 1
+            """,
+            (CHAIN, address, signal_type),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {}
+        analysis = row[1] or {}
+        if not isinstance(analysis, dict):
+            return {}
+        return {
+            "first_signal_ts": int(row[0] or 0),
+            "first_signal_mcap": to_float(analysis.get("current_mcap")),
+        }
+
+    return db_op(_op) or {}
+
+
+def build_bottom_signal_extra(
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    analysis: dict[str, Any],
+    baseline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    address = token_address(token)
+    current_mcap = to_float(analysis.get("current_mcap", calc_mcap(token)))
+    first_mcap = to_float((baseline or {}).get("first_signal_mcap")) or current_mcap
+    first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
+    first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
+    pool_summary = summary.get("pool") or {}
+    return {
+        "signal_type": analysis.get("signal_type"),
+        "abnormal_rule": analysis.get("abnormal_rule"),
+        "ath_mcap": analysis.get("ath_mcap", 0),
+        "min_ath_mcap": analysis.get("min_ath_mcap", 0),
+        "current_mcap": current_mcap,
+        "first_signal_mcap": first_mcap,
+        "first_signal_ts": to_int((baseline or {}).get("first_signal_ts")),
+        "first_signal_delta_mcap": first_delta,
+        "first_signal_change_pct": first_change_pct,
+        "min_abnormal_mcap": analysis.get("min_abnormal_mcap", 0),
+        "max_abnormal_mcap": analysis.get("max_abnormal_mcap", 0),
+        "price_change_pct": analysis.get("price_change_pct", 0),
+        "required_price_change_pct": analysis.get("required_price_change_pct", 0),
+        "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
+        "required_pool_liquidity": analysis.get("required_pool_liquidity", 0),
+        "pool_main_exchange": pool_summary.get("main_exchange", ""),
+        "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
+        "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
+        "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),
+        "distribution_pct_delta": analysis.get("distribution_pct_delta", 0),
+        "netflow_usd": analysis.get("netflow_usd", 0),
+        "score": analysis.get("score", 0),
+        "history_count": analysis.get("history_count", 0),
+        "reasons": analysis.get("reasons", []),
+        "symbol": token.get("symbol"),
+        "address": address,
+    }
+
+
 def notify_skip_reason(analysis: dict[str, Any]) -> str:
     return "; ".join(analysis.get("reasons") or ["未满足异动检测条件"])
 
 
-def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
+def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_update_allowed: bool = False) -> bool:
     address = token_address(token)
     raw_holders = fetch_top100_holders(address)
     if not raw_holders:
@@ -1412,6 +1583,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
+    baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
         f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
@@ -1423,34 +1595,70 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool) -> bool:
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis) and not already_notified:
-        pool_summary = summary.get("pool") or {}
-        web_extra = {
-            "signal_type": analysis.get("signal_type"),
-            "abnormal_rule": analysis.get("abnormal_rule"),
-            "ath_mcap": analysis.get("ath_mcap", 0),
-            "min_ath_mcap": analysis.get("min_ath_mcap", 0),
-            "current_mcap": analysis.get("current_mcap", calc_mcap(token)),
-            "min_abnormal_mcap": analysis.get("min_abnormal_mcap", 0),
-            "max_abnormal_mcap": analysis.get("max_abnormal_mcap", 0),
-            "price_change_pct": analysis.get("price_change_pct", 0),
-            "required_price_change_pct": analysis.get("required_price_change_pct", 0),
-            "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
-            "required_pool_liquidity": analysis.get("required_pool_liquidity", 0),
-            "pool_main_exchange": pool_summary.get("main_exchange", ""),
-            "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
-            "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
-            "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),
-            "distribution_pct_delta": analysis.get("distribution_pct_delta", 0),
-            "netflow_usd": analysis.get("netflow_usd", 0),
-            "score": analysis.get("score", 0),
-            "history_count": analysis.get("history_count", 0),
-            "reasons": analysis.get("reasons", []),
-            "symbol": token.get("symbol"),
-            "address": token_address(token),
-        }
+        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
         send_tg(abnormal_signal_text(token, analysis), extra=web_extra)
     elif notify and should_notify(analysis) and already_notified:
-        print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
+        if frontend_update_allowed or should_notify(analysis):
+            web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+            publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+            print(
+                f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
+                f"frontend updated mcap ${web_extra.get('first_signal_mcap', 0):,.0f}->${web_extra.get('current_mcap', 0):,.0f} "
+                f"({web_extra.get('first_signal_change_pct', 0):+.1f}%)"
+            )
+        else:
+            print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
+
+    # EMA 9/26 crossover detection (independent of abnormal signal)
+    if notify and (frontend_update_allowed or should_notify(analysis)) and candles and len(candles) >= 30:
+        prices = [c["close"] for c in candles]
+        crossover = detect_ema_crossover(prices)
+        if crossover and crossover["type"] == "golden_cross":
+            crossover_signal_type = f"ema_golden_cross"
+            ema_already = previous_signal_exists(address, crossover_signal_type)
+            ema_baseline = first_signal_baseline(address, crossover_signal_type)
+            current_mcap = to_float(summary.get("mcap"))
+            pool_liq = to_float(summary.get("pool", {}).get("total_liquidity"))
+            pool_rat = to_float(summary.get("pool", {}).get("liquidity_mcap_ratio"))
+            first_mcap = to_float(ema_baseline.get("first_signal_mcap")) or current_mcap
+            first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
+            first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
+            ema_extra = {
+                "signal_type": crossover_signal_type,
+                "crossover_type": crossover["type"],
+                "ema9": crossover["ema9"],
+                "ema26": crossover["ema26"],
+                "strength": crossover["strength"],
+                "bars_below": crossover.get("bars_below_before_cross", 0),
+                "symbol": token.get("symbol"),
+                "address": address,
+                "current_mcap": current_mcap,
+                "first_signal_mcap": first_mcap,
+                "first_signal_ts": to_int(ema_baseline.get("first_signal_ts")),
+                "first_signal_delta_mcap": first_delta,
+                "first_signal_change_pct": first_change_pct,
+                "pool_liquidity": pool_liq,
+                "pool_mcap_ratio": pool_rat,
+            }
+            if not ema_already:
+                send_tg(ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat),
+                        extra=ema_extra)
+                # Save as snapshot with ema signal type
+                save_snapshot(scan_id + "_ema", token, summary, holders,
+                              {"signal_type": crossover_signal_type, "score": 80,
+                               "crossover": crossover})
+                print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)}")
+            else:
+                publish_frontend_signal_update(
+                    ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat),
+                    ema_extra,
+                    status="frontend_update",
+                )
+                print(
+                    f"{token_label(token)} EMA golden cross already notified, frontend updated "
+                    f"mcap ${first_mcap:,.0f}->${current_mcap:,.0f} ({first_change_pct:+.1f}%)"
+                )
+
     return True
 
 
@@ -1549,7 +1757,7 @@ def scan_once(args: argparse.Namespace) -> None:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
                 continue
-            if handle_token(scan_id, token, args.notify):
+            if handle_token(scan_id, token, args.notify, frontend_update_allowed=is_watchlist):
                 processed += 1
         except Exception as exc:
             print(f"{token_label(token)} failed: {exc}")

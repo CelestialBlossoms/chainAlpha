@@ -190,6 +190,33 @@
         const address = extra.address || item.ca || "";
         if (!address) return null;
         const signalType = extra.signal_type || "watch";
+
+        // EMA golden cross is a special bottom signal
+        if (signalType === "ema_golden_cross") {
+          return {
+            id: item.id, ts: safeNum(item.ts), time: fmtTime(item.ts),
+            source: item.source || "", status: item.status || "", address, chain: "sol",
+            symbol: extra.symbol || item.title || "UNKNOWN", name: "",
+            narrative: `EMA金叉: EMA9上穿EMA26 (${extra.strength || "normal"})`,
+            mcap: safeNum(extra.current_mcap), holders: 0, feeSol: 0, tradeVolume: 0,
+            priceChange: 0, wave: `EMA9=${extra.ema9?.toFixed(10)}`, drawdown: 0,
+            repeatCount: 1, repeatType: "EMA金叉",
+            capPath: `EMA26下方${extra.bars_below || 0}根后金叉`, holderDelta: 0,
+            pool: "", liquidity: safeNum(extra.pool_liquidity),
+            createdTime: "", age: "", verdict: "ema_golden_cross",
+            trend: {}, tags: {}, top10: {}, top100: {}, bottomProfit: {},
+            rawText: item.text || "", rawStats: extra,
+            isNew: false, isBottom: true,
+            athMcap: 0, abnormalRule: `EMA9×EMA26金叉`,
+            poolMcapRatio: safeNum(extra.pool_mcap_ratio),
+            firstSignalMcap: safeNum(extra.first_signal_mcap),
+            firstSignalChangePct: safeNum(extra.first_signal_change_pct),
+            firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
+            poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
+            historyCount: 0, reasons: [`EMA9(${extra.ema9?.toFixed(10)}) 上穿 EMA26(${extra.ema26?.toFixed(10)})`],
+          };
+        }
+
         const poolLiquidity = safeNum(extra.pool_total_liquidity);
         const poolMcapRatio = safeNum(extra.pool_mcap_ratio);
         if (signalType === "watch" || poolLiquidity < 4000 || poolMcapRatio < 0.10) return null;
@@ -240,6 +267,9 @@
           isBottom: true,
           athMcap: safeNum(extra.ath_mcap),
           abnormalRule: extra.abnormal_rule || "",
+          firstSignalMcap: safeNum(extra.first_signal_mcap),
+          firstSignalChangePct: safeNum(extra.first_signal_change_pct),
+          firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
           poolMcapRatio,
           poolMcapRatioText: extra.pool_mcap_ratio_text || "",
           accumulationPct: safeNum(extra.accumulation_pct_delta),
@@ -427,6 +457,27 @@
     }
 
     function renderDetailHtml(signal) {
+      if (signal.verdict === "ema_golden_cross") {
+        return `
+          <div class="metric-grid">
+            ${metric("市值", formatCap(signal.mcap))}
+            ${metric("信号", "EMA 金叉", "green-text")}
+            ${metric("强度", htmlEscape(signal.wave || "-"))}
+            ${metric("池/市值", `${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%`)}
+            ${metric("流动性", formatCap(signal.liquidity))}
+            ${metric("EMA26下方", `${htmlEscape(signal.capPath || "-")}`)}
+            ${metric("首次信号市值", formatCap(signal.firstSignalMcap || signal.mcap))}
+            ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
+          </div>
+          <section class="detail-section">
+            <h3>EMA 9/26 金叉信号</h3>
+            <p>EMA9 从下方上穿 EMA26，短期均线开始走强。</p>
+            <p>${htmlEscape(signal.reasons[0] || "")}</p>
+            <p>${htmlEscape(signal.narrative || "")}</p>
+          </section>
+        `;
+      }
+
       if (signal.isDaily1m) {
         const zoneColor = signal.m1Zone === "red" ? "red-text" : (signal.m1Zone === "yellow" ? "" : "green-text");
         return `
@@ -456,6 +507,8 @@
             ${metric("池/市值", `${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% (${htmlEscape(signal.poolMcapRatioText)})`)}
             ${metric("流动性", formatCap(signal.liquidity))}
             ${metric("快照历史", `${safeNum(signal.historyCount)}次`)}
+            ${metric("首次异动市值", formatCap(signal.firstSignalMcap || signal.mcap))}
+            ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
           </div>
           <div class="metric-grid two">
             ${metric("增持", `+${safeNum(signal.accumulationPct * 100).toFixed(2)}%`, "green-text")}
@@ -548,8 +601,12 @@
           : (signal.m1Zone === "yellow" ? '<span class="badge badge-orange">观察区</span>' : '<span class="badge badge-green">安全区</span>');
         badges = zoneBadge;
       } else if (signal.isBottom) {
-        const isAbnormal = signal.verdict === "底部异动";
-        badges = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
+        if (signal.verdict === "ema_golden_cross") {
+          badges = '<span class="badge badge-blue">EMA金叉</span>';
+        } else {
+          const isAbnormal = signal.verdict === "底部异动";
+          badges = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
+        }
       } else if (signal.repeatCount > 1) {
         badges = `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>`;
       } else {
