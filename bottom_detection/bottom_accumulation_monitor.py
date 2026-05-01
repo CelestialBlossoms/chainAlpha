@@ -1046,8 +1046,9 @@ def detect_ema_crossover(prices):
     ema9 = compute_ema(prices, 9)
     ema26 = compute_ema(prices, 26)
 
-    # Check last 3 bars for crossovers
-    for i in range(len(prices) - 1, max(len(prices) - 4, 26), -1):
+    # Check recent bars for crossovers (wider window: ~1h for 5m candles)
+    lookback = min(12, len(prices) - 27)
+    for i in range(len(prices) - 1, len(prices) - 1 - lookback, -1):
         if ema9[i] <= 0 or ema26[i] <= 0:
             continue
 

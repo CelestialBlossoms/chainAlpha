@@ -11,7 +11,8 @@
       "Read(//tmp/**)",
       "Bash(gmgn-cli portfolio *)",
       "Bash(export GMGN_API_KEY=gmgn_d600103d8f4dd84c06bd88672c290647)",
-      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'exchange={d.get\\(\\\\\"exchange\\\\\"\\)}, liquidity=\\\\${d.get\\(\\\\\"liquidity\\\\\"\\)}'\\)\")"
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'exchange={d.get\\(\\\\\"exchange\\\\\"\\)}, liquidity=\\\\${d.get\\(\\\\\"liquidity\\\\\"\\)}'\\)\")",
+      "WebSearch"
     ]
   }
 }
