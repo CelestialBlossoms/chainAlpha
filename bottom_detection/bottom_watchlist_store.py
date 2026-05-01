@@ -23,7 +23,9 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap, daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false)
+            SELECT ca, create_at, added_at, source, peak_mcap, last_mcap,
+                   daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false),
+                   last_pool_liquidity, last_pool_mcap_ratio, fee_sol, symbol
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -40,6 +42,10 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "token_created_at": row[7] if len(row) > 7 else None,
                 "ath_mcap": row[8] if len(row) > 8 else None,
                 "blacklisted": bool(row[9]) if len(row) > 9 else False,
+                "last_pool_liquidity": row[10] if len(row) > 10 else None,
+                "last_pool_mcap_ratio": row[11] if len(row) > 11 else None,
+                "fee_sol": row[12] if len(row) > 12 else None,
+                "symbol": row[13] if len(row) > 13 else None,
             }
             for row in cur.fetchall()
         ]
@@ -126,6 +132,10 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS ath_mcap NUMERIC DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS last_pool_mcap_ratio NUMERIC DEFAULT 0;
             """
         )
 
@@ -317,7 +327,16 @@ def clean_redis_stream_for_ca(address: str) -> int:
     return deleted
 
 
-def update_watchlist_seen(address: str, mcap: float) -> None:
+def update_watchlist_seen(
+    address: str,
+    mcap: float,
+    pool_liquidity: float = 0,
+    pool_mcap_ratio: float = 0,
+    fee_sol: float | None = None,
+    symbol: str | None = None,
+) -> None:
+    ensure_watchlist_daily_mcap_columns()
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
@@ -325,10 +344,14 @@ def update_watchlist_seen(address: str, mcap: float) -> None:
             UPDATE bottom_watchlist_tokens
             SET last_seen_at = now(),
                 peak_mcap = GREATEST(COALESCE(peak_mcap, 0), %s),
-                last_mcap = %s
+                last_mcap = %s,
+                last_pool_liquidity = %s,
+                last_pool_mcap_ratio = %s,
+                fee_sol = GREATEST(COALESCE(fee_sol, 0), COALESCE(%s, 0)),
+                symbol = COALESCE(%s, symbol)
             WHERE ca = %s
             """,
-            (mcap, mcap, address),
+            (mcap, mcap, pool_liquidity, pool_mcap_ratio, fee_sol, symbol, address),
         )
 
     db_op(_op)

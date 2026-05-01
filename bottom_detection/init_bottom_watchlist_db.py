@@ -54,6 +54,10 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS ath_mcap NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS last_pool_mcap_ratio NUMERIC DEFAULT 0;
         """
     )
     print("Initialized bottom_watchlist_tokens")

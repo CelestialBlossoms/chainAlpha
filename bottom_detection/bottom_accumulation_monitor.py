@@ -77,10 +77,12 @@ BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT = float(os.getenv("BOTTOM_ABNORMAL_MIN_PRICE_UP
 WATCHLIST_DELETE_BELOW_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_MCAP_USD", "40000"))
 DAILY_MCAP_MILESTONE_USD = float(os.getenv("BOTTOM_DAILY_MCAP_MILESTONE_USD", "1000000"))
 DAILY_MCAP_MIN_FEE_SOL = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_FEE_SOL", "20"))
+DAILY_MCAP_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_POOL_MCAP_RATIO", "0.07"))
 MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", "0"))
 MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "0"))
 BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD", "4000"))
 BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO", "0.10"))
+WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD", "10000"))
 
 BOTTOM_ABNORMAL_RULES = [
     {
@@ -1322,7 +1324,7 @@ def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_f
         f"CA: {address}\n"
         f"市值: ${current_mcap:,.0f} | 要求: >=${DAILY_MCAP_MILESTONE_USD:,.0f}\n"
         f"手续费: {current_fee_sol:.2f} SOL | 要求: >={DAILY_MCAP_MIN_FEE_SOL:.2f} SOL\n"
-        f"池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%} | 要求: >=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} / >={BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}\n"
+        f"池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%} | 要求: >=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} / >{DAILY_MCAP_MIN_POOL_MCAP_RATIO:.1%}\n"
         f"创建年龄: {age_text}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
@@ -1383,11 +1385,11 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
     pool_summary = summarize_pools(token)
     pool_liquidity = to_float(pool_summary.get("total_liquidity"))
     pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
-    if pool_liquidity < BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD or pool_ratio < BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:
+    if pool_liquidity < BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD or pool_ratio < DAILY_MCAP_MIN_POOL_MCAP_RATIO:
         print(
             f"{token_label(token)} daily 1M skip pool "
             f"liq=${pool_liquidity:,.0f}/${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} "
-            f"pool/mcap={pool_ratio:.1%}/{BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:.1%}"
+            f"pool/mcap={pool_ratio:.1%}/{DAILY_MCAP_MIN_POOL_MCAP_RATIO:.1%}"
         )
         return
     upsert_daily_mcap_watchlist_token(
@@ -1413,7 +1415,7 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
             "pool_total_liquidity": pool_liquidity,
             "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
             "pool_mcap_ratio": pool_ratio,
-            "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
+            "required_pool_mcap_ratio": DAILY_MCAP_MIN_POOL_MCAP_RATIO,
             "created_ts": token_created_ts(token),
             "age_sec": age_sec,
         }
@@ -1711,9 +1713,28 @@ def scan_once(args: argparse.Namespace) -> None:
             current_mcap = calc_mcap(token)
             pool_data = fetch_token_pool(address)
             token = attach_token_pool(token, pool_data)
+            pool_summary = summarize_pools(token)
+            pool_liquidity = to_float(pool_summary.get("total_liquidity"))
+            pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+            if pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD and is_watchlist:
+                deleted = delete_watchlist_token(address)
+                if deleted:
+                    print(
+                        f"{address[:8]} watchlist deleted: "
+                        f"pool ${pool_liquidity:,.0f}<${WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:,.0f}"
+                    )
+                skipped += 1
+                continue
             maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
             if is_watchlist:
-                update_watchlist_seen(address, current_mcap)
+                update_watchlist_seen(
+                    address,
+                    current_mcap,
+                    pool_liquidity=pool_liquidity,
+                    pool_mcap_ratio=pool_mcap_ratio,
+                    fee_sol=fee_sol(token),
+                    symbol=token.get("symbol"),
+                )
                 daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
                 if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
                     gmgn_ts = int(to_float(token.get("_gmgn_created_ts") or info.get("creation_timestamp") or info.get("open_timestamp") or 0))
@@ -1722,7 +1743,7 @@ def scan_once(args: argparse.Namespace) -> None:
                         pool_summary = summarize_pools(token)
                         pool_liq = to_float(pool_summary.get("total_liquidity"))
                         pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
-                        if pool_liq >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD and pool_ratio >= BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO:
+                        if pool_liq >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD and pool_ratio >= DAILY_MCAP_MIN_POOL_MCAP_RATIO:
                             peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
                             publish_daily_1m_frontend_update(token, current_mcap, peak)
                 if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
@@ -1779,6 +1800,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cleanup_stale_watchlist_tokens() -> None:
+    """Remove watchlist tokens whose MCap has dropped near zero."""
+    from bottom_detection.bottom_watchlist_store import delete_watchlist_token
+    tokens = fetch_watchlist_records()
+    cleaned = 0
+    for row in tokens:
+        ca = str(row.get("ca") or "").strip()
+        if not ca: continue
+        last_mcap = to_float(row.get("last_mcap"))
+        peak_mcap = to_float(row.get("peak_mcap"))
+        # Delete truly dead tokens (absolute fall below $10K, or >99.9% drop = fake MCap)
+        is_dead_absolute = peak_mcap >= 500_000 and last_mcap < 10_000
+        is_dead_fake_mcap = peak_mcap >= 500_000 and last_mcap > 0 and (last_mcap / peak_mcap) < 0.001
+        if is_dead_absolute or is_dead_fake_mcap:
+            delete_watchlist_token(ca)
+            print(f"  Cleanup: removed dead token {ca[:16]}... (peak=${peak_mcap:,.0f} -> last=${last_mcap:,.0f})")
+            cleaned += 1
+    if cleaned:
+        print(f"  Cleanup: removed {cleaned} dead watchlist tokens")
+
+
 def main() -> None:
     global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL
     args = build_parser().parse_args()
@@ -1787,6 +1829,7 @@ def main() -> None:
     MIN_FEE_SOL = args.min_fee_sol
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
+    cleanup_stale_watchlist_tokens()
     while True:
         scan_once(args)
         if args.once or not args.watch:
