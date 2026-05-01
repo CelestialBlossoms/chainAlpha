@@ -70,6 +70,8 @@ BOTTOM_NEW_DROP_LEVELS = tuple(
     for item in os.getenv("BOTTOM_NEW_DROP_LEVELS", "500000,400000").split(",")
     if item.strip()
 )
+BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD = float(os.getenv("BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD", "200000"))
+BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT = float(os.getenv("BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT", "30"))
 BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD", "5000000"))
 BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD", "50000"))
 BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD", "500000"))
@@ -1124,11 +1126,15 @@ def analyze_abnormal_snapshot(
     window_pool_stats = pool_change(current_summary, (recent_history[-1].get("summary") if recent_history else None) or {})
     kline_summary = current_summary.get("kline") or {}
     price_change_pct = to_float(kline_summary.get("change_pct"))
+    kline_low = to_float(kline_summary.get("low"))
+    kline_close = to_float(kline_summary.get("close"))
     current_mcap = to_float(current_summary.get("mcap"))
     ath_mcap = to_float(current_summary.get("ath_mcap"))
+    bottom_low_mcap = current_mcap * (kline_low / kline_close) if current_mcap > 0 and kline_low > 0 and kline_close > 0 else 0.0
     token_age = to_int(current_summary.get("age_sec"))
     is_under_24h = token_age <= 0 or token_age <= NEW_TOKEN_AGE_CUTOFF_SEC
     price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
+    new_revival_price_ready = price_change_pct >= BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT
     pool_ratio = to_float(pool_stats.get("pool_mcap_ratio"))
     pool_liquidity = to_float(pool_stats.get("pool_total_liquidity"))
     pool_liquidity_ready = pool_liquidity >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD
@@ -1146,8 +1152,17 @@ def analyze_abnormal_snapshot(
         and price_ready
         and pool_ready
     )
+    new_revival_ready = (
+        is_under_24h
+        and bottom_low_mcap > 0
+        and bottom_low_mcap <= BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD
+        and new_revival_price_ready
+        and pool_ready
+    )
     if drop_level > 0 and pool_ready:
         signal_type = f"drop_{int(drop_level / 10000)}w"
+    elif new_revival_ready:
+        signal_type = "new_revival"
     elif old_abnormal_ready:
         signal_type = "abnormal"
     else:
@@ -1173,6 +1188,17 @@ def analyze_abnormal_snapshot(
             f"新币回落{rule_name}: 创建{token_age / 3600:.1f}h, "
             f"ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}<=${drop_level:,.0f}"
         )
+    elif new_revival_ready:
+        rule_name = "NEW_BOTTOM_REVIVAL"
+        min_ath_mcap = 0
+        min_mcap = 0
+        max_mcap = 0
+        rule_reason = (
+            f"新币底部启动: 创建{token_age / 3600:.1f}h, "
+            f"K线低点市值约${bottom_low_mcap:,.0f}<=${BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD:,.0f}, "
+            f"当前市值${current_mcap:,.0f}, "
+            f"价格上涨{price_change_pct:.1f}%"
+        )
     elif old_abnormal_ready:
         rule_name = "OLD_MCAP_40W_UP30"
         min_ath_mcap = 0
@@ -1190,7 +1216,8 @@ def analyze_abnormal_snapshot(
         if is_under_24h:
             rule_reason = (
                 f"未命中新币回落: 创建{token_age / 3600:.1f}h, "
-                f"ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}"
+                f"ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}, "
+                f"K线低点市值约${bottom_low_mcap:,.0f}"
             )
         else:
             rule_reason = (
@@ -1228,11 +1255,14 @@ def analyze_abnormal_snapshot(
         "is_under_24h": is_under_24h,
         "drop_level_mcap": drop_level,
         "price_confirmation_ready": price_ready,
+        "new_revival_price_confirmation_ready": new_revival_price_ready,
+        "bottom_low_mcap": bottom_low_mcap,
+        "required_bottom_low_mcap": BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD,
         "pool_confirmation_ready": pool_ready,
         "pool_liquidity_confirmation_ready": pool_liquidity_ready,
         "pool_ratio_confirmation_ready": pool_ratio_ready,
         "price_change_pct": price_change_pct,
-        "required_price_change_pct": 0 if signal_type.startswith("drop_") else BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT,
+        "required_price_change_pct": 0 if signal_type.startswith("drop_") else (BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT if signal_type == "new_revival" else BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT),
         "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
         "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
         "current_mcap": current_mcap,
@@ -1341,14 +1371,14 @@ def daily_1m_zone(mcap: float):
     return "red", f"${mcap/1000:.0f}K"
 
 
-def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
+def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquidity: float | None = None):
     address = token_address(token)
     if address and is_watchlist_blacklisted(address):
         print(f"{address[:8]} daily 1M frontend update blacklisted, skipped")
         return
     zone, zone_label = daily_1m_zone(current_mcap)
     drop = round((1 - current_mcap / max(peak_mcap, 1)) * 100, 1)
-    milestone_date = token.get("watchlist_daily_mcap_date") or ""
+    milestone_date = token.get("watchlist_daily_mcap_date") or datetime.now().date().isoformat()
     extra = {
         "source_type": "daily_1m",
         "symbol": token.get("symbol"),
@@ -1360,7 +1390,7 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap):
         "zone": zone,
         "zone_label": zone_label,
         "drop_from_peak_pct": drop,
-        "liquidity": to_float(token.get("liquidity") or token.get("pool_liquidity")),
+        "liquidity": to_float(pool_liquidity if pool_liquidity is not None else (token.get("liquidity") or token.get("pool_liquidity"))),
         "holders": token.get("holder_count", 0),
     }
     text = f"每日1M | ${token.get('symbol', '?')}\n市值: ${current_mcap:,.0f} | 峰值: ${peak_mcap:,.0f} | {zone_label}"
@@ -1425,6 +1455,7 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
             "age_sec": age_sec,
         }
         send_tg(daily_mcap_signal_text(token, current_mcap, current_fee_sol), extra=extra)
+        publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquidity=pool_liquidity)
         mark_daily_mcap_watchlist_notified(address)
 
 
@@ -1436,6 +1467,7 @@ def signal_type_text(signal_type: str) -> str:
         "abnormal": "异动检测",
         "drop_50w": "新币跌破50W",
         "drop_40w": "新币跌破40W",
+        "new_revival": "新币底部启动",
     }
     return mapping.get(signal_type, signal_type or "未知")
 
@@ -1541,6 +1573,7 @@ def build_bottom_signal_extra(
     address = token_address(token)
     current_mcap = to_float(analysis.get("current_mcap", calc_mcap(token)))
     first_mcap = to_float((baseline or {}).get("first_signal_mcap")) or current_mcap
+    first_ts = to_int((baseline or {}).get("first_signal_ts")) or now_ts()
     first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
     first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
     pool_summary = summary.get("pool") or {}
@@ -1551,13 +1584,15 @@ def build_bottom_signal_extra(
         "min_ath_mcap": analysis.get("min_ath_mcap", 0),
         "current_mcap": current_mcap,
         "first_signal_mcap": first_mcap,
-        "first_signal_ts": to_int((baseline or {}).get("first_signal_ts")),
+        "first_signal_ts": first_ts,
         "first_signal_delta_mcap": first_delta,
         "first_signal_change_pct": first_change_pct,
         "min_abnormal_mcap": analysis.get("min_abnormal_mcap", 0),
         "max_abnormal_mcap": analysis.get("max_abnormal_mcap", 0),
         "price_change_pct": analysis.get("price_change_pct", 0),
         "required_price_change_pct": analysis.get("required_price_change_pct", 0),
+        "bottom_low_mcap": analysis.get("bottom_low_mcap", 0),
+        "required_bottom_low_mcap": analysis.get("required_bottom_low_mcap", 0),
         "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
         "required_pool_liquidity": analysis.get("required_pool_liquidity", 0),
         "pool_main_exchange": pool_summary.get("main_exchange", ""),

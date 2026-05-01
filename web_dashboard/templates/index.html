@@ -210,6 +210,8 @@
             athMcap: 0, abnormalRule: `EMA9×EMA26金叉`,
             poolMcapRatio: safeNum(extra.pool_mcap_ratio),
             firstSignalMcap: safeNum(extra.first_signal_mcap),
+            firstSignalTs: safeNum(extra.first_signal_ts),
+            firstSignalTime: fmtTime(extra.first_signal_ts || item.ts),
             firstSignalChangePct: safeNum(extra.first_signal_change_pct),
             firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
             poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
@@ -220,7 +222,7 @@
         const poolLiquidity = safeNum(extra.pool_total_liquidity);
         const poolMcapRatio = safeNum(extra.pool_mcap_ratio);
         if (signalType === "watch" || poolLiquidity < 4000 || poolMcapRatio < 0.10) return null;
-        const isAbnormal = signalType === "abnormal";
+        const isAbnormal = signalType === "abnormal" || signalType === "new_revival";
         return {
           id: item.id,
           ts: safeNum(item.ts),
@@ -240,14 +242,14 @@
           wave: extra.abnormal_rule || "",
           drawdown: 0,
           repeatCount: 1,
-          repeatType: signalType === "abnormal" ? "底部异动" : "底部观察",
+          repeatType: isAbnormal ? "底部异动" : "底部观察",
           capPath: `ATH $${formatCap(extra.ath_mcap)} → 当前 $${formatCap(extra.current_mcap)}`,
           holderDelta: 0,
           pool: extra.pool_main_exchange || "",
           liquidity: poolLiquidity,
           createdTime: "",
           age: "",
-          verdict: signalType === "abnormal" ? "底部异动" : "底部观察",
+          verdict: isAbnormal ? "底部异动" : "底部观察",
           trend: {},
           tags: {
             bottom: {
@@ -268,6 +270,8 @@
           athMcap: safeNum(extra.ath_mcap),
           abnormalRule: extra.abnormal_rule || "",
           firstSignalMcap: safeNum(extra.first_signal_mcap),
+          firstSignalTs: safeNum(extra.first_signal_ts),
+          firstSignalTime: fmtTime(extra.first_signal_ts || item.ts),
           firstSignalChangePct: safeNum(extra.first_signal_change_pct),
           firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
           poolMcapRatio,
@@ -467,6 +471,7 @@
             ${metric("流动性", formatCap(signal.liquidity))}
             ${metric("EMA26下方", `${htmlEscape(signal.capPath || "-")}`)}
             ${metric("首次信号市值", formatCap(signal.firstSignalMcap || signal.mcap))}
+            ${metric("首次信号时间", htmlEscape(signal.firstSignalTime || signal.time || "-"))}
             ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
           </div>
           <section class="detail-section">
@@ -508,6 +513,7 @@
             ${metric("流动性", formatCap(signal.liquidity))}
             ${metric("快照历史", `${safeNum(signal.historyCount)}次`)}
             ${metric("首次异动市值", formatCap(signal.firstSignalMcap || signal.mcap))}
+            ${metric("首次异动时间", htmlEscape(signal.firstSignalTime || signal.time || "-"))}
             ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
           </div>
           <div class="metric-grid two">
@@ -619,7 +625,7 @@
       const riskLine = signal.isDaily1m
         ? `<span>峰值 ${formatCap(signal.m1PeakMcap)} · 当前 ${formatCap(signal.mcap)} · 跌${safeNum(signal.m1DropPct).toFixed(1)}%</span>`
         : (signal.isBottom
-          ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}%</span>`
+          ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% · 首次 ${htmlEscape(signal.firstSignalTime || signal.time || "-")}</span>`
           : `<span>${htmlEscape(signal.verdict || "-")} · Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% · 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%</span>`);
 
       const stat4label = signal.isDaily1m ? "跌幅" : (signal.isBottom ? "档位" : "复推");

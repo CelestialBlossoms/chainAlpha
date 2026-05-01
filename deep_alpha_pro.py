@@ -16,7 +16,7 @@ from tg_alert_stream import publish_tg_alert
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
-TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "Pump.fun").split(",") if item.strip()]
+TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "").split(",") if item.strip()]
 LOW_MCAP_STRICT_USD = 10_000
 MID_MCAP_STRICT_USD = 20_000
 LOW_MCAP_MIN_UP_PCT = 0.30
