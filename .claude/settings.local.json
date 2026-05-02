@@ -9,7 +9,14 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'exchange={d.get\\(\\\\\"exchange\\\\\"\\)}, liquidity=\\\\${d.get\\(\\\\\"liquidity\\\\\"\\)}'\\)\")",
       "WebSearch",
       "Bash(gmgn-cli market *)",
-      "Bash(D:/software/anaconda/envs/py312/python.exe -c ' *)"
+      "Bash(D:/software/anaconda/envs/py312/python.exe -c ' *)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe analyze_kline_quick.py 32CdQdBUxbCsLy5AUHWmyidfwhgGUr9N573NBUrDpump --resolution 4h --lookback 75d)",
+      "Bash(mkdir -p scripts)",
+      "Bash(mv analyze_kline_quick.py analyze_accumulation_quant.py analyze_wallet_pnl.py analyze_pool_manipulation.py analyze_volume_price_divergence.py analyze_watchlist_kline_patterns.py scrape_wallet_txs.py blacklist_ca.py scripts/)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 15m --lookback 7d)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 1d --lookback 90d)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 4h --lookback 14d)",
+      "Bash(gmgn-cli token *)"
     ]
   }
 }

@@ -41,6 +41,7 @@ MIN_CANDIDATE_HOLDER_COUNT = 500
 MIN_BUY_SCORE = 20
 MIN_INFLOW_STREAK = 2
 MIN_MCAP_USD = float(os.getenv("DEEP_ALPHA_MIN_MCAP_USD", "7000"))
+FRONTEND_REMOVE_BELOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_FRONTEND_REMOVE_BELOW_MCAP_USD", "10000"))
 MAX_DEV_BUY_USD = 500
 MAX_DEV_HOLD_RATE = 0.30
 MAX_MCAP_USD = 1_000_000
@@ -351,6 +352,36 @@ def alert_candidate_redis_key(address):
 
 def alert_candidate_miss_redis_key(address):
     return redis_key(ALERT_MISS_REDIS_KEY_PREFIX, address)
+
+def frontend_removal_redis_key(address):
+    return redis_key("deep_alpha:frontend_removal", address)
+
+def publish_frontend_removal_once(address, symbol=None, mcap=0, reason=""):
+    if not address:
+        return False
+    client = get_redis_client()
+    if client is not None:
+        try:
+            if not client.set(frontend_removal_redis_key(address), "1", nx=True, ex=ALERT_REDIS_TTL_SEC):
+                return False
+        except Exception as exc:
+            print(f"  [Redis] 前端移除去重失败 {address[:8]}: {exc}")
+    text = f"移除前端展示 | ${symbol or 'UNKNOWN'}\n市值: ${safe_float(mcap):,.0f}\nCA: {address}"
+    publish_tg_alert(
+        text,
+        "deep_alpha_removal",
+        status="delete",
+        ca=address,
+        extra={
+            "address": address,
+            "symbol": symbol or "",
+            "mcap": safe_float(mcap),
+            "remove_below_mcap": FRONTEND_REMOVE_BELOW_MCAP_USD,
+            "reason": reason or f"市值低于 ${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}",
+        },
+    )
+    reset_price_observation(address)
+    return True
 
 def normalize_candidate_snapshot(data):
     if not isinstance(data, dict):
@@ -2273,12 +2304,24 @@ def scan_pro():
                     if not addr:
                         continue
                     trend_mcap = calc_mcap(t)
+                    existing_candidate = get_candidate_snapshot(addr)
+                    if existing_candidate and 0 < trend_mcap < FRONTEND_REMOVE_BELOW_MCAP_USD:
+                        if publish_frontend_removal_once(
+                            addr,
+                            symbol=t.get("symbol") or t.get("name"),
+                            mcap=trend_mcap,
+                            reason=f"当前市值 ${trend_mcap:,.0f} < ${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}",
+                        ):
+                            print(
+                                f"  [前端移除] {token_observation_label(addr, t.get('symbol'))} "
+                                f"市值 ${trend_mcap:,.0f}<${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}"
+                            )
+                        continue
                     if 0 < trend_mcap < MIN_MCAP_USD:
                         print(f"  [跳过] 市值过低 {token_observation_label(addr, t.get('symbol'))}: ${trend_mcap:,.0f}<${MIN_MCAP_USD:,.0f}")
                         continue
                     if trend_mcap > MAX_MCAP_USD:
                         continue
-                    existing_candidate = get_candidate_snapshot(addr)
                     trend_price = first_float(t, keys=("price",))
                     trend_holder_count = first_float(
                         t,

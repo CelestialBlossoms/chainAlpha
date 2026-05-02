@@ -732,8 +732,8 @@
       if (isTestItem(item)) return;
       if (!item || !item.id || state.seenIds.has(item.id)) return;
 
-      // Handle blacklist removal: delete CA from frontend memory
-      if (item.source === "blacklist_removal") {
+      // Handle removal events: delete CA from frontend memory
+      if (item.source === "blacklist_removal" || item.source === "deep_alpha_removal" || item.status === "delete") {
         const addr = (item.extra && item.extra.address) || item.ca || "";
         if (addr && state.byAddress.has(addr)) {
           state.byAddress.delete(addr);
