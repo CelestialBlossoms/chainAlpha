@@ -59,6 +59,7 @@ YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", 
 MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "1h")
 KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(24 * 3600)))
 KLINE_INCREMENT_OVERLAP_BARS = int(os.getenv("BOTTOM_KLINE_INCREMENT_OVERLAP_BARS", "10"))
+KLINE_SIGNAL_BARS = int(os.getenv("BOTTOM_KLINE_SIGNAL_BARS", "12"))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD", "1000000"))
 BOTTOM_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_MCAP_USD", "40000"))
@@ -779,16 +780,21 @@ def fetch_kline(address: str, resolution: str, token: dict[str, Any] | None = No
 def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
     if not candles:
         return {"resolution": resolution, "count": 0}
-    first = candles[0]
-    last = candles[-1]
+    signal_candles = candles[-KLINE_SIGNAL_BARS:] if KLINE_SIGNAL_BARS > 0 else candles
+    first = signal_candles[0]
+    last = signal_candles[-1]
     open_price = to_float(first.get("open"))
     close_price = to_float(last.get("close"))
-    lows = [to_float(c.get("low")) for c in candles if to_float(c.get("low")) > 0]
-    highs = [to_float(c.get("high")) for c in candles if to_float(c.get("high")) > 0]
-    total_volume = sum(to_float(c.get("volume")) for c in candles)
+    lows = [to_float(c.get("low")) for c in signal_candles if to_float(c.get("low")) > 0]
+    highs = [to_float(c.get("high")) for c in signal_candles if to_float(c.get("high")) > 0]
+    total_volume = sum(to_float(c.get("volume")) for c in signal_candles)
     return {
         "resolution": resolution,
         "count": len(candles),
+        "signal_count": len(signal_candles),
+        "signal_bars": KLINE_SIGNAL_BARS,
+        "cache_from_ts": candles[0].get("ts"),
+        "cache_to_ts": candles[-1].get("ts"),
         "from_ts": first.get("ts"),
         "to_ts": last.get("ts"),
         "open": open_price,
