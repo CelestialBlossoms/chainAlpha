@@ -1540,6 +1540,26 @@ def previous_signal_exists(address: str, signal_type: str) -> bool:
     return bool(db_op(_op))
 
 
+def previous_bottom_signal_exists(address: str) -> bool:
+    if not address:
+        return False
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s AND signal_type <> 'watch'
+            LIMIT 1
+            """,
+            (CHAIN, address),
+        )
+        return cur.fetchone() is not None
+
+    return bool(db_op(_op))
+
+
 def first_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
     if not signal_type or signal_type == "watch":
         return {}
@@ -1631,6 +1651,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
+    has_previous_bottom_signal = previous_bottom_signal_exists(address)
     baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     print(
@@ -1656,6 +1677,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             )
         else:
             print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
+    elif notify and has_previous_bottom_signal:
+        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+        publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+        print(
+            f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
+            f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
+        )
 
     # EMA 9/26 crossover detection (independent of abnormal signal)
     if notify and (frontend_update_allowed or should_notify(analysis)) and candles and len(candles) >= 30:
@@ -1765,7 +1793,17 @@ def scan_once(args: argparse.Namespace) -> None:
             pool_liquidity = to_float(pool_summary.get("total_liquidity"))
             pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
             if pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD and is_watchlist:
-                deleted = delete_watchlist_token(address)
+                deleted = delete_watchlist_token(
+                    address,
+                    "pool_liquidity_below_threshold",
+                    current_mcap=current_mcap,
+                    pool_liquidity=pool_liquidity,
+                    pool_mcap_ratio=pool_mcap_ratio,
+                    metadata={
+                        "threshold": WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD,
+                        "trigger": "scan_once",
+                    },
+                )
                 if deleted:
                     print(
                         f"{address[:8]} watchlist deleted: "
@@ -1802,7 +1840,17 @@ def scan_once(args: argparse.Namespace) -> None:
                             f"mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}"
                         )
                         continue
-                    deleted = delete_watchlist_token(address)
+                    deleted = delete_watchlist_token(
+                        address,
+                        "mcap_below_threshold",
+                        current_mcap=current_mcap,
+                        pool_liquidity=pool_liquidity,
+                        pool_mcap_ratio=pool_mcap_ratio,
+                        metadata={
+                            "threshold": WATCHLIST_DELETE_BELOW_MCAP_USD,
+                            "trigger": "scan_once",
+                        },
+                    )
                     if deleted:
                         print(
                             f"{address[:8]} watchlist deleted: "
@@ -1862,7 +1910,19 @@ def cleanup_stale_watchlist_tokens() -> None:
         is_dead_absolute = peak_mcap >= 500_000 and last_mcap < 10_000
         is_dead_fake_mcap = peak_mcap >= 500_000 and last_mcap > 0 and (last_mcap / peak_mcap) < 0.001
         if is_dead_absolute or is_dead_fake_mcap:
-            delete_watchlist_token(ca)
+            delete_watchlist_token(
+                ca,
+                "startup_dead_token_cleanup",
+                current_mcap=last_mcap,
+                metadata={
+                    "trigger": "cleanup_stale_watchlist_tokens",
+                    "is_dead_absolute": is_dead_absolute,
+                    "is_dead_fake_mcap": is_dead_fake_mcap,
+                    "peak_mcap_threshold": 500_000,
+                    "last_mcap_threshold": 10_000,
+                    "drop_ratio_threshold": 0.001,
+                },
+            )
             print(f"  Cleanup: removed dead token {ca[:16]}... (peak=${peak_mcap:,.0f} -> last=${last_mcap:,.0f})")
             cleaned += 1
     if cleaned:

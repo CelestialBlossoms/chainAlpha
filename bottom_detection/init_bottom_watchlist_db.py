@@ -58,9 +58,31 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS last_pool_mcap_ratio NUMERIC DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS bottom_watchlist_delete_audit (
+            id BIGSERIAL PRIMARY KEY,
+            ca TEXT NOT NULL,
+            deleted_at TIMESTAMPTZ DEFAULT now(),
+            reason TEXT NOT NULL,
+            source TEXT,
+            symbol TEXT,
+            peak_mcap NUMERIC DEFAULT 0,
+            last_mcap NUMERIC DEFAULT 0,
+            current_mcap NUMERIC DEFAULT 0,
+            pool_liquidity NUMERIC DEFAULT 0,
+            pool_mcap_ratio NUMERIC DEFAULT 0,
+            daily_mcap_date DATE,
+            blacklisted BOOLEAN DEFAULT false,
+            note TEXT,
+            metadata JSONB DEFAULT '{}'::jsonb
+        );
+        CREATE INDEX IF NOT EXISTS idx_bottom_watchlist_delete_audit_ca
+            ON bottom_watchlist_delete_audit(ca);
+        CREATE INDEX IF NOT EXISTS idx_bottom_watchlist_delete_audit_deleted_at
+            ON bottom_watchlist_delete_audit(deleted_at DESC);
         """
     )
-    print("Initialized bottom_watchlist_tokens")
+    print("Initialized bottom_watchlist_tokens and delete audit")
 
 
 if __name__ == "__main__":

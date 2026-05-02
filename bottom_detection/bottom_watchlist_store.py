@@ -14,6 +14,39 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from db_client import db_op
+from psycopg2.extras import Json
+
+
+def ensure_watchlist_delete_audit_table() -> None:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bottom_watchlist_delete_audit (
+                id BIGSERIAL PRIMARY KEY,
+                ca TEXT NOT NULL,
+                deleted_at TIMESTAMPTZ DEFAULT now(),
+                reason TEXT NOT NULL,
+                source TEXT,
+                symbol TEXT,
+                peak_mcap NUMERIC DEFAULT 0,
+                last_mcap NUMERIC DEFAULT 0,
+                current_mcap NUMERIC DEFAULT 0,
+                pool_liquidity NUMERIC DEFAULT 0,
+                pool_mcap_ratio NUMERIC DEFAULT 0,
+                daily_mcap_date DATE,
+                blacklisted BOOLEAN DEFAULT false,
+                note TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_watchlist_delete_audit_ca
+                ON bottom_watchlist_delete_audit(ca);
+            CREATE INDEX IF NOT EXISTS idx_bottom_watchlist_delete_audit_deleted_at
+                ON bottom_watchlist_delete_audit(deleted_at DESC);
+            """
+        )
+
+    db_op(_op)
 
 
 def fetch_watchlist_records() -> list[dict[str, Any]]:
@@ -140,6 +173,7 @@ def ensure_watchlist_daily_mcap_columns() -> None:
         )
 
     db_op(_op)
+    ensure_watchlist_delete_audit_table()
 
 
 def upsert_daily_mcap_watchlist_token(
@@ -234,9 +268,55 @@ def mark_daily_mcap_watchlist_notified(address: str) -> None:
     db_op(_op)
 
 
-def delete_watchlist_token(address: str) -> int:
+def delete_watchlist_token(
+    address: str,
+    reason: str = "unspecified",
+    *,
+    current_mcap: float = 0,
+    pool_liquidity: float = 0,
+    pool_mcap_ratio: float = 0,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    ensure_watchlist_delete_audit_table()
+
     def _op(conn):
         cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ca, source, symbol, peak_mcap, last_mcap, daily_mcap_date,
+                   COALESCE(blacklisted, false), note, last_pool_liquidity, last_pool_mcap_ratio
+            FROM bottom_watchlist_tokens
+            WHERE ca = %s
+            LIMIT 1
+            """,
+            (address,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return 0
+        cur.execute(
+            """
+            INSERT INTO bottom_watchlist_delete_audit (
+                ca, reason, source, symbol, peak_mcap, last_mcap, current_mcap,
+                pool_liquidity, pool_mcap_ratio, daily_mcap_date, blacklisted, note, metadata
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                row[0],
+                reason,
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                current_mcap,
+                pool_liquidity if pool_liquidity else row[8],
+                pool_mcap_ratio if pool_mcap_ratio else row[9],
+                row[5],
+                row[6],
+                row[7],
+                Json(metadata or {}),
+            ),
+        )
         cur.execute("DELETE FROM bottom_watchlist_tokens WHERE ca = %s", (address,))
         return cur.rowcount
 
