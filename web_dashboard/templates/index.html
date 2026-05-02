@@ -746,7 +746,8 @@
       state.seenIds.add(item.id);
       const signal = normalizeItem(item);
       if (!signal) return;
-      upsertSignal(signal, flash);
+      const silentBottomUpdate = item.source === "bottom_abnormal" && item.status === "frontend_update";
+      upsertSignal(signal, flash && !silentBottomUpdate);
       render();
     }
 
