@@ -16,7 +16,17 @@
       "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 15m --lookback 7d)",
       "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 1d --lookback 90d)",
       "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py 3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump --resolution 4h --lookback 14d)",
-      "Bash(gmgn-cli token *)"
+      "Bash(gmgn-cli token *)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe scripts/analyze_kline.py DcSLSZkhxBECsJF4Jny57c1xTaMwKo9HQMKiyXYbpump --resolution 15m --lookback 7d)",
+      "WebFetch(domain:dexscreener.com)",
+      "Bash(curl -s \"https://api.solscan.io/token/meta?token=DcSLSZkhxBECsJF4Jny57c1xTaMwKo9HQMKiyXYbpump\" -H \"User-Agent: Mozilla/5.0\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" --connect-timeout 10 https://openapi.gmgn.ai/v1/token/info?chain=sol)",
+      "Bash(address=3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump 2>&1)",
+      "Bash(ping -n 2 openapi.gmgn.ai)",
+      "Bash(D:/software/anaconda/envs/py312/python.exe *)",
+      "Bash(where gmgn-cli *)",
+      "Bash(Get-Command gmgn-cli *)",
+      "Bash(Select-Object -ExpandProperty Source)"
     ]
   }
 }

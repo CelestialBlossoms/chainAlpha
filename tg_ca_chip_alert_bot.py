@@ -1631,6 +1631,186 @@ def deepseek_chip_text(text):
     return f"DeepSeek筹码结论\n{text}\n\n"
 
 
+def estimate_token_from_holders(address, raw_holders, candles=None):
+    price = 0.0
+    supply = 0.0
+    for row in raw_holders or []:
+        if bottom_monitor.is_pool_holder(row):
+            continue
+        amount = float(row.get("amount_cur") or row.get("balance") or 0)
+        pct = float(row.get("amount_percentage") or 0)
+        usd = float(row.get("usd_value") or 0)
+        if price <= 0 and amount > 0 and usd > 0:
+            price = usd / amount
+        if supply <= 0 and amount > 0 and pct > 0:
+            supply = amount / pct
+        if price > 0 and supply > 0:
+            break
+    if price <= 0 and candles:
+        price = float((candles[-1] or {}).get("close") or 0)
+    return {
+        "address": address,
+        "price": price,
+        "circulating_supply": supply,
+        "market_cap": price * supply if price > 0 and supply > 0 else 0,
+    }
+
+
+def aggregate_tag_stats(holders):
+    groups = {
+        "smart_degen": "聪明钱",
+        "renowned": "KOL",
+        "bundler": "捆绑",
+        "sniper": "狙击手",
+        "rat_trader": "老鼠仓",
+        "fresh_wallet": "新钱包",
+    }
+    result = {}
+    for key, label in groups.items():
+        rows = []
+        for item in holders or []:
+            if bottom_monitor.is_pool_holder(item):
+                continue
+            tags = set(raw_tags(item))
+            if key in tags:
+                rows.append(item)
+        buy = sum(float(item.get("buy_volume") or item.get("buy_volume_cur") or 0) for item in rows)
+        sell = sum(float(item.get("sell_volume") or item.get("sell_volume_cur") or 0) for item in rows)
+        profit = sum(float(item.get("profit") or 0) for item in rows)
+        hold = sum(float(item.get("hold_pct") or item.get("amount_percentage") or 0) for item in rows)
+        usd = sum(float(item.get("usd_value") or 0) for item in rows)
+        result[key] = {
+            "label": label,
+            "count": len(rows),
+            "hold_pct": hold,
+            "usd_value": usd,
+            "buy": buy,
+            "sell": sell,
+            "net": buy - sell,
+            "profit": profit,
+            "profit_pct": (profit / buy * 100) if buy > 0 else 0.0,
+        }
+    return result
+
+
+def light_wallet_lines(holders, limit=8):
+    rows = sorted(
+        holders or [],
+        key=lambda item: (float(item.get("hold_pct") or 0), float(item.get("usd_value") or 0)),
+        reverse=True,
+    )[:limit]
+    lines = []
+    for item in rows:
+        tags = ",".join(str(tag) for tag in (item.get("tags") or [])[:2])
+        suffix = f" {tags}" if tags else ""
+        buy = item.get("buy_volume", item.get("buy"))
+        sell = item.get("sell_volume", item.get("sell"))
+        lines.append(
+            f"- {short_addr(item.get('wallet'))} 持仓{float(item.get('hold_pct') or 0):.2%}/"
+            f"{compact_money(item.get('usd_value'))} 买{compact_money(buy)} "
+            f"卖{compact_money(sell)} 盈利{profit_pct_text(item.get('profit'), buy)}{suffix}"
+        )
+    return "\n".join(lines) if lines else "- 暂无有效持仓钱包"
+
+
+def build_light_ca_analysis(address, chain="sol", limit=100):
+    raw_holders = bottom_monitor.fetch_top100_holders(address)
+    if not raw_holders:
+        return None
+
+    token = estimate_token_from_holders(address, raw_holders)
+    candles = bottom_monitor.fetch_kline(address, "5m", token)
+    token = estimate_token_from_holders(address, raw_holders, candles)
+    summary, holders = bottom_monitor.build_snapshot_json(token, raw_holders, candles, "5m")
+    history = bottom_monitor.recent_snapshots(address, limit=limit)
+    analysis = analyze_snapshot_change(holders, history, summary)
+    phase_flows = analyze_phase_wallet_flows(summary, holders, history[:DEEPSEEK_MAX_HISTORY])
+    previous_holders = (history[0].get("holders") if history else []) or []
+    profit = {
+        "current_top100_profit": sum(float(holder.get("profit") or 0) for holder in holders[:100]),
+        "previous_top100_profit": sum(float(holder.get("profit") or 0) for holder in previous_holders[:100]),
+        "current_top100_buy": sum(float(holder.get("buy_volume") or 0) for holder in holders[:100]),
+        "current_top20_profit": sum(float(holder.get("profit") or 0) for holder in holders[:20]),
+        "previous_top20_profit": sum(float(holder.get("profit") or 0) for holder in previous_holders[:20]),
+        "current_top20_buy": sum(float(holder.get("buy_volume") or 0) for holder in holders[:20]),
+    }
+    analysis.update(
+        {
+            "signal_type": "tg_ca_query",
+            "score": 0,
+            "snapshot_count": len(history),
+            "current_holder_count": len(holders),
+            "current_snapshot_ts": int(time.time()),
+            "latest_history_snapshot_ts": history[0].get("snapshot_ts") if history else None,
+            "current_kline": {
+                "summary": compact_kline_summary(summary.get("kline")),
+                "candles": [compact_candle(candle) for candle in (candles or [])[-24:]],
+            },
+            "current_top_holders": [compact_holder(holder) for holder in holders[:100]],
+            "phase_wallet_flows": phase_flows,
+            "profit_track": profit,
+            "tag_stats": aggregate_tag_stats(raw_holders),
+        }
+    )
+    try:
+        snapshot_id = bottom_monitor.save_snapshot(f"tg_ca_{int(time.time())}", token, summary, holders, analysis)
+        analysis["snapshot_id"] = snapshot_id
+    except Exception as exc:
+        analysis["snapshot_save_error"] = str(exc)
+    return analysis
+
+
+def light_tag_stats_text(tag_stats):
+    lines = []
+    for key in ("smart_degen", "renowned", "bundler", "sniper", "rat_trader", "fresh_wallet"):
+        row = (tag_stats or {}).get(key) or {}
+        if int(row.get("count") or 0) <= 0:
+            continue
+        lines.append(
+            f"- {row.get('label')}: {int(row.get('count') or 0)}个 | 持仓{float(row.get('hold_pct') or 0):.2%}/"
+            f"{compact_money(row.get('usd_value'))} | 买{compact_money(row.get('buy'))} "
+            f"卖{compact_money(row.get('sell'))} | 净{compact_money(row.get('net'))} | "
+            f"盈利{float(row.get('profit_pct') or 0):+.1f}%"
+        )
+    return "\n".join(lines) if lines else "- 暂无重点标签钱包"
+
+
+def build_light_ca_message(chain, address, analysis):
+    summary = (analysis or {}).get("summary") or {}
+    kline = ((analysis or {}).get("current_kline") or {}).get("summary") or {}
+    top100 = ((analysis or {}).get("phase_wallet_flows") or {}).get("top100_hold_change") or {}
+    top20 = ((analysis or {}).get("phase_wallet_flows") or {}).get("top20_hold_change") or {}
+    profit = (analysis or {}).get("profit_track") or {}
+    current_ts = analysis.get("current_snapshot_ts")
+    history_ts = analysis.get("latest_history_snapshot_ts")
+    current_time = datetime.fromtimestamp(current_ts).strftime("%Y-%m-%d %H:%M:%S") if current_ts else "未知"
+    history_time = datetime.fromtimestamp(history_ts).strftime("%Y-%m-%d %H:%M:%S") if history_ts else "暂无"
+    top100_profit_delta = float(profit.get("current_top100_profit") or 0) - float(profit.get("previous_top100_profit") or 0)
+    top20_profit_delta = float(profit.get("current_top20_profit") or 0) - float(profit.get("previous_top20_profit") or 0)
+    return (
+        f"CA 筹码查询\n"
+        f"CA: {address}\n"
+        f"链: {chain} | 查询时间: {current_time}\n\n"
+        f"基础数据\n"
+        f"- 市值: {compact_money(summary.get('mcap'))} | Top100有效钱包: {analysis.get('current_holder_count', 0)} | 历史快照: {analysis.get('snapshot_count', 0)}\n"
+        f"- Top10: {float(summary.get('top10_pct') or 0):.2%} | Top20: {float(summary.get('top20_pct') or 0):.2%} | Top100: {float(summary.get('top100_pct') or 0):.2%}\n"
+        f"- Top100买/卖: {compact_money(summary.get('buy_volume'))}/{compact_money(summary.get('sell_volume'))} | 净流 {compact_money(summary.get('netflow'))}\n\n"
+        f"5M K线\n"
+        f"- K线数: {int(kline.get('count') or 0)} | 涨跌: {float(kline.get('change_pct') or 0):+.2f}% | 成交量: {compact_money(kline.get('volume_usd'))}\n"
+        f"- 开盘: {format_chain_price(kline.get('open'))} | 收盘: {format_chain_price(kline.get('close'))} | 高: {format_chain_price(kline.get('high'))} | 低: {format_chain_price(kline.get('low'))}\n\n"
+        f"数据库历史对比\n"
+        f"- 最近历史: {history_time}\n"
+        f"- Top100持仓变化: {fmt_pct(top100.get('first'))}->{fmt_pct(top100.get('last'))} ({float(top100.get('delta') or 0):+.2%}) | 盈利变化 {profit_pct_text(top100_profit_delta, profit.get('current_top100_buy'))}\n"
+        f"- Top20持仓变化: {fmt_pct(top20.get('first'))}->{fmt_pct(top20.get('last'))} ({float(top20.get('delta') or 0):+.2%}) | 盈利变化 {profit_pct_text(top20_profit_delta, profit.get('current_top20_buy'))}\n"
+        f"- 本次Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 新进{analysis.get('new_holder_pct', 0):.2%} | 退出{analysis.get('exited_holder_pct', 0):.2%} | 净流{compact_money(analysis.get('netflow_usd'))}\n\n"
+        f"标签钱包聚合\n"
+        f"{light_tag_stats_text(analysis.get('tag_stats'))}\n\n"
+        f"Top持仓钱包\n"
+        f"{light_wallet_lines(analysis.get('current_top_holders'), limit=8)}\n\n"
+        f"GMGN: https://gmgn.ai/{chain}/token/{address}"
+    )
+
+
 def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepseek_analysis="", kline_analysis_text=""):
     holder_tag_desc = clean_holder_tag_desc(stats.get("holder_tag_desc"))
     sm_stats = stats.get("holder_tag_stats", {}).get("smart_degen", {})
@@ -1677,6 +1857,13 @@ def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepse
     )
 
 def analyze_and_reply(chat_id, message_id, address, chain="sol"):
+    send_message(chat_id, f"收到 CA，开始轻量查询：Top100 holders + 5M K线 + 数据库历史快照...\n{address}", message_id)
+    analysis = build_light_ca_analysis(address, chain=chain, limit=100)
+    if not analysis:
+        send_message(chat_id, f"查询失败或 GMGN 未返回 Top100 holders：\n{address}", message_id)
+        return
+    send_long_message(chat_id, build_light_ca_message(chain, address, analysis), message_id)
+    return
     send_message(chat_id, f"收到 CA，开始查询 GMGN Top100 筹码关联数据...\n{address}", message_id)
     stats = perform_deep_analysis(chain, address, {}, enforce_dev_risk=False)
     if not stats:
