@@ -273,8 +273,8 @@ def delete_watchlist_token(
     reason: str = "unspecified",
     *,
     current_mcap: float = 0,
-    pool_liquidity: float = 0,
-    pool_mcap_ratio: float = 0,
+    pool_liquidity: float | None = None,
+    pool_mcap_ratio: float | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> int:
     ensure_watchlist_delete_audit_table()
@@ -309,8 +309,8 @@ def delete_watchlist_token(
                 row[3],
                 row[4],
                 current_mcap,
-                pool_liquidity if pool_liquidity else row[8],
-                pool_mcap_ratio if pool_mcap_ratio else row[9],
+                pool_liquidity if pool_liquidity is not None else row[8],
+                pool_mcap_ratio if pool_mcap_ratio is not None else row[9],
                 row[5],
                 row[6],
                 row[7],

@@ -427,6 +427,8 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "watchlist_source": row.get("source"),
             "watchlist_peak_mcap": to_float(row.get("peak_mcap")),
             "watchlist_last_mcap": to_float(row.get("last_mcap")),
+            "watchlist_last_pool_liquidity": to_float(row.get("last_pool_liquidity")),
+            "watchlist_last_pool_mcap_ratio": to_float(row.get("last_pool_mcap_ratio")),
             "blacklisted": bool(row.get("blacklisted")),
         }
         if create_at:
@@ -499,20 +501,35 @@ def fetch_token_pool(address: str) -> dict[str, Any] | list[Any] | None:
     return run_gmgn(["token", "pool", "--chain", CHAIN, "--address", address], timeout=75)
 
 
+POOL_LIQUIDITY_KEYS = (
+    "liquidity",
+    "liquidity_usd",
+    "usd_liquidity",
+    "reserve_usd",
+    "pool_liquidity",
+    "total_liquidity",
+    "base_reserve_value",
+    "quote_reserve_value",
+)
+
+
 def extract_pool_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str, Any]]:
     if not data:
         return []
     if isinstance(data, list):
         rows = data
     elif isinstance(data, dict):
+        nested_data = data.get("data") if isinstance(data.get("data"), dict) else {}
         rows = (
             data.get("list")
             or data.get("pools")
             or data.get("pairs")
-            or data.get("data", {}).get("list")
-            or data.get("data", {}).get("pools")
-            or data.get("data", {}).get("pairs")
+            or nested_data.get("list")
+            or nested_data.get("pools")
+            or nested_data.get("pairs")
         )
+        if not rows and nested_data and any(key in nested_data for key in ("pool_address", "address", "liquidity", "exchange")):
+            rows = [nested_data]
         if not rows and any(key in data for key in ("pool_address", "address", "liquidity", "exchange")):
             rows = [data]
     else:
@@ -521,12 +538,7 @@ def extract_pool_rows(data: dict[str, Any] | list[Any] | None) -> list[dict[str,
 
 
 def normalize_pool(row: dict[str, Any]) -> dict[str, Any]:
-    liquidity = to_float(
-        row.get("liquidity")
-        or row.get("liquidity_usd")
-        or row.get("usd_liquidity")
-        or row.get("reserve_usd")
-    )
+    liquidity = first_pool_liquidity(row)
     return {
         "address": str(row.get("pool_address") or row.get("address") or row.get("pair_address") or "").strip(),
         "exchange": str(row.get("exchange") or row.get("dex") or row.get("amm") or "").strip(),
@@ -538,6 +550,37 @@ def normalize_pool(row: dict[str, Any]) -> dict[str, Any]:
         "price": to_float(row.get("price")),
         "created_ts": parse_timestamp(row.get("creation_timestamp") or row.get("created_at")),
     }
+
+
+def first_pool_liquidity(row: dict[str, Any]) -> float:
+    for key in ("liquidity", "liquidity_usd", "usd_liquidity", "reserve_usd", "pool_liquidity", "total_liquidity"):
+        if row.get(key) not in (None, ""):
+            return to_float(row.get(key))
+    base_value = row.get("base_reserve_value")
+    quote_value = row.get("quote_reserve_value")
+    if base_value not in (None, "") or quote_value not in (None, ""):
+        return to_float(base_value) + to_float(quote_value)
+    return 0.0
+
+
+def pool_rows_have_explicit_liquidity(rows: list[dict[str, Any]]) -> bool:
+    for row in rows:
+        if any(row.get(key) not in (None, "") for key in POOL_LIQUIDITY_KEYS):
+            return True
+    return False
+
+
+def summarize_gmgn_pool_data(pool_data: dict[str, Any] | list[Any] | None, token: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
+    """Summarize only gmgn-cli token pool data and report whether deletion can trust it."""
+    if pool_data is None:
+        return summarize_pools({"address": token_address(token), "_gmgn_pool": {}}), False, "pool_fetch_failed"
+    rows = extract_pool_rows(pool_data)
+    if not rows:
+        return summarize_pools({"address": token_address(token), "_gmgn_pool": pool_data}), False, "pool_empty_or_unrecognized"
+    if not pool_rows_have_explicit_liquidity(rows):
+        return summarize_pools({"address": token_address(token), "_gmgn_pool": pool_data}), False, "pool_liquidity_field_missing"
+    summary = summarize_pools({"address": token_address(token), "_gmgn_pool": pool_data, **token})
+    return summary, True, ""
 
 
 def summarize_pools(token: dict[str, Any]) -> dict[str, Any]:
@@ -1789,10 +1832,21 @@ def scan_once(args: argparse.Namespace) -> None:
             current_mcap = calc_mcap(token)
             pool_data = fetch_token_pool(address)
             token = attach_token_pool(token, pool_data)
-            pool_summary = summarize_pools(token)
+            pool_summary, pool_reliable, pool_unreliable_reason = summarize_gmgn_pool_data(pool_data, token)
             pool_liquidity = to_float(pool_summary.get("total_liquidity"))
             pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
-            if pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD and is_watchlist:
+            if is_watchlist and not pool_reliable:
+                previous_pool_liquidity = to_float(token.get("watchlist_last_pool_liquidity"))
+                previous_pool_ratio = to_float(token.get("watchlist_last_pool_mcap_ratio"))
+                if previous_pool_liquidity > 0:
+                    pool_liquidity = previous_pool_liquidity
+                    pool_mcap_ratio = previous_pool_ratio
+                print(f"{address[:8]} pool check skipped: {pool_unreliable_reason}")
+            if (
+                is_watchlist
+                and pool_reliable
+                and pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD
+            ):
                 deleted = delete_watchlist_token(
                     address,
                     "pool_liquidity_below_threshold",
@@ -1802,6 +1856,7 @@ def scan_once(args: argparse.Namespace) -> None:
                     metadata={
                         "threshold": WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD,
                         "trigger": "scan_once",
+                        "pool_reliable": pool_reliable,
                     },
                 )
                 if deleted:
