@@ -37,6 +37,11 @@ DEEPSEEK_THINKING = os.getenv("DEEPSEEK_THINKING", "enabled")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "high")
 PACKAGE_WALLET_MAP_PATH = os.getenv("PACKAGE_WALLET_MAP_PATH", "gmgn_outputs/package_wallet_map.json")
 PACKAGE_WALLET_MAP_CACHE = None
+BUNDLE_SIMILAR_HOLD_TOLERANCE_PCT = float(os.getenv("TG_CA_BUNDLE_SIMILAR_HOLD_TOLERANCE_PCT", "0.001"))
+BUNDLE_SIMILAR_TIME_WINDOW_SEC = int(os.getenv("TG_CA_BUNDLE_SIMILAR_TIME_WINDOW_SEC", "600"))
+BUNDLE_SIMILAR_MIN_WALLETS = int(os.getenv("TG_CA_BUNDLE_SIMILAR_MIN_WALLETS", "3"))
+WALLET_CREATION_CLUSTER_SEC = int(os.getenv("TG_CA_WALLET_CREATION_CLUSTER_SEC", str(5 * 24 * 3600)))
+WALLET_CREATION_CLUSTER_MIN_WALLETS = int(os.getenv("TG_CA_WALLET_CREATION_CLUSTER_MIN_WALLETS", "2"))
 
 
 def allowed_chat_ids():
@@ -1693,6 +1698,173 @@ def aggregate_tag_stats(holders):
     return result
 
 
+def similar_hold_bundle_clusters(holders):
+    """Find likely bundled holder groups by near-equal position size and near-equal entry time."""
+    candidates = []
+    for item in holders or []:
+        hold = float(item.get("hold_pct") or item.get("amount_percentage") or 0)
+        start_ts = int(float(item.get("start_holding_at") or 0))
+        wallet = item.get("wallet") or raw_wallet_address(item)
+        if not wallet or hold <= 0 or start_ts <= 0:
+            continue
+        candidates.append(
+            {
+                "wallet": wallet,
+                "rank": item.get("rank"),
+                "hold_pct": hold,
+                "usd_value": float(item.get("usd_value") or 0),
+                "buy": float(item.get("buy_volume") or item.get("buy_volume_cur") or item.get("buy") or 0),
+                "sell": float(item.get("sell_volume") or item.get("sell_volume_cur") or item.get("sell") or 0),
+                "profit": float(item.get("profit") or 0),
+                "avg_cost": float(item.get("avg_cost") or 0),
+                "start_holding_at": start_ts,
+                "tags": item.get("tags") or [],
+            }
+        )
+    candidates.sort(key=lambda row: row["hold_pct"])
+
+    clusters = []
+    seen_wallet_sets = set()
+    max_hold_span = BUNDLE_SIMILAR_HOLD_TOLERANCE_PCT * 2
+    for idx, base in enumerate(candidates):
+        hold_group = [
+            row for row in candidates[idx:]
+            if row["hold_pct"] - base["hold_pct"] <= max_hold_span
+        ]
+        if len(hold_group) < BUNDLE_SIMILAR_MIN_WALLETS:
+            continue
+        hold_group.sort(key=lambda row: row["start_holding_at"])
+        for time_idx, time_base in enumerate(hold_group):
+            time_group = [
+                row for row in hold_group[time_idx:]
+                if row["start_holding_at"] - time_base["start_holding_at"] <= BUNDLE_SIMILAR_TIME_WINDOW_SEC
+            ]
+            if len(time_group) < BUNDLE_SIMILAR_MIN_WALLETS:
+                continue
+            wallets_key = tuple(sorted(row["wallet"] for row in time_group))
+            if wallets_key in seen_wallet_sets:
+                continue
+            seen_wallet_sets.add(wallets_key)
+            hold_values = [row["hold_pct"] for row in time_group]
+            start_values = [row["start_holding_at"] for row in time_group]
+            total_buy = sum(row["buy"] for row in time_group)
+            total_profit = sum(row["profit"] for row in time_group)
+            clusters.append(
+                {
+                    "wallet_count": len(time_group),
+                    "hold_pct": sum(hold_values),
+                    "usd_value": sum(row["usd_value"] for row in time_group),
+                    "avg_hold_pct": sum(hold_values) / len(hold_values),
+                    "min_hold_pct": min(hold_values),
+                    "max_hold_pct": max(hold_values),
+                    "hold_span_pct": max(hold_values) - min(hold_values),
+                    "start_ts": min(start_values),
+                    "end_ts": max(start_values),
+                    "time_span_sec": max(start_values) - min(start_values),
+                    "buy": total_buy,
+                    "sell": sum(row["sell"] for row in time_group),
+                    "profit": total_profit,
+                    "profit_pct": (total_profit / total_buy * 100) if total_buy > 0 else 0.0,
+                    "wallets": sorted(
+                        time_group,
+                        key=lambda row: (row["hold_pct"], row["usd_value"]),
+                        reverse=True,
+                    )[:6],
+                }
+            )
+    clusters.sort(key=lambda row: (row["hold_pct"], row["wallet_count"], -row["time_span_sec"]), reverse=True)
+    return clusters[:6]
+
+
+def similar_hold_bundle_text(clusters):
+    if not clusters:
+        return "- 暂无相近持仓+相近买入时间的疑似捆绑聚合"
+    lines = []
+    for idx, row in enumerate(clusters[:4], start=1):
+        start_text = datetime.fromtimestamp(int(row.get("start_ts") or 0)).strftime("%H:%M:%S") if row.get("start_ts") else "-"
+        end_text = datetime.fromtimestamp(int(row.get("end_ts") or 0)).strftime("%H:%M:%S") if row.get("end_ts") else "-"
+        wallets = " ".join(short_addr(item.get("wallet")) for item in (row.get("wallets") or [])[:4])
+        lines.append(
+            f"- 簇{idx}: {int(row.get('wallet_count') or 0)}个 | 持仓{float(row.get('hold_pct') or 0):.2%}/"
+            f"{compact_money(row.get('usd_value'))} | 单仓{float(row.get('min_hold_pct') or 0):.2%}-"
+            f"{float(row.get('max_hold_pct') or 0):.2%} | 时间{start_text}-{end_text} "
+            f"({int(row.get('time_span_sec') or 0)}s) | 盈利{float(row.get('profit_pct') or 0):+.1f}% | {wallets}"
+        )
+    return "\n".join(lines)
+
+
+def wallet_creation_clusters(holders):
+    candidates = []
+    for item in holders or []:
+        created_ts = int(float(item.get("created_at") or 0))
+        wallet = item.get("wallet") or raw_wallet_address(item)
+        if not wallet or created_ts <= 0:
+            continue
+        candidates.append(
+            {
+                "wallet": wallet,
+                "rank": item.get("rank"),
+                "created_at": created_ts,
+                "hold_pct": float(item.get("hold_pct") or item.get("amount_percentage") or 0),
+                "usd_value": float(item.get("usd_value") or 0),
+                "buy": float(item.get("buy_volume") or item.get("buy_volume_cur") or item.get("buy") or 0),
+                "sell": float(item.get("sell_volume") or item.get("sell_volume_cur") or item.get("sell") or 0),
+                "profit": float(item.get("profit") or 0),
+                "avg_cost": float(item.get("avg_cost") or 0),
+                "tags": item.get("tags") or [],
+            }
+        )
+    candidates.sort(key=lambda row: row["created_at"])
+    clusters = []
+    used_wallets = set()
+    for idx, base in enumerate(candidates):
+        rows = [
+            row for row in candidates[idx:]
+            if row["created_at"] - base["created_at"] <= WALLET_CREATION_CLUSTER_SEC
+        ]
+        rows = [row for row in rows if row["wallet"] not in used_wallets]
+        if len(rows) < WALLET_CREATION_CLUSTER_MIN_WALLETS:
+            continue
+        total_buy = sum(row["buy"] for row in rows)
+        total_profit = sum(row["profit"] for row in rows)
+        cluster = {
+            "wallet_count": len(rows),
+            "hold_pct": sum(row["hold_pct"] for row in rows),
+            "usd_value": sum(row["usd_value"] for row in rows),
+            "buy": total_buy,
+            "sell": sum(row["sell"] for row in rows),
+            "net": sum(row["buy"] - row["sell"] for row in rows),
+            "profit": total_profit,
+            "profit_pct": (total_profit / total_buy * 100) if total_buy > 0 else 0.0,
+            "start_ts": min(row["created_at"] for row in rows),
+            "end_ts": max(row["created_at"] for row in rows),
+            "time_span_sec": max(row["created_at"] for row in rows) - min(row["created_at"] for row in rows),
+            "wallets": sorted(rows, key=lambda row: (row["hold_pct"], row["usd_value"]), reverse=True)[:6],
+        }
+        clusters.append(cluster)
+        used_wallets.update(row["wallet"] for row in rows)
+    clusters.sort(key=lambda row: (row["hold_pct"], row["wallet_count"]), reverse=True)
+    return clusters[:5]
+
+
+def wallet_creation_cluster_text(clusters):
+    if not clusters:
+        return "- 暂无同批创建钱包簇"
+    lines = []
+    for idx, row in enumerate(clusters[:5], start=1):
+        start_text = datetime.fromtimestamp(int(row.get("start_ts") or 0)).strftime("%m-%d %H:%M") if row.get("start_ts") else "-"
+        end_text = datetime.fromtimestamp(int(row.get("end_ts") or 0)).strftime("%m-%d %H:%M") if row.get("end_ts") else "-"
+        span_hours = float(row.get("time_span_sec") or 0) / 3600
+        wallets = " ".join(short_addr(item.get("wallet")) for item in (row.get("wallets") or [])[:4])
+        lines.append(
+            f"- 簇{idx}: {int(row.get('wallet_count') or 0)}个 | 持仓{float(row.get('hold_pct') or 0):.2%}/"
+            f"{compact_money(row.get('usd_value'))} | 创建{start_text}-{end_text} "
+            f"({span_hours:.1f}h) | 买{compact_money(row.get('buy'))} 卖{compact_money(row.get('sell'))} "
+            f"| 净{compact_money(row.get('net'))} | 盈利{float(row.get('profit_pct') or 0):+.1f}% | {wallets}"
+        )
+    return "\n".join(lines)
+
+
 def light_wallet_lines(holders, limit=8):
     rows = sorted(
         holders or [],
@@ -1750,6 +1922,8 @@ def build_light_ca_analysis(address, chain="sol", limit=100):
             "phase_wallet_flows": phase_flows,
             "profit_track": profit,
             "tag_stats": aggregate_tag_stats(raw_holders),
+            "bundle_similarity_clusters": similar_hold_bundle_clusters(holders),
+            "wallet_creation_clusters": wallet_creation_clusters(holders),
         }
     )
     try:
@@ -1805,8 +1979,11 @@ def build_light_ca_message(chain, address, analysis):
         f"- 本次Top100变化: 增持{analysis.get('accumulation_pct_delta', 0):.2%} | 减持{analysis.get('distribution_pct_delta', 0):.2%} | 新进{analysis.get('new_holder_pct', 0):.2%} | 退出{analysis.get('exited_holder_pct', 0):.2%} | 净流{compact_money(analysis.get('netflow_usd'))}\n\n"
         f"标签钱包聚合\n"
         f"{light_tag_stats_text(analysis.get('tag_stats'))}\n\n"
+        f"相似持仓捆绑聚合\n"
+        f"{similar_hold_bundle_text(analysis.get('bundle_similarity_clusters'))}\n\n"
+        f"同批创建钱包簇\n"
+        f"{wallet_creation_cluster_text(analysis.get('wallet_creation_clusters'))}\n\n"
         f"Top持仓钱包\n"
-        f"{light_wallet_lines(analysis.get('current_top_holders'), limit=8)}\n\n"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
 
@@ -1862,7 +2039,11 @@ def analyze_and_reply(chat_id, message_id, address, chain="sol"):
     if not analysis:
         send_message(chat_id, f"查询失败或 GMGN 未返回 Top100 holders：\n{address}", message_id)
         return
-    send_long_message(chat_id, build_light_ca_message(chain, address, analysis), message_id)
+    msg = "\n".join(
+        line for line in build_light_ca_message(chain, address, analysis).splitlines()
+        if not line.startswith("Top")
+    )
+    send_long_message(chat_id, msg, message_id)
     return
     send_message(chat_id, f"收到 CA，开始查询 GMGN Top100 筹码关联数据...\n{address}", message_id)
     stats = perform_deep_analysis(chain, address, {}, enforce_dev_risk=False)
