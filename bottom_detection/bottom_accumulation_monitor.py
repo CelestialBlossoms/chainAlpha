@@ -45,7 +45,12 @@ from bottom_detection.bottom_watchlist_store import (
 
 
 CHAIN = "sol"
-TREND_INTERVAL = os.getenv("BOTTOM_TREND_INTERVAL", "1h")
+TREND_INTERVALS = tuple(
+    item.strip()
+    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1h,6h,24h")).split(",")
+    if item.strip()
+)
+TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "1h"
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
@@ -60,6 +65,7 @@ MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "1h"
 KLINE_LOOKBACK_SEC = int(os.getenv("BOTTOM_KLINE_LOOKBACK_SEC", str(24 * 3600)))
 KLINE_INCREMENT_OVERLAP_BARS = int(os.getenv("BOTTOM_KLINE_INCREMENT_OVERLAP_BARS", "10"))
 KLINE_SIGNAL_BARS = int(os.getenv("BOTTOM_KLINE_SIGNAL_BARS", "12"))
+KLINE_REVIVAL_MIN_DRAWDOWN_PCT = float(os.getenv("BOTTOM_KLINE_REVIVAL_MIN_DRAWDOWN_PCT", "20"))
 MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD", "1000000"))
 BOTTOM_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_MCAP_USD", "40000"))
@@ -82,10 +88,11 @@ DAILY_MCAP_MILESTONE_USD = float(os.getenv("BOTTOM_DAILY_MCAP_MILESTONE_USD", "1
 DAILY_MCAP_MIN_FEE_SOL = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_FEE_SOL", "20"))
 DAILY_MCAP_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_POOL_MCAP_RATIO", "0.07"))
 MIN_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_MIN_TOKEN_AGE_SEC", "0"))
-MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "0"))
+MIN_FEE_SOL = float(os.getenv("BOTTOM_MIN_FEE_SOL", "2"))
 BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD", "4000"))
 BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO", "0.10"))
 WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD", "10000"))
+MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_MIN_POOL_LIQUIDITY_USD", str(WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD)))
 
 BOTTOM_ABNORMAL_RULES = [
     {
@@ -346,9 +353,17 @@ def token_fee_filter_reason(row: dict[str, Any]) -> str | None:
     return None
 
 
-def fetch_trending_tokens() -> list[dict[str, Any]]:
+def token_pool_filter_reason(pool_liquidity: float, pool_reliable: bool, reason: str = "") -> str | None:
+    if not pool_reliable:
+        return f"池子数据不可用:{reason or 'unknown'}"
+    if pool_liquidity < MIN_POOL_LIQUIDITY_USD:
+        return f"池子${pool_liquidity:,.0f}<${MIN_POOL_LIQUIDITY_USD:,.0f}"
+    return None
+
+
+def fetch_trending_tokens_for_interval(interval: str) -> list[dict[str, Any]]:
     data = run_gmgn(
-        ["market", "trending", "--chain", CHAIN, "--interval", TREND_INTERVAL, "--limit", str(TREND_LIMIT)]
+        ["market", "trending", "--chain", CHAIN, "--interval", interval, "--limit", str(TREND_LIMIT)]
     )
     if not isinstance(data, dict):
         return []
@@ -362,8 +377,36 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
         if not valid_sol_ca(address) or address in seen:
             continue
         seen.add(address)
-        tokens.append(row)
+        item = dict(row)
+        item["_trend_interval"] = interval
+        item["_sources"] = [f"trending_{interval}"]
+        tokens.append(item)
     return tokens
+
+
+def fetch_trending_tokens() -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen = set()
+    for interval in TREND_INTERVALS:
+        rows = fetch_trending_tokens_for_interval(interval)
+        print(f"trending {interval}: {len(rows)}")
+        for row in rows:
+            address = token_address(row)
+            if not address:
+                continue
+            if address in seen:
+                existing = next((item for item in merged if token_address(item) == address), None)
+                if existing is not None:
+                    sources = set(existing.get("_sources") or [])
+                    sources.add(f"trending_{interval}")
+                    existing["_sources"] = sorted(sources)
+                    intervals = set(str(existing.get("_trend_interval") or "").split(","))
+                    intervals.add(interval)
+                    existing["_trend_interval"] = ",".join(sorted(item for item in intervals if item))
+                continue
+            seen.add(address)
+            merged.append(row)
+    return merged
 
 
 def quick_trending_mcap(row: dict[str, Any]) -> float:
@@ -820,6 +863,88 @@ def fetch_kline(address: str, resolution: str, token: dict[str, Any] | None = No
     return cached
 
 
+def summarize_rebound_after_high(candles: list[dict[str, Any]]) -> dict[str, Any]:
+    valid = []
+    for candle in candles:
+        high = to_float(candle.get("high"))
+        low = to_float(candle.get("low"))
+        close = to_float(candle.get("close"))
+        if high > 0 and low > 0 and close > 0:
+            valid.append(
+                {
+                    "ts": candle.get("ts"),
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                }
+            )
+    if len(valid) < 3:
+        return {"ready": False, "reason": "not_enough_kline"}
+
+    current = valid[-1]
+    current_close = current["close"]
+    high_index, high_candle = max(enumerate(valid), key=lambda item: item[1]["high"])
+    if high_index >= len(valid) - 1:
+        return {
+            "ready": False,
+            "reason": "highest_point_is_current",
+            "high": high_candle["high"],
+            "high_ts": high_candle.get("ts"),
+            "close": current_close,
+            "close_ts": current.get("ts"),
+        }
+
+    candidates = valid[high_index + 1 : -1]
+    if not candidates:
+        return {
+            "ready": False,
+            "reason": "no_pullback_after_high",
+            "high": high_candle["high"],
+            "high_ts": high_candle.get("ts"),
+            "close": current_close,
+            "close_ts": current.get("ts"),
+        }
+
+    low_index = None
+    for index in range(len(valid) - 2, high_index, -1):
+        prev_low = valid[index - 1]["low"] if index - 1 > high_index else high_candle["high"]
+        next_low = valid[index + 1]["low"]
+        cur_low = valid[index]["low"]
+        if cur_low <= prev_low and cur_low <= next_low:
+            low_index = index
+            break
+    if low_index is None:
+        low_index, _ = min(
+            ((index, valid[index]) for index in range(high_index + 1, len(valid) - 1)),
+            key=lambda item: item[1]["low"],
+        )
+
+    low_candle = valid[low_index]
+    pullback_low = low_candle["low"]
+    drawdown_pct = ((high_candle["high"] - pullback_low) / high_candle["high"] * 100) if high_candle["high"] > 0 else 0
+    rebound_pct = ((current_close - pullback_low) / pullback_low * 100) if pullback_low > 0 else 0
+    ready = (
+        high_index < low_index < len(valid) - 1
+        and drawdown_pct >= KLINE_REVIVAL_MIN_DRAWDOWN_PCT
+        and rebound_pct > 0
+    )
+    return {
+        "ready": ready,
+        "reason": "ok" if ready else "drawdown_or_rebound_not_enough",
+        "high": high_candle["high"],
+        "high_ts": high_candle.get("ts"),
+        "low": pullback_low,
+        "low_ts": low_candle.get("ts"),
+        "close": current_close,
+        "close_ts": current.get("ts"),
+        "drawdown_pct": drawdown_pct,
+        "change_pct": rebound_pct,
+        "high_index": high_index,
+        "low_index": low_index,
+        "close_index": len(valid) - 1,
+    }
+
+
 def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
     if not candles:
         return {"resolution": resolution, "count": 0}
@@ -847,6 +972,7 @@ def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str,
         "low": min(lows) if lows else 0,
         "volume_usd": total_volume,
         "last_volume_usd": to_float(last.get("volume")),
+        "rebound_after_high": summarize_rebound_after_high(candles),
     }
 
 
@@ -1175,15 +1301,18 @@ def analyze_abnormal_snapshot(
     window_pool_stats = pool_change(current_summary, (recent_history[-1].get("summary") if recent_history else None) or {})
     kline_summary = current_summary.get("kline") or {}
     price_change_pct = to_float(kline_summary.get("change_pct"))
-    kline_low = to_float(kline_summary.get("low"))
-    kline_close = to_float(kline_summary.get("close"))
+    rebound_after_high = kline_summary.get("rebound_after_high") or {}
+    rebound_ready = bool(rebound_after_high.get("ready"))
+    new_revival_price_change_pct = to_float(rebound_after_high.get("change_pct")) if rebound_ready else 0.0
+    kline_low = to_float(rebound_after_high.get("low")) if rebound_ready else 0.0
+    kline_close = to_float(rebound_after_high.get("close")) if rebound_ready else 0.0
     current_mcap = to_float(current_summary.get("mcap"))
     ath_mcap = to_float(current_summary.get("ath_mcap"))
     bottom_low_mcap = current_mcap * (kline_low / kline_close) if current_mcap > 0 and kline_low > 0 and kline_close > 0 else 0.0
     token_age = to_int(current_summary.get("age_sec"))
     is_under_24h = token_age <= 0 or token_age <= NEW_TOKEN_AGE_CUTOFF_SEC
     price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
-    new_revival_price_ready = price_change_pct >= BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT
+    new_revival_price_ready = new_revival_price_change_pct >= BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT
     pool_ratio = to_float(pool_stats.get("pool_mcap_ratio"))
     pool_liquidity = to_float(pool_stats.get("pool_total_liquidity"))
     pool_liquidity_ready = pool_liquidity >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD
@@ -1203,6 +1332,7 @@ def analyze_abnormal_snapshot(
     )
     new_revival_ready = (
         is_under_24h
+        and rebound_ready
         and bottom_low_mcap > 0
         and bottom_low_mcap <= BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD
         and new_revival_price_ready
@@ -1244,9 +1374,9 @@ def analyze_abnormal_snapshot(
         max_mcap = 0
         rule_reason = (
             f"新币底部启动: 创建{token_age / 3600:.1f}h, "
-            f"K线低点市值约${bottom_low_mcap:,.0f}<=${BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD:,.0f}, "
+            f"高点回落后最近反弹点市值约${bottom_low_mcap:,.0f}<=${BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD:,.0f}, "
             f"当前市值${current_mcap:,.0f}, "
-            f"价格上涨{price_change_pct:.1f}%"
+            f"反弹涨幅{new_revival_price_change_pct:.1f}%"
         )
     elif old_abnormal_ready:
         rule_name = "OLD_MCAP_40W_UP30"
@@ -1266,20 +1396,22 @@ def analyze_abnormal_snapshot(
             rule_reason = (
                 f"未命中新币回落: 创建{token_age / 3600:.1f}h, "
                 f"ATH${ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}, "
-                f"K线低点市值约${bottom_low_mcap:,.0f}"
+                f"高点回落后最近反弹点市值约${bottom_low_mcap:,.0f}"
             )
         else:
             rule_reason = (
                 f"未命中老币异动: 创建{token_age / 3600:.1f}h, "
                 f"当前市值${current_mcap:,.0f}<${BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD:,.0f}或涨幅/池子不足"
             )
+    display_price_change_pct = new_revival_price_change_pct if signal_type == "new_revival" else price_change_pct
+    display_price_ready = new_revival_price_ready if signal_type == "new_revival" else price_ready
     reasons = [rule_reason]
     if not signal_type.startswith("drop_"):
         reasons.append(
             (
-                f"价格上涨{price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
-                if price_ready
-                else f"价格上涨{price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+                f"价格上涨{display_price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+                if display_price_ready
+                else f"价格上涨{display_price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
             )
         )
     reasons.extend(
@@ -1305,12 +1437,15 @@ def analyze_abnormal_snapshot(
         "drop_level_mcap": drop_level,
         "price_confirmation_ready": price_ready,
         "new_revival_price_confirmation_ready": new_revival_price_ready,
+        "rebound_after_high_ready": rebound_ready,
+        "rebound_after_high": rebound_after_high,
         "bottom_low_mcap": bottom_low_mcap,
         "required_bottom_low_mcap": BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD,
         "pool_confirmation_ready": pool_ready,
         "pool_liquidity_confirmation_ready": pool_liquidity_ready,
         "pool_ratio_confirmation_ready": pool_ratio_ready,
-        "price_change_pct": price_change_pct,
+        "raw_kline_change_pct": price_change_pct,
+        "price_change_pct": display_price_change_pct,
         "required_price_change_pct": 0 if signal_type.startswith("drop_") else (BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT if signal_type == "new_revival" else BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT),
         "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
         "required_pool_mcap_ratio": BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO,
@@ -1349,7 +1484,7 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
             (
                 scan_id,
                 CHAIN,
-                TREND_INTERVAL,
+                str(token.get("_trend_interval") or TREND_INTERVAL),
                 address,
                 token.get("symbol"),
                 now_ts(),
@@ -1807,6 +1942,7 @@ def scan_once(args: argparse.Namespace) -> None:
     tokens = merge_token_sources(watchlist_tokens, filtered_trending)
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
+        f"intervals={','.join(TREND_INTERVALS)} "
         f"trending={len(trending_raw)}→{len(filtered_trending)}(skipped {prefilter_skipped}) "
         f"watchlist={len(watchlist_tokens)} merged={len(tokens)}"
     )
@@ -1866,6 +2002,22 @@ def scan_once(args: argparse.Namespace) -> None:
                     )
                 skipped += 1
                 continue
+            if not is_watchlist:
+                skip_reason = token_basic_filter_reason(token)
+                if skip_reason:
+                    skipped += 1
+                    print(f"{token_label(token)} skip {skip_reason}")
+                    continue
+                skip_reason = token_fee_filter_reason(token)
+                if skip_reason:
+                    skipped += 1
+                    print(f"{token_label(token)} skip {skip_reason}")
+                    continue
+                skip_reason = token_pool_filter_reason(pool_liquidity, pool_reliable, pool_unreliable_reason)
+                if skip_reason:
+                    skipped += 1
+                    print(f"{token_label(token)} skip {skip_reason}")
+                    continue
             maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
             if is_watchlist:
                 update_watchlist_seen(
@@ -1913,17 +2065,6 @@ def scan_once(args: argparse.Namespace) -> None:
                         )
                     skipped += 1
                     continue
-            if not is_watchlist:
-                skip_reason = token_basic_filter_reason(token)
-                if skip_reason:
-                    skipped += 1
-                    print(f"{token_label(token)} skip {skip_reason}")
-                    continue
-                skip_reason = token_fee_filter_reason(token)
-                if skip_reason:
-                    skipped += 1
-                    print(f"{token_label(token)} skip {skip_reason}")
-                    continue
             skip_reason = recent_snapshot_skip_reason(token_address(token), token)
             if skip_reason:
                 skipped += 1
@@ -1938,7 +2079,7 @@ def scan_once(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Monitor 1h trending tokens with one JSON snapshot table.")
+    parser = argparse.ArgumentParser(description="Monitor multi-interval trending tokens with one JSON snapshot table.")
     parser.add_argument("--once", action="store_true", help="Run once and exit.")
     parser.add_argument("--watch", action="store_true", help="Run forever.")
     parser.add_argument("--notify", action="store_true", help="Send Telegram messages for new signals.")
@@ -1948,6 +2089,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-mcap", type=float, default=MIN_MCAP_USD, help="Skip tokens below this market cap in USD.")
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
+    parser.add_argument("--min-pool-liquidity", type=float, default=MIN_POOL_LIQUIDITY_USD, help="Skip non-watchlist tokens below this pool liquidity in USD.")
     return parser
 
 
@@ -1985,11 +2127,12 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol
+    MIN_POOL_LIQUIDITY_USD = args.min_pool_liquidity
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()
