@@ -26,7 +26,8 @@
       "Bash(D:/software/anaconda/envs/py312/python.exe *)",
       "Bash(where gmgn-cli *)",
       "Bash(Get-Command gmgn-cli *)",
-      "Bash(Select-Object -ExpandProperty Source)"
+      "Bash(Select-Object -ExpandProperty Source)",
+      "Bash(gmgn-cli *)"
     ]
   }
 }

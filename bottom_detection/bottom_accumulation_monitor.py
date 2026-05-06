@@ -51,6 +51,11 @@ TREND_INTERVALS = tuple(
     if item.strip()
 )
 TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "1h"
+TREND_ORDER_BYS = tuple(
+    item.strip()
+    for item in os.getenv("BOTTOM_TREND_ORDER_BYS", "default,change1h").split(",")
+    if item.strip()
+)
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
@@ -361,10 +366,11 @@ def token_pool_filter_reason(pool_liquidity: float, pool_reliable: bool, reason:
     return None
 
 
-def fetch_trending_tokens_for_interval(interval: str) -> list[dict[str, Any]]:
-    data = run_gmgn(
-        ["market", "trending", "--chain", CHAIN, "--interval", interval, "--limit", str(TREND_LIMIT)]
-    )
+def fetch_trending_tokens_for_interval(interval: str, order_by: str = "default") -> list[dict[str, Any]]:
+    args = ["market", "trending", "--chain", CHAIN, "--interval", interval, "--limit", str(TREND_LIMIT)]
+    if order_by and order_by != "default":
+        args.extend(["--order-by", order_by, "--direction", "desc"])
+    data = run_gmgn(args)
     if not isinstance(data, dict):
         return []
     rows = data.get("data", {}).get("rank") or data.get("rank") or data.get("list") or []
@@ -379,7 +385,8 @@ def fetch_trending_tokens_for_interval(interval: str) -> list[dict[str, Any]]:
         seen.add(address)
         item = dict(row)
         item["_trend_interval"] = interval
-        item["_sources"] = [f"trending_{interval}"]
+        item["_trend_order_by"] = order_by or "default"
+        item["_sources"] = [f"trending_{interval}_{order_by or 'default'}"]
         tokens.append(item)
     return tokens
 
@@ -388,24 +395,29 @@ def fetch_trending_tokens() -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen = set()
     for interval in TREND_INTERVALS:
-        rows = fetch_trending_tokens_for_interval(interval)
-        print(f"trending {interval}: {len(rows)}")
-        for row in rows:
-            address = token_address(row)
-            if not address:
-                continue
-            if address in seen:
-                existing = next((item for item in merged if token_address(item) == address), None)
-                if existing is not None:
-                    sources = set(existing.get("_sources") or [])
-                    sources.add(f"trending_{interval}")
-                    existing["_sources"] = sorted(sources)
-                    intervals = set(str(existing.get("_trend_interval") or "").split(","))
-                    intervals.add(interval)
-                    existing["_trend_interval"] = ",".join(sorted(item for item in intervals if item))
-                continue
-            seen.add(address)
-            merged.append(row)
+        for order_by in TREND_ORDER_BYS:
+            rows = fetch_trending_tokens_for_interval(interval, order_by)
+            print(f"trending {interval}/{order_by}: {len(rows)}")
+            for row in rows:
+                address = token_address(row)
+                if not address:
+                    continue
+                source = f"trending_{interval}_{order_by or 'default'}"
+                if address in seen:
+                    existing = next((item for item in merged if token_address(item) == address), None)
+                    if existing is not None:
+                        sources = set(existing.get("_sources") or [])
+                        sources.add(source)
+                        existing["_sources"] = sorted(sources)
+                        intervals = set(str(existing.get("_trend_interval") or "").split(","))
+                        intervals.add(interval)
+                        existing["_trend_interval"] = ",".join(sorted(item for item in intervals if item))
+                        order_bys = set(str(existing.get("_trend_order_by") or "").split(","))
+                        order_bys.add(order_by or "default")
+                        existing["_trend_order_by"] = ",".join(sorted(item for item in order_bys if item))
+                    continue
+                seen.add(address)
+                merged.append(row)
     return merged
 
 
@@ -1943,6 +1955,7 @@ def scan_once(args: argparse.Namespace) -> None:
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
         f"intervals={','.join(TREND_INTERVALS)} "
+        f"order_bys={','.join(TREND_ORDER_BYS)} "
         f"trending={len(trending_raw)}→{len(filtered_trending)}(skipped {prefilter_skipped}) "
         f"watchlist={len(watchlist_tokens)} merged={len(tokens)}"
     )
@@ -2090,6 +2103,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
     parser.add_argument("--min-pool-liquidity", type=float, default=MIN_POOL_LIQUIDITY_USD, help="Skip non-watchlist tokens below this pool liquidity in USD.")
+    parser.add_argument(
+        "--trend-order-bys",
+        default=",".join(TREND_ORDER_BYS),
+        help="Comma-separated GMGN trending sort fields, for example: default,change1h,volume.",
+    )
     return parser
 
 
@@ -2127,12 +2145,13 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol
     MIN_POOL_LIQUIDITY_USD = args.min_pool_liquidity
+    TREND_ORDER_BYS = tuple(item.strip() for item in str(args.trend_order_bys).split(",") if item.strip())
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()

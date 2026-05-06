@@ -58,6 +58,10 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS last_pool_mcap_ratio NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS narrative_desc TEXT;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS narrative_type TEXT;
 
         CREATE TABLE IF NOT EXISTS bottom_watchlist_delete_audit (
             id BIGSERIAL PRIMARY KEY,
