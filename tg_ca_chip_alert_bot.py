@@ -1661,6 +1661,47 @@ def estimate_token_from_holders(address, raw_holders, candles=None):
     }
 
 
+def build_token_from_info(address, info=None, pool_data=None):
+    info = info or {}
+    token = {
+        "address": address,
+        "symbol": info.get("symbol"),
+        "name": info.get("name"),
+        "market_cap": info.get("market_cap") or info.get("mcap"),
+        "price": info.get("price"),
+        "circulating_supply": info.get("circulating_supply") or info.get("total_supply"),
+        "total_supply": info.get("total_supply"),
+        "liquidity": info.get("liquidity"),
+        "created_at": info.get("creation_timestamp") or info.get("open_timestamp"),
+        "creation_timestamp": info.get("creation_timestamp"),
+        "open_timestamp": info.get("open_timestamp"),
+        "fee_sol": info.get("total_fee") or info.get("trade_fee"),
+        "total_fee": info.get("total_fee"),
+        "trade_fee": info.get("trade_fee"),
+        "launchpad": info.get("launchpad"),
+        "launchpad_platform": info.get("launchpad_platform"),
+        "biggest_pool_address": info.get("biggest_pool_address"),
+        "_gmgn_info": info,
+        "_gmgn_pool": pool_data if pool_data is not None else {},
+    }
+    if isinstance(info.get("dev"), dict):
+        token["ath_mcap"] = ((info.get("dev") or {}).get("ath_token_info") or {}).get("ath_mc")
+    return token
+
+
+def merge_token_estimates(primary, fallback):
+    merged = dict(fallback or {})
+    for key, value in (primary or {}).items():
+        if value not in (None, "", 0):
+            merged[key] = value
+        elif key not in merged:
+            merged[key] = value
+    for key in ("_gmgn_info", "_gmgn_pool", "_gmgn_security"):
+        if key in (primary or {}):
+            merged[key] = primary.get(key)
+    return merged
+
+
 def aggregate_tag_stats(holders):
     groups = {
         "smart_degen": "聪明钱",
@@ -1883,6 +1924,134 @@ def light_wallet_lines(holders, limit=8):
             f"卖{compact_money(sell)} 盈利{profit_pct_text(item.get('profit'), buy)}{suffix}"
         )
     return "\n".join(lines) if lines else "- 暂无有效持仓钱包"
+
+
+def analyze_bottom_chip_sell(raw_holders, holders, summary, kline_summary):
+    price = float((summary or {}).get("price") or (kline_summary or {}).get("close") or 0)
+    open_price = float((kline_summary or {}).get("open") or 0)
+    close_price = float((kline_summary or {}).get("close") or price or 0)
+    high_price = float((kline_summary or {}).get("high") or close_price or 0)
+    low_price = float((kline_summary or {}).get("low") or 0)
+    change_pct = float((kline_summary or {}).get("change_pct") or 0)
+
+    holder_by_wallet = {str(item.get("wallet") or ""): item for item in holders or []}
+    seller_rows = []
+    bottom_seller_rows = []
+    for rank_no, row in enumerate(raw_holders or [], start=1):
+        if bottom_monitor.is_pool_holder(row):
+            continue
+        wallet = raw_wallet_address(row)
+        if not wallet:
+            continue
+        buy = float(row.get("buy_volume_cur") or row.get("buy_volume") or 0)
+        sell = float(row.get("sell_volume_cur") or row.get("sell_volume") or 0)
+        sell_amount_pct = float(row.get("sell_amount_percentage") or row.get("sell_amount_pct") or 0)
+        avg_cost = float(row.get("avg_cost") or row.get("cost_cur") or row.get("cost") or 0)
+        normalized = holder_by_wallet.get(wallet) or {}
+        hold_pct = float(normalized.get("hold_pct") or row.get("amount_percentage") or 0)
+        usd_value = float(normalized.get("usd_value") or row.get("usd_value") or 0)
+        if sell_amount_pct < 0.8 and not (buy > 0 and sell / buy >= 0.8):
+            continue
+        item = {
+            "wallet": wallet,
+            "rank": rank_no,
+            "hold_pct": hold_pct,
+            "usd_value": usd_value,
+            "buy": buy,
+            "sell": sell,
+            "net": buy - sell,
+            "profit": float(row.get("profit") or 0),
+            "avg_cost": avg_cost,
+            "sell_amount_pct": sell_amount_pct if sell_amount_pct > 0 else (sell / buy if buy > 0 else 0),
+            "tags": raw_tags(row),
+        }
+        seller_rows.append(item)
+        is_bottom_cost = avg_cost > 0 and (
+            (low_price > 0 and avg_cost <= low_price * 1.25)
+            or (price > 0 and avg_cost <= price * 0.55)
+        )
+        if is_bottom_cost:
+            bottom_seller_rows.append(item)
+
+    target_rows = bottom_seller_rows or seller_rows
+    total_buy = sum(item["buy"] for item in target_rows)
+    total_sell = sum(item["sell"] for item in target_rows)
+    total_profit = sum(item["profit"] for item in target_rows)
+    total_hold_pct = sum(item["hold_pct"] for item in target_rows)
+    total_usd_value = sum(item["usd_value"] for item in target_rows)
+    avg_cost = weighted_avg_cost([
+        {"avg_cost": item["avg_cost"], "hold_pct": max(item["hold_pct"], item["buy"])}
+        for item in target_rows
+    ])
+    weighted_sell_progress = 0.0
+    weight = 0.0
+    for item in target_rows:
+        item_weight = max(item["buy"], item["usd_value"], item["hold_pct"])
+        weighted_sell_progress += item["sell_amount_pct"] * item_weight
+        weight += item_weight
+    sell_progress = weighted_sell_progress / weight if weight > 0 else 0.0
+    price_near_high = high_price > 0 and close_price >= high_price * 0.95
+    price_not_down = close_price >= open_price if open_price > 0 and close_price > 0 else change_pct >= 0
+    takeover = sell_progress >= 0.8 and (price_not_down or price_near_high)
+    if not target_rows:
+        conclusion = "暂无明显已卖出80%以上的内盘/底部筹码。"
+    elif takeover:
+        conclusion = "底部/早期筹码已卖出80%附近，但价格未明显下跌或接近区间高位，说明卖压被承接，叙事有接盘认可。"
+    else:
+        conclusion = "存在高卖出进度筹码，但价格承接不强，仍按出货压力观察。"
+
+    target_rows.sort(key=lambda item: (item["sell_amount_pct"], item["sell"], item["profit"]), reverse=True)
+    return {
+        "seller_count": len(seller_rows),
+        "bottom_seller_count": len(bottom_seller_rows),
+        "used_bottom_cost_filter": bool(bottom_seller_rows),
+        "hold_pct": total_hold_pct,
+        "usd_value": total_usd_value,
+        "buy": total_buy,
+        "sell": total_sell,
+        "net": total_buy - total_sell,
+        "profit": total_profit,
+        "profit_pct": (total_profit / total_buy * 100) if total_buy > 0 else 0.0,
+        "avg_cost": avg_cost,
+        "sell_progress": sell_progress,
+        "price_not_down": price_not_down,
+        "price_near_high": price_near_high,
+        "takeover": takeover,
+        "price_change_pct": change_pct,
+        "open": open_price,
+        "close": close_price,
+        "high": high_price,
+        "low": low_price,
+        "conclusion": conclusion,
+        "wallets": target_rows[:5],
+    }
+
+
+def bottom_chip_sell_text(data):
+    if not data:
+        return "- 暂无底部筹码卖出分析"
+    lines = [
+        f"- 结论: {data.get('conclusion')}",
+        f"- 高卖出钱包: {int(data.get('seller_count') or 0)}个 | 底部成本命中{int(data.get('bottom_seller_count') or 0)}个 | "
+        f"剩余持仓{float(data.get('hold_pct') or 0):.2%}/{compact_money(data.get('usd_value'))} | "
+        f"卖出进度{float(data.get('sell_progress') or 0):.1%}",
+        f"- 买/卖: {compact_money(data.get('buy'))}/{compact_money(data.get('sell'))} | 净{compact_money(data.get('net'))} | "
+        f"盈利{float(data.get('profit_pct') or 0):+.1f}% | 成本{cost_text(data.get('avg_cost'))}",
+        f"- 价格承接: 涨跌{float(data.get('price_change_pct') or 0):+.2f}% | "
+        f"开{format_chain_price(data.get('open'))} 收{format_chain_price(data.get('close'))} "
+        f"高{format_chain_price(data.get('high'))} 低{format_chain_price(data.get('low'))}",
+    ]
+    wallet_parts = []
+    for item in (data.get("wallets") or [])[:4]:
+        tags = ",".join(str(tag) for tag in (item.get("tags") or [])[:2])
+        suffix = f"/{tags}" if tags else ""
+        wallet_parts.append(
+            f"{short_addr(item.get('wallet'))}{suffix} 持仓{float(item.get('hold_pct') or 0):.2%} "
+            f"已卖{float(item.get('sell_amount_pct') or 0):.1%} 成本{cost_text(item.get('avg_cost'))}"
+        )
+    if wallet_parts:
+        lines.append("- 主要钱包: " + " | ".join(wallet_parts))
+    return "\n".join(lines)
 
 
 def build_light_ca_analysis(address, chain="sol", limit=100):

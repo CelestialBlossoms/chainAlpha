@@ -566,19 +566,19 @@ def print_verdict(score, signals, verdict_label, description):
     print(f"  Verdict: {verdict_label}")
     print(f"  {description}")
 
-    # Comparison table
+    # Comparison table (ASCII-only for cross-platform compatibility)
     print(f"""
-  Reference comparison:
-  ┌─────────────────┬──────┬──────┬──────┬──────┬──────┐
-  │                 │ Cost │ Pos  │ Buy  │ Sell │ Tags │
-  ├─────────────────┼──────┼──────┼──────┼──────┼──────┤
-  │ WOWS (bundled)  │ MED  │ TIGHT│ 100%1│ 100%0│ MIX  │
-  │ PEPTIDEPAY(bun) │ TIGHT│ TIGHT│ 100%1│ 100%0│ BOT  │
-  │ VENIS (mixed)   │ TIGHT│ MED  │ MIX  │ MIX  │ BOT  │
-  │ WILL (this)     │ LOOSE│ WIDE │ 64%2+│ 33%S │ DIV  │
-  └─────────────────┴──────┴──────┴──────┴──────┴──────┘
-  TIGHT=uniform  LOOSE=dispersed  WIDE=pyramid
-  100%1=all 1-tx  64%2+=multi-tx  33%S=some sold
+  Reference comparison (8-dimension scoring):
+  +-----------------+------+------+------+------+------+------+------+
+  |                 | Cost | Pos  |Buy1tx|0Sell | Tags |Exact%|Creat |
+  +-----------------+------+------+------+------+------+------+------+
+  | WOWS (bundled)  | MED  | TIGHT| 60%  | 86%  | MIX  |  NO  |  NO  |
+  | PEPTIDEPAY(bun) | TIGHT| TIGHT| 100% | 100% | BOT  | YES  | YES  |
+  | VENIS (mixed)   | TIGHT| MED  | MIX  | MIX  | BOT  |  NO  |  NO  |
+  | WILL (natural)  | LOOSE| WIDE | 31%  | 64%  | DIV  |  NO  |  NO  |
+  +-----------------+------+------+------+------+------+------+------+
+  TIGHT=uniform LOOSE=dispersed DIV=diverse
+  Exact%=identical position%s  Creat=same-second wallet creation
 """)
 
 
