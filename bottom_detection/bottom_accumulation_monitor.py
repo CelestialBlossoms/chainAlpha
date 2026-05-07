@@ -47,7 +47,7 @@ from bottom_detection.bottom_watchlist_store import (
 CHAIN = "sol"
 TREND_INTERVALS = tuple(
     item.strip()
-    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1h,6h,24h")).split(",")
+    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1h")).split(",")
     if item.strip()
 )
 TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "1h"
@@ -57,6 +57,7 @@ TREND_ORDER_BYS = tuple(
     if item.strip()
 )
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
+MAX_TOKENS = int(os.getenv("BOTTOM_MAX_TOKENS", str(TREND_LIMIT)))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
 RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "100"))
@@ -75,7 +76,7 @@ MIN_MCAP_USD = float(os.getenv("BOTTOM_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_ATH_MCAP_USD", "1000000"))
 BOTTOM_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_MCAP_USD", "40000"))
 BOTTOM_ABNORMAL_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_MAX_MCAP_USD", "200000"))
-BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD", "400000"))
+BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD = float(os.getenv("BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD", "40000"))
 BOTTOM_NEW_DROP_ATH_MCAP_USD = float(os.getenv("BOTTOM_NEW_DROP_ATH_MCAP_USD", "1000000"))
 BOTTOM_NEW_DROP_LEVELS = tuple(
     float(item.strip())
@@ -98,6 +99,19 @@ BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_ABNORMAL_MIN_PO
 BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO", "0.10"))
 WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD", "10000"))
 MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_MIN_POOL_LIQUIDITY_USD", str(WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD)))
+USE_AGENT_DECISION = os.getenv("BOTTOM_USE_AGENT_DECISION", "1") != "0"
+
+# Old token surge detection (老币异动拉升)
+OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
+OLD_TOKEN_SURGE_MIN_AGE_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_AGE_SEC", str(48 * 3600)))
+OLD_TOKEN_SURGE_MIN_MCAP_USD = float(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_MCAP_USD", "40000"))
+OLD_TOKEN_SURGE_PRICE_UP_PCT = float(os.getenv("BOTTOM_OLD_TOKEN_SURGE_PRICE_UP_PCT", "20"))
+OLD_TOKEN_SURGE_RESOLUTIONS = tuple(
+    item.strip()
+    for item in os.getenv("BOTTOM_OLD_TOKEN_SURGE_RESOLUTIONS", "1h,5m,1m").split(",")
+    if item.strip()
+)
+OLD_TOKEN_SURGE_COOLDOWN_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SURGE_COOLDOWN_SEC", "1800"))
 
 BOTTOM_ABNORMAL_RULES = [
     {
@@ -968,6 +982,9 @@ def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str,
     lows = [to_float(c.get("low")) for c in signal_candles if to_float(c.get("low")) > 0]
     highs = [to_float(c.get("high")) for c in signal_candles if to_float(c.get("high")) > 0]
     total_volume = sum(to_float(c.get("volume")) for c in signal_candles)
+    signal_low = min(lows) if lows else 0
+    # Bottom-to-current: change from the LOWEST price in signal window to current close
+    bottom_to_current_pct = ((close_price - signal_low) / signal_low * 100) if signal_low > 0 else 0
     return {
         "resolution": resolution,
         "count": len(candles),
@@ -980,8 +997,9 @@ def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str,
         "open": open_price,
         "close": close_price,
         "change_pct": ((close_price - open_price) / open_price * 100) if open_price > 0 else 0,
+        "bottom_to_current_pct": bottom_to_current_pct,
         "high": max(highs) if highs else 0,
-        "low": min(lows) if lows else 0,
+        "low": signal_low,
         "volume_usd": total_volume,
         "last_volume_usd": to_float(last.get("volume")),
         "rebound_after_high": summarize_rebound_after_high(candles),
@@ -1313,6 +1331,7 @@ def analyze_abnormal_snapshot(
     window_pool_stats = pool_change(current_summary, (recent_history[-1].get("summary") if recent_history else None) or {})
     kline_summary = current_summary.get("kline") or {}
     price_change_pct = to_float(kline_summary.get("change_pct"))
+    bottom_to_current_pct = to_float(kline_summary.get("bottom_to_current_pct"))
     rebound_after_high = kline_summary.get("rebound_after_high") or {}
     rebound_ready = bool(rebound_after_high.get("ready"))
     new_revival_price_change_pct = to_float(rebound_after_high.get("change_pct")) if rebound_ready else 0.0
@@ -1323,7 +1342,9 @@ def analyze_abnormal_snapshot(
     bottom_low_mcap = current_mcap * (kline_low / kline_close) if current_mcap > 0 and kline_low > 0 and kline_close > 0 else 0.0
     token_age = to_int(current_summary.get("age_sec"))
     is_under_24h = token_age <= 0 or token_age <= NEW_TOKEN_AGE_CUTOFF_SEC
-    price_ready = price_change_pct >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
+    # Use bottom-to-current instead of open-to-close for detection
+    # Catches V-reversals where price dipped then recovered
+    price_ready = (bottom_to_current_pct if bottom_to_current_pct > 0 else price_change_pct) >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
     new_revival_price_ready = new_revival_price_change_pct >= BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT
     pool_ratio = to_float(pool_stats.get("pool_mcap_ratio"))
     pool_liquidity = to_float(pool_stats.get("pool_total_liquidity"))
@@ -1391,7 +1412,7 @@ def analyze_abnormal_snapshot(
             f"反弹涨幅{new_revival_price_change_pct:.1f}%"
         )
     elif old_abnormal_ready:
-        rule_name = "OLD_MCAP_40W_UP30"
+        rule_name = "OLD_MCAP_4W_UP30"
         min_ath_mcap = 0
         min_mcap = BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
         max_mcap = 0
@@ -1415,15 +1436,21 @@ def analyze_abnormal_snapshot(
                 f"未命中老币异动: 创建{token_age / 3600:.1f}h, "
                 f"当前市值${current_mcap:,.0f}<${BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD:,.0f}或涨幅/池子不足"
             )
-    display_price_change_pct = new_revival_price_change_pct if signal_type == "new_revival" else price_change_pct
+    # Use bottom_to_current for abnormal signals (catches V-reversals)
+    if signal_type == "abnormal":
+        display_price_change_pct = bottom_to_current_pct if bottom_to_current_pct > 0 else price_change_pct
+    elif signal_type == "new_revival":
+        display_price_change_pct = new_revival_price_change_pct
+    else:
+        display_price_change_pct = price_change_pct
     display_price_ready = new_revival_price_ready if signal_type == "new_revival" else price_ready
     reasons = [rule_reason]
     if not signal_type.startswith("drop_"):
         reasons.append(
             (
-                f"价格上涨{display_price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+                f"底部反弹{display_price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}% (12根内低点→现价)"
                 if display_price_ready
-                else f"价格上涨{display_price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}%"
+                else f"底部反弹{display_price_change_pct:.1f}%<{BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}% (12根内低点→现价)"
             )
         )
     reasons.extend(
@@ -1457,6 +1484,7 @@ def analyze_abnormal_snapshot(
         "pool_liquidity_confirmation_ready": pool_liquidity_ready,
         "pool_ratio_confirmation_ready": pool_ratio_ready,
         "raw_kline_change_pct": price_change_pct,
+        "bottom_to_current_pct": bottom_to_current_pct,
         "price_change_pct": display_price_change_pct,
         "required_price_change_pct": 0 if signal_type.startswith("drop_") else (BOTTOM_NEW_REVIVAL_MIN_PRICE_UP_PCT if signal_type == "new_revival" else BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT),
         "required_pool_liquidity": BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD,
@@ -1829,6 +1857,183 @@ def notify_skip_reason(analysis: dict[str, Any]) -> str:
     return "; ".join(analysis.get("reasons") or ["未满足异动检测条件"])
 
 
+def run_agent_execution(
+    *,
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    raw_holders: list[dict[str, Any]],
+    holders: list[dict[str, Any]],
+    candles: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    execute: bool,
+    already_notified: bool = False,
+    has_previous_bottom_signal: bool = False,
+):
+    """Run the Agent decision/execution layer from already-collected monitor data."""
+    from agents.action_executor_agent import ActionExecutorAgent
+    from agents.chip_analysis_agent import ChipAnalysisAgent
+    from agents.context import AgentContext
+    from agents.kline_structure_agent import KlineStructureAgent
+    from agents.signal_decision_agent import SignalDecisionAgent
+
+    address = token_address(token)
+    context = AgentContext(
+        ca=address,
+        chain=CHAIN,
+        symbol=str(token.get("symbol") or ""),
+        source="bottom_monitor",
+        token=token,
+        gmgn_info=token.get("_gmgn_info") or {},
+        gmgn_pool=token.get("_gmgn_pool") or {},
+        raw_holders=raw_holders,
+        holders=holders,
+        candles=candles,
+        history=history,
+        stats={
+            "source_agent": "bottom_monitor_bridge",
+            "signal_type": analysis.get("signal_type"),
+            "abnormal_rule": analysis.get("abnormal_rule"),
+            "mcap": analysis.get("current_mcap", 0),
+            "ath_mcap": analysis.get("ath_mcap", 0),
+            "price_change_pct": analysis.get("price_change_pct", 0),
+            "pool_liquidity": analysis.get("pool_total_liquidity", 0),
+            "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
+            "history_count": analysis.get("history_count", 0),
+        },
+    )
+    context.decision["bottom_signal"] = {
+        "token": token,
+        "summary": summary,
+        "gmgn_info": token.get("_gmgn_info") or {},
+        "gmgn_pool": token.get("_gmgn_pool") or {},
+        "raw_holders": raw_holders,
+        "holders": holders,
+        "candles": candles,
+        "history": history,
+        "analysis": analysis,
+        "signal_text": abnormal_signal_text(token, analysis),
+        "should_notify": should_notify(analysis),
+        "already_notified": already_notified,
+        "has_previous_bottom_signal": has_previous_bottom_signal,
+    }
+    context = KlineStructureAgent().run(context)
+    context = ChipAnalysisAgent().run(context)
+    context = SignalDecisionAgent().run(context)
+    return ActionExecutorAgent(execute=execute).run(context)
+
+
+def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
+    """Check old tokens for sudden price surge across 1h/5m/1m resolutions.
+
+    Returns a signal dict if surge detected, None otherwise.
+    """
+    if not OLD_TOKEN_SURGE_ENABLED:
+        return None
+
+    age_sec = token_age_sec(token)
+    if age_sec <= OLD_TOKEN_SURGE_MIN_AGE_SEC:
+        return None
+
+    address = token_address(token)
+    current_mcap = calc_mcap(token)
+    if current_mcap < OLD_TOKEN_SURGE_MIN_MCAP_USD:
+        return None
+
+    # Fetch multi-resolution K-lines and check for surge
+    hits = []
+    now = int(time.time())
+    for resolution in OLD_TOKEN_SURGE_RESOLUTIONS:
+        step_sec = kline_resolution_seconds(resolution)
+        lookback_sec = max(step_sec * 20, 3600)  # at least 1h of data
+        start_ts = now - lookback_sec
+
+        try:
+            rows = fetch_kline_range(address, resolution, start_ts, now)
+        except Exception:
+            continue
+        if not rows:
+            continue
+
+        candles = []
+        for row in (rows if isinstance(rows, list) else []):
+            if not isinstance(row, dict):
+                continue
+            raw_ts = int(to_float(row.get("time") or row.get("timestamp") or row.get("t")))
+            ts = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
+            close = to_float(row.get("close") or row.get("c"))
+            if ts <= 0 or close <= 0:
+                continue
+            candles.append({"ts": ts, "close": close, "high": to_float(row.get("high") or row.get("h"), close),
+                           "low": to_float(row.get("low") or row.get("l"), close),
+                           "volume": to_float(row.get("volume") or row.get("v"))})
+        if len(candles) < 2:
+            continue
+        candles.sort(key=lambda c: c["ts"])
+
+        # Check each recent candle for surge vs its own open (or prior close)
+        recent = candles[-3:]  # last 3 candles
+        for c in recent:
+            if len(candles) >= 2:
+                prev_close = candles[-len(recent) - 1 + recent.index(c)]["close"] if recent.index(c) > 0 else candles[-len(recent) - 1]["close"]
+            else:
+                prev_close = candles[0]["close"]
+            if prev_close <= 0:
+                continue
+            change_pct = (c["close"] - prev_close) / prev_close * 100
+            if change_pct >= OLD_TOKEN_SURGE_PRICE_UP_PCT:
+                hits.append({
+                    "resolution": resolution,
+                    "change_pct": round(change_pct, 1),
+                    "from_price": prev_close,
+                    "to_price": c["close"],
+                    "volume": c["volume"],
+                    "ts": c["ts"],
+                })
+
+    if not hits:
+        return None
+
+    # Keep only best hit per resolution
+    best = {}
+    for h in hits:
+        key = h["resolution"]
+        if key not in best or h["change_pct"] > best[key]["change_pct"]:
+            best[key] = h
+
+    best_hit = max(best.values(), key=lambda x: x["change_pct"])
+    resolutions_hit = list(best.keys())
+    return {
+        "signal_type": "old_surge",
+        "change_pct": best_hit["change_pct"],
+        "resolutions": resolutions_hit,
+        "from_price": best_hit["from_price"],
+        "to_price": best_hit["to_price"],
+        "volume": best_hit["volume"],
+        "current_mcap": current_mcap,
+        "best_resolution": best_hit["resolution"],
+        "hits": hits,
+    }
+
+
+def old_surge_signal_text(token: dict[str, Any], surge: dict[str, Any]) -> str:
+    address = token_address(token)
+    return (
+        f"老币异动拉升 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"CA: {address}\n"
+        f"当前市值: ${surge['current_mcap']:,.0f}\n"
+        f"拉升幅度: {surge['change_pct']:.1f}% (最佳分辨率: {surge['best_resolution']})\n"
+        f"触发分辨率: {', '.join(surge['resolutions'])}\n"
+        f"价格: ${surge['from_price']:.8f} -> ${surge['to_price']:.8f}\n"
+        f"成交量: ${surge['volume']:,.0f}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def old_surge_cooldown_key(address: str) -> str:
+    return f"bottom:old_surge:last:{address}"
+
+
 def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_update_allowed: bool = False) -> bool:
     address = token_address(token)
     raw_holders = fetch_top100_holders(address)
@@ -1854,26 +2059,104 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
     )
     if notify and should_notify(analysis) and not already_notified:
-        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
-        send_tg(abnormal_signal_text(token, analysis), extra=web_extra)
+        if USE_AGENT_DECISION:
+            run_agent_execution(
+                token=token,
+                summary=summary,
+                raw_holders=raw_holders,
+                holders=holders,
+                candles=candles,
+                history=history,
+                analysis=analysis,
+                execute=notify,
+                already_notified=already_notified,
+                has_previous_bottom_signal=has_previous_bottom_signal,
+            )
+        else:
+            web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+            signal_text = abnormal_signal_text(token, analysis)
+            send_tg(signal_text, extra=web_extra)
+            publish_frontend_signal_update(signal_text, web_extra)
     elif notify and should_notify(analysis) and already_notified:
         if frontend_update_allowed or should_notify(analysis):
-            web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
-            publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
-            print(
-                f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                f"frontend updated mcap ${web_extra.get('first_signal_mcap', 0):,.0f}->${web_extra.get('current_mcap', 0):,.0f} "
-                f"({web_extra.get('first_signal_change_pct', 0):+.1f}%)"
-            )
+            if USE_AGENT_DECISION:
+                agent_context = run_agent_execution(
+                    token=token,
+                    summary=summary,
+                    raw_holders=raw_holders,
+                    holders=holders,
+                    candles=candles,
+                    history=history,
+                    analysis=analysis,
+                    execute=notify,
+                    already_notified=already_notified,
+                    has_previous_bottom_signal=has_previous_bottom_signal,
+                )
+                action_execution = agent_context.decision.get("action_executor") if agent_context else {}
+                print(
+                    f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
+                    f"agent action={action_execution.get('action')} results={action_execution.get('results')}"
+                )
+            else:
+                web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+                publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+                print(
+                    f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
+                    f"frontend updated mcap ${web_extra.get('first_signal_mcap', 0):,.0f}->${web_extra.get('current_mcap', 0):,.0f} "
+                    f"({web_extra.get('first_signal_change_pct', 0):+.1f}%)"
+                )
         else:
             print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
     elif notify and has_previous_bottom_signal:
-        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
-        publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
-        print(
-            f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
-            f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
-        )
+        if USE_AGENT_DECISION:
+            agent_context = run_agent_execution(
+                token=token,
+                summary=summary,
+                raw_holders=raw_holders,
+                holders=holders,
+                candles=candles,
+                history=history,
+                analysis=analysis,
+                execute=notify,
+                already_notified=already_notified,
+                has_previous_bottom_signal=has_previous_bottom_signal,
+            )
+            action_execution = agent_context.decision.get("action_executor") if agent_context else {}
+            print(
+                f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
+                f"agent action={action_execution.get('action')} results={action_execution.get('results')}"
+            )
+        else:
+            web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+            publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+            print(
+                f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
+                f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
+            )
+
+    # Old token surge detection (independent of abnormal/EMA signal)
+    if notify and OLD_TOKEN_SURGE_ENABLED:
+        surge = check_old_token_surge(token)
+        if surge:
+            surge_type = "old_surge"
+            surge_already = previous_signal_exists(address, surge_type)
+            if not surge_already:
+                surge_text = old_surge_signal_text(token, surge)
+                send_tg(surge_text, extra={
+                    "signal_type": surge_type,
+                    "change_pct": surge["change_pct"],
+                    "resolutions": surge["resolutions"],
+                    "best_resolution": surge["best_resolution"],
+                    "current_mcap": surge["current_mcap"],
+                    "symbol": token.get("symbol"),
+                    "address": address,
+                })
+                print(
+                    f"{token_label(token)} old_surge {surge['change_pct']:.1f}% "
+                    f"at {surge['best_resolution']} mcap=${surge['current_mcap']:,.0f}"
+                )
+            else:
+                print(f"{token_label(token)} old_surge {surge['change_pct']:.1f}% already notified")
 
     # EMA 9/26 crossover detection (independent of abnormal signal)
     if notify and (frontend_update_allowed or should_notify(analysis)) and candles and len(candles) >= 30:
@@ -1932,32 +2215,23 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
 
 def scan_once(args: argparse.Namespace) -> None:
     scan_id = str(uuid.uuid4())
-    trending_raw = fetch_trending_tokens()
+    trending_tokens = fetch_trending_tokens()
     watchlist_tokens = fetch_watchlist_tokens()
-
-    # Phase 1: Quick filter trending using ONLY trending API data (no extra calls)
-    filtered_trending = []
-    prefilter_skipped = 0
-    for row in trending_raw:
-        address = token_address(row)
-        if address and is_watchlist_blacklisted(address):
-            print(f"{address[:8]} trending blacklisted, skipped")
-            prefilter_skipped += 1
+    prefiltered_trending = []
+    prefiltered_skipped = 0
+    for token in trending_tokens:
+        skip_reason = prefilter_trending_token(token)
+        if skip_reason:
+            prefiltered_skipped += 1
             continue
-        reason = prefilter_trending_token(row)
-        if reason:
-            prefilter_skipped += 1
-        else:
-            filtered_trending.append(row)
-
-    # Phase 2: Merge watchlist + pre-filtered trending
-    tokens = merge_token_sources(watchlist_tokens, filtered_trending)
+        prefiltered_trending.append(token)
+    tokens = merge_token_sources(prefiltered_trending, watchlist_tokens)
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
+        f"mode=trending+watchlist "
         f"intervals={','.join(TREND_INTERVALS)} "
-        f"order_bys={','.join(TREND_ORDER_BYS)} "
-        f"trending={len(trending_raw)}→{len(filtered_trending)}(skipped {prefilter_skipped}) "
-        f"watchlist={len(watchlist_tokens)} merged={len(tokens)}"
+        f"trending={len(trending_tokens)} prefiltered={len(prefiltered_trending)} "
+        f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} merged={len(tokens)}"
     )
     processed = 0
     skipped = 0
@@ -1965,7 +2239,7 @@ def scan_once(args: argparse.Namespace) -> None:
         try:
             address = token_address(token)
             is_watchlist = "watchlist" in set(token.get("_sources", []))
-            if token.get("blacklisted"):
+            if token.get("blacklisted") or is_watchlist_blacklisted(address):
                 print(f"{token_label(token)} blacklisted, skipped")
                 skipped += 1
                 continue
@@ -2097,7 +2371,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true", help="Run forever.")
     parser.add_argument("--notify", action="store_true", help="Send Telegram messages for new signals.")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC, help="Watch interval seconds.")
-    parser.add_argument("--max-tokens", type=int, default=TREND_LIMIT)
+    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     parser.add_argument("--token-delay", type=float, default=0.5, help="Delay between holder calls.")
     parser.add_argument("--min-mcap", type=float, default=MIN_MCAP_USD, help="Skip tokens below this market cap in USD.")
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
@@ -2107,6 +2381,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--trend-order-bys",
         default=",".join(TREND_ORDER_BYS),
         help="Comma-separated GMGN trending sort fields, for example: default,change1h,volume.",
+    )
+    parser.add_argument(
+        "--trend-intervals",
+        default=",".join(TREND_INTERVALS),
+        help="Comma-separated GMGN trending intervals, for example: 1h,6h,24h.",
     )
     return parser
 
@@ -2145,13 +2424,15 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
     MIN_FEE_SOL = args.min_fee_sol
     MIN_POOL_LIQUIDITY_USD = args.min_pool_liquidity
     TREND_ORDER_BYS = tuple(item.strip() for item in str(args.trend_order_bys).split(",") if item.strip())
+    TREND_INTERVALS = tuple(item.strip() for item in str(args.trend_intervals).split(",") if item.strip())
+    TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else TREND_INTERVAL
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()

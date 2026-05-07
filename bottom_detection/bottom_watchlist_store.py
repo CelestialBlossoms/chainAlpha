@@ -59,7 +59,8 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
             SELECT ca, create_at, added_at, source, peak_mcap, last_mcap,
                    daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false),
                    last_pool_liquidity, last_pool_mcap_ratio, fee_sol, symbol,
-                   narrative_desc, narrative_type
+                   narrative_desc, narrative_type, highest_mcap, current_mcap, gmgn_created_at,
+                   remark
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -82,6 +83,10 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "symbol": row[13] if len(row) > 13 else None,
                 "narrative_desc": row[14] if len(row) > 14 else None,
                 "narrative_type": row[15] if len(row) > 15 else None,
+                "highest_mcap": row[16] if len(row) > 16 else None,
+                "current_mcap": row[17] if len(row) > 17 else None,
+                "gmgn_created_at": row[18] if len(row) > 18 else None,
+                "remark": row[19] if len(row) > 19 else None,
             }
             for row in cur.fetchall()
         ]
@@ -101,9 +106,11 @@ def upsert_watchlist_token(
         cur.execute(
             """
             INSERT INTO bottom_watchlist_tokens (
-                ca, create_at, added_at, last_seen_at, source, peak_mcap, last_mcap, note
+                ca, create_at, added_at, last_seen_at, source, peak_mcap, last_mcap,
+                highest_mcap, current_mcap, token_created_at, gmgn_created_at, note
             ) VALUES (
-                %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END, now(), now(), %s, %s, %s, %s
+                %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END,
+                now(), now(), %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 create_at = COALESCE(bottom_watchlist_tokens.create_at, EXCLUDED.create_at),
@@ -112,6 +119,8 @@ def upsert_watchlist_token(
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
                 ath_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.ath_mcap, 0), EXCLUDED.peak_mcap),
+                highest_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.highest_mcap, 0), EXCLUDED.peak_mcap),
+                current_mcap = EXCLUDED.last_mcap,
                 note = EXCLUDED.note
             """,
             (
@@ -121,6 +130,10 @@ def upsert_watchlist_token(
                 source,
                 mcap,
                 mcap,
+                mcap,
+                mcap,
+                created_ts if created_ts > 0 else None,
+                created_ts if created_ts > 0 else None,
                 f"auto add when mcap >= ${auto_add_threshold:,.0f}",
             ),
         )
@@ -135,8 +148,21 @@ def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: flo
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            "UPDATE bottom_watchlist_tokens SET token_created_at = %s, ath_mcap = GREATEST(COALESCE(ath_mcap, 0), %s) WHERE ca = %s",
-            (gmgn_created_ts if gmgn_created_ts > 0 else None, gmgn_ath_mcap, address),
+            """
+            UPDATE bottom_watchlist_tokens
+            SET token_created_at = %s,
+                gmgn_created_at = %s,
+                ath_mcap = GREATEST(COALESCE(ath_mcap, 0), %s),
+                highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s)
+            WHERE ca = %s
+            """,
+            (
+                gmgn_created_ts if gmgn_created_ts > 0 else None,
+                gmgn_created_ts if gmgn_created_ts > 0 else None,
+                gmgn_ath_mcap,
+                gmgn_ath_mcap,
+                address,
+            ),
         )
     db_op(_op)
 
@@ -167,6 +193,12 @@ def ensure_watchlist_daily_mcap_columns() -> None:
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS ath_mcap NUMERIC DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS highest_mcap NUMERIC DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS current_mcap NUMERIC DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS gmgn_created_at BIGINT DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
@@ -176,6 +208,8 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS narrative_desc TEXT;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS narrative_type TEXT;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS remark TEXT;
             """
         )
 
@@ -201,10 +235,11 @@ def upsert_daily_mcap_watchlist_token(
             INSERT INTO bottom_watchlist_tokens (
                 ca, create_at, added_at, last_seen_at, source, symbol,
                 peak_mcap, last_mcap, fee_sol, daily_mcap_date,
-                daily_mcap_threshold, note
+                daily_mcap_threshold, highest_mcap, current_mcap,
+                token_created_at, gmgn_created_at, note
             ) VALUES (
                 %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END,
-                now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s
+                now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 create_at = COALESCE(bottom_watchlist_tokens.create_at, EXCLUDED.create_at),
@@ -214,7 +249,11 @@ def upsert_daily_mcap_watchlist_token(
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
                 ath_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.ath_mcap, 0), EXCLUDED.peak_mcap),
+                highest_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.highest_mcap, 0), EXCLUDED.peak_mcap),
+                current_mcap = EXCLUDED.last_mcap,
                 fee_sol = GREATEST(COALESCE(bottom_watchlist_tokens.fee_sol, 0), EXCLUDED.fee_sol),
+                token_created_at = COALESCE(EXCLUDED.token_created_at, bottom_watchlist_tokens.token_created_at),
+                gmgn_created_at = COALESCE(EXCLUDED.gmgn_created_at, bottom_watchlist_tokens.gmgn_created_at),
                 daily_mcap_date = CURRENT_DATE,
                 daily_mcap_threshold = EXCLUDED.daily_mcap_threshold,
                 note = EXCLUDED.note
@@ -229,6 +268,10 @@ def upsert_daily_mcap_watchlist_token(
                 mcap,
                 fee_sol,
                 threshold_mcap,
+                mcap,
+                mcap,
+                created_ts if created_ts > 0 else None,
+                created_ts if created_ts > 0 else None,
                 f"daily auto record when mcap >= ${threshold_mcap:,.0f} and fee >= {fee_sol:.2f} SOL",
             ),
         )
@@ -432,13 +475,15 @@ def update_watchlist_seen(
             SET last_seen_at = now(),
                 peak_mcap = GREATEST(COALESCE(peak_mcap, 0), %s),
                 last_mcap = %s,
+                highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
+                current_mcap = %s,
                 last_pool_liquidity = %s,
                 last_pool_mcap_ratio = %s,
                 fee_sol = GREATEST(COALESCE(fee_sol, 0), COALESCE(%s, 0)),
                 symbol = COALESCE(%s, symbol)
             WHERE ca = %s
             """,
-            (mcap, mcap, pool_liquidity, pool_mcap_ratio, fee_sol, symbol, address),
+            (mcap, mcap, mcap, mcap, pool_liquidity, pool_mcap_ratio, fee_sol, symbol, address),
         )
 
     db_op(_op)

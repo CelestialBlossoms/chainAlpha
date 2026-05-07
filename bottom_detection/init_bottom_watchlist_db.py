@@ -20,7 +20,11 @@ def init_bottom_watchlist_table(conn):
             source TEXT DEFAULT 'auto_ath_mcap',
             peak_mcap NUMERIC DEFAULT 0,
             last_mcap NUMERIC DEFAULT 0,
-            note TEXT
+            highest_mcap NUMERIC DEFAULT 0,
+            current_mcap NUMERIC DEFAULT 0,
+            gmgn_created_at BIGINT DEFAULT 0,
+            note TEXT,
+            remark TEXT
         );
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS create_at TIMESTAMPTZ;
@@ -35,7 +39,15 @@ def init_bottom_watchlist_table(conn):
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS last_mcap NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS highest_mcap NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS current_mcap NUMERIC DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS gmgn_created_at BIGINT DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS note TEXT;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS remark TEXT;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS symbol TEXT;
         ALTER TABLE bottom_watchlist_tokens
@@ -62,6 +74,8 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS narrative_desc TEXT;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS narrative_type TEXT;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS remark TEXT;
 
         CREATE TABLE IF NOT EXISTS bottom_watchlist_delete_audit (
             id BIGSERIAL PRIMARY KEY,

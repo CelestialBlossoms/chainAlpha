@@ -27,7 +27,11 @@
       "Bash(where gmgn-cli *)",
       "Bash(Get-Command gmgn-cli *)",
       "Bash(Select-Object -ExpandProperty Source)",
-      "Bash(gmgn-cli *)"
+      "Bash(gmgn-cli *)",
+      "PowerShell(New-Item *)",
+      "PowerShell(Copy-Item *)",
+      "Bash(npm run *)",
+      "Bash(start *)"
     ]
   }
 }
