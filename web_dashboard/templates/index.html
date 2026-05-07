@@ -648,7 +648,14 @@
               <span class="card-time">${htmlEscape(signal.time || "-")}</span>
               <button class="card-close" type="button" data-address="${htmlEscape(signal.address)}" title="移除">✕</button>
             </div>
-            <div class="card-subtitle">${htmlEscape(signal.narrative || signal.name || "-")}</div>
+            <div class="card-subtitle">${htmlEscape(signal.name || signal.verdict || "-")}</div>
+            <div class="card-narrative">
+              <div class="card-narrative-head">
+                <span>叙事</span>
+                <button class="narrative-copy-btn" type="button" data-narrative="${htmlEscape(signal.narrative || "")}">复制</button>
+              </div>
+              <p>${htmlEscape(signal.narrative || "-")}</p>
+            </div>
             <div class="card-stats">
               <div class="card-stat"><span>市值</span><b>${formatCap(signal.mcap)}</b></div>
               <div class="card-stat"><span>涨幅</span><b class="${priceClass}">${formatPct(signal.priceChange)}</b></div>
@@ -794,6 +801,13 @@
         event.preventDefault();
         event.stopPropagation();
         copyAddress(copyBtn.dataset.address || "");
+        return;
+      }
+      const narrativeCopyBtn = event.target.closest(".narrative-copy-btn");
+      if (narrativeCopyBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        copyAddress(narrativeCopyBtn.dataset.narrative || "");
         return;
       }
       if (event.target.closest("a")) return;

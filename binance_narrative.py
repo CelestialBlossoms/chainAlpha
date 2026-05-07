@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import quote_plus
@@ -21,11 +22,18 @@ BINANCE_NARRATIVE_ENABLED = os.getenv("BINANCE_NARRATIVE_ENABLED", "1") != "0"
 BINANCE_NARRATIVE_TTL_SEC = int(os.getenv("BINANCE_NARRATIVE_TTL_SEC", "86400"))
 BINANCE_NARRATIVE_TIMEOUT_SEC = int(os.getenv("BINANCE_NARRATIVE_TIMEOUT_SEC", "12"))
 BINANCE_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
+DEEPSEEK_TRANSLATE_ENABLED = os.getenv("BINANCE_NARRATIVE_DEEPSEEK_TRANSLATE", "1") != "0"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-b9fa593d50ce4e469d7645f530de2623")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+DEEPSEEK_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "45"))
 
 TOKEN_SEARCH_URL = "https://web3.binance.com/bapi/defi/v5/public/wallet-direct/buw/wallet/market/token/search/ai"
 TOKEN_META_URL = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/dex/market/token/meta/info/ai"
 TOKEN_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info/ai"
 TOPIC_RUSH_URL = "https://web3.binance.com/bapi/defi/v2/public/wallet-direct/buw/wallet/market/token/social-rush/rank/list/ai"
+CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+ENGLISH_RE = re.compile(r"[A-Za-z]")
 
 
 def _headers() -> dict[str, str]:
@@ -103,6 +111,57 @@ def _good_description(value: Any) -> str:
     if any(low.startswith(prefix) for prefix in generic):
         return ""
     return text[:500]
+
+
+def looks_english(text: str) -> bool:
+    text = str(text or "").strip()
+    if not text:
+        return False
+    if CHINESE_RE.search(text):
+        return False
+    letters = ENGLISH_RE.findall(text)
+    return len(letters) >= 20 and len(letters) / max(len(text), 1) >= 0.35
+
+
+def translate_narrative_to_chinese(text: str) -> str:
+    text = str(text or "").strip()
+    if not text or not looks_english(text):
+        return text
+    if not DEEPSEEK_TRANSLATE_ENABLED or not DEEPSEEK_API_KEY:
+        return text
+    prompt = (
+        "将下面的加密 meme 代币叙事翻译并压缩为中文。"
+        "要求：只输出中文，不要解释，不要添加投资建议；保留代币名、核心热点、社交传播点；控制在120字以内。\n\n"
+        f"{text}"
+    )
+    try:
+        resp = requests.post(
+            f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": "你是加密代币叙事翻译器，只输出简洁中文。"},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 300,
+            },
+            timeout=DEEPSEEK_TIMEOUT,
+        )
+        if not resp.ok:
+            print(f"deepseek narrative translate http={resp.status_code} {resp.text[:160]}")
+            return text
+        data = resp.json()
+        translated = (
+            ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            if isinstance(data, dict) else ""
+        )
+        translated = str(translated or "").strip()
+        return translated[:500] if translated else text
+    except Exception as exc:
+        print(f"deepseek narrative translate failed: {exc}")
+        return text
 
 
 def _first_topic_match(address: str, symbol: str = "", name: str = "") -> dict[str, Any]:
@@ -343,12 +402,16 @@ def get_binance_narrative(
         desc = f"{base} Binance Web3 tags: {tag_text}" if tag_text else ""
     if topic_name and desc and topic_name not in desc:
         desc = f"{topic_name}: {desc}"
+    original_desc = desc
+    translated_desc = translate_narrative_to_chinese(desc)
 
     result = {
         "address": address,
         "symbol": token_symbol,
         "name": token_name,
-        "narrative_desc": desc[:500],
+        "narrative_desc": translated_desc[:500],
+        "narrative_desc_original": original_desc[:500],
+        "narrative_translated": translated_desc != original_desc,
         "narrative_type": narrative_type[:180],
         "tags": tags,
         "source": "binance_web3",
@@ -389,6 +452,8 @@ def compact_narrative(narrative: dict[str, Any] | None) -> dict[str, Any]:
         "symbol": narrative.get("symbol") or "",
         "name": narrative.get("name") or "",
         "narrative_desc": narrative.get("narrative_desc") or "",
+        "narrative_desc_original": narrative.get("narrative_desc_original") or "",
+        "narrative_translated": bool(narrative.get("narrative_translated")),
         "narrative_type": narrative.get("narrative_type") or "",
         "tags": (narrative.get("tags") or [])[:12],
         "source": narrative.get("source") or "",
