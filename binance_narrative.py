@@ -196,12 +196,15 @@ def _topic_summary(topic: dict[str, Any]) -> str:
     if not isinstance(summary, dict):
         return ""
     preferred = (
+        "aiSummaryCn",
+        "aiSummaryZh",
         "cn",
         "zh",
         "summaryCn",
         "summaryZh",
         "socialSummaryBriefTranslated",
         "socialSummaryDetailTranslated",
+        "aiSummaryEn",
         "en",
         "summary",
         "socialSummaryBrief",
