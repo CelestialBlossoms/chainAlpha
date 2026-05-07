@@ -9,6 +9,7 @@ from psycopg2.extras import Json
 from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 from redis_client import get_redis_client, redis_key
+from binance_narrative import compact_narrative, get_binance_narrative
 from tg_alert_stream import publish_tg_alert
 
 # ---------------------------------------------------------------------------
@@ -2154,6 +2155,17 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     bottom_profit_wallets = analyze_bottom_profit_wallets(holders_list)
     wallet_creation = analyze_wallet_creation_clusters(holders_list)
     narrative = extract_token_narrative(info, trend_row)
+    binance_narrative = {}
+    try:
+        binance_narrative = get_binance_narrative(
+            address,
+            symbol=info.get("symbol") or trend_row.get("symbol"),
+            name=info.get("name") or trend_row.get("name"),
+        )
+    except Exception as exc:
+        print(f"  [Binance Narrative] {address[:8]} failed: {exc}")
+    if not narrative:
+        narrative = (binance_narrative or {}).get("narrative_desc", "")
     trend_mcap = calc_mcap(trend_row)
     info_mcap = calc_mcap(info)
     mcap = calc_mcap(trend_row, info)
@@ -2196,6 +2208,9 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "symbol": info.get("symbol"),
         "name": info.get("name") or trend_row.get("name"),
         "narrative": narrative,
+        "narrative_type": (binance_narrative or {}).get("narrative_type", ""),
+        "narrative_desc": (binance_narrative or {}).get("narrative_desc", narrative),
+        "binance_narrative": compact_narrative(binance_narrative),
         "mcap": mcap,
         "trend_mcap": trend_mcap,
         "info_mcap": info_mcap,

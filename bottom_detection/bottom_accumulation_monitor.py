@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
+from binance_narrative import compact_narrative, get_binance_narrative, resolve_cached_or_db_narrative
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
     clean_redis_stream_for_ca,
@@ -498,6 +499,11 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "watchlist_last_mcap": to_float(row.get("last_mcap")),
             "watchlist_last_pool_liquidity": to_float(row.get("last_pool_liquidity")),
             "watchlist_last_pool_mcap_ratio": to_float(row.get("last_pool_mcap_ratio")),
+            "watchlist_narrative_desc": row.get("narrative_desc") or "",
+            "watchlist_narrative_type": row.get("narrative_type") or "",
+            "narrative_desc": row.get("narrative_desc") or "",
+            "narrative_type": row.get("narrative_type") or "",
+            "symbol": row.get("symbol") or "",
             "blacklisted": bool(row.get("blacklisted")),
         }
         if create_at:
@@ -1600,6 +1606,13 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquid
     if address and is_watchlist_blacklisted(address):
         print(f"{address[:8]} daily 1M frontend update blacklisted, skipped")
         return
+    narrative = resolve_cached_or_db_narrative(address)
+    if not narrative or not narrative.get("narrative_desc"):
+        try:
+            narrative = get_binance_narrative(address, symbol=token.get("symbol"), name=token.get("name"))
+        except Exception as exc:
+            print(f"{address[:8]} daily 1M binance narrative failed: {exc}")
+            narrative = {}
     zone, zone_label = daily_1m_zone(current_mcap)
     drop = round((1 - current_mcap / max(peak_mcap, 1)) * 100, 1)
     milestone_date = token.get("watchlist_daily_mcap_date") or datetime.now().date().isoformat()
@@ -1616,6 +1629,10 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquid
         "drop_from_peak_pct": drop,
         "liquidity": to_float(pool_liquidity if pool_liquidity is not None else (token.get("liquidity") or token.get("pool_liquidity"))),
         "holders": token.get("holder_count", 0),
+        "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+        "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+        "narrative_type": narrative.get("narrative_type") or token.get("narrative_type") or "",
+        "binance_narrative": compact_narrative(narrative),
     }
     text = f"每日1M | ${token.get('symbol', '?')}\n市值: ${current_mcap:,.0f} | 峰值: ${peak_mcap:,.0f} | {zone_label}"
     publish_tg_alert(text, "daily_1m", status="update", ca=address, extra=extra)
@@ -1661,6 +1678,13 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
     )
     print(f"{token_label(token)} watchlist daily 1M recorded peak=${peak_mcap:,.0f} cur=${current_mcap:,.0f} fee={current_fee_sol:.2f} SOL")
     if notify and daily_mcap_watchlist_needs_notify(address):
+        narrative = resolve_cached_or_db_narrative(address)
+        if not narrative or not narrative.get("narrative_desc"):
+            try:
+                narrative = get_binance_narrative(address, symbol=token.get("symbol"), name=token.get("name"))
+            except Exception as exc:
+                print(f"{address[:8]} daily 1M notify binance narrative failed: {exc}")
+                narrative = {}
         extra = {
             "signal_type": "daily_mcap_over_1m",
             "address": address,
@@ -1677,6 +1701,10 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
             "required_pool_mcap_ratio": DAILY_MCAP_MIN_POOL_MCAP_RATIO,
             "created_ts": token_created_ts(token),
             "age_sec": age_sec,
+            "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+            "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+            "narrative_type": narrative.get("narrative_type") or token.get("narrative_type") or "",
+            "binance_narrative": compact_narrative(narrative),
         }
         send_tg(daily_mcap_signal_text(token, current_mcap, current_fee_sol), extra=extra)
         publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquidity=pool_liquidity)
@@ -1815,6 +1843,21 @@ def build_bottom_signal_extra(
     baseline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     address = token_address(token)
+    narrative = resolve_cached_or_db_narrative(address)
+    if not narrative or not narrative.get("narrative_desc"):
+        try:
+            narrative = get_binance_narrative(
+                address,
+                symbol=token.get("symbol"),
+                name=token.get("name"),
+            )
+        except Exception as exc:
+            print(f"{address[:8]} binance narrative failed: {exc}")
+            narrative = {}
+    watchlist_narrative_desc = token.get("watchlist_narrative_desc") or token.get("narrative_desc") or ""
+    watchlist_narrative_type = token.get("watchlist_narrative_type") or token.get("narrative_type") or ""
+    narrative_desc = narrative.get("narrative_desc") or watchlist_narrative_desc
+    narrative_type = narrative.get("narrative_type") or watchlist_narrative_type
     current_mcap = to_float(analysis.get("current_mcap", calc_mcap(token)))
     first_mcap = to_float((baseline or {}).get("first_signal_mcap")) or current_mcap
     first_ts = to_int((baseline or {}).get("first_signal_ts")) or now_ts()
@@ -1850,6 +1893,12 @@ def build_bottom_signal_extra(
         "reasons": analysis.get("reasons", []),
         "symbol": token.get("symbol"),
         "address": address,
+        "narrative": narrative_desc,
+        "narrative_desc": narrative_desc,
+        "narrative_type": narrative_type,
+        "binance_narrative": compact_narrative(narrative),
+        "watchlist_narrative_desc": watchlist_narrative_desc,
+        "watchlist_narrative_type": watchlist_narrative_type,
     }
 
 
@@ -2172,6 +2221,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             first_mcap = to_float(ema_baseline.get("first_signal_mcap")) or current_mcap
             first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
             first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
+            narrative = resolve_cached_or_db_narrative(address)
+            if not narrative or not narrative.get("narrative_desc"):
+                try:
+                    narrative = get_binance_narrative(address, symbol=token.get("symbol"), name=token.get("name"))
+                except Exception as exc:
+                    print(f"{address[:8]} EMA binance narrative failed: {exc}")
+                    narrative = {}
             # Extract the actual timestamp of the golden cross candle
             crossover_bar_idx = crossover.get("bar_index", 0)
             crossover_ts = int(candles[crossover_bar_idx]["ts"]) if 0 <= crossover_bar_idx < len(candles) else 0
@@ -2192,6 +2248,10 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "first_signal_change_pct": first_change_pct,
                 "pool_liquidity": pool_liq,
                 "pool_mcap_ratio": pool_rat,
+                "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+                "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
+                "narrative_type": narrative.get("narrative_type") or token.get("narrative_type") or "",
+                "binance_narrative": compact_narrative(narrative),
             }
             # Always push frontend update for golden cross
             signal_text = ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat, crossover_ts)
