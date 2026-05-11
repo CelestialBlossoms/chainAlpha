@@ -105,9 +105,13 @@ EMA_GOLDEN_CROSS_ENABLED = os.getenv("BOTTOM_EMA_GOLDEN_CROSS_ENABLED", "0") == 
 
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
-OLD_TOKEN_SURGE_MIN_AGE_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_AGE_SEC", str(48 * 3600)))
+OLD_TOKEN_SURGE_MIN_AGE_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_AGE_SEC", "0"))
 OLD_TOKEN_SURGE_MIN_MCAP_USD = float(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_MCAP_USD", "40000"))
-OLD_TOKEN_SURGE_PRICE_UP_PCT = float(os.getenv("BOTTOM_OLD_TOKEN_SURGE_PRICE_UP_PCT", "20"))
+SURGE_NEW_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_SURGE_NEW_TOKEN_AGE_SEC", str(48 * 3600)))
+SURGE_MID_TOKEN_AGE_SEC = int(os.getenv("BOTTOM_SURGE_MID_TOKEN_AGE_SEC", str(7 * 24 * 3600)))
+SURGE_NEW_TOKEN_PRICE_UP_PCT = float(os.getenv("BOTTOM_SURGE_NEW_TOKEN_PRICE_UP_PCT", "20"))
+SURGE_MID_TOKEN_PRICE_UP_PCT = float(os.getenv("BOTTOM_SURGE_MID_TOKEN_PRICE_UP_PCT", "15"))
+SURGE_OLD_TOKEN_PRICE_UP_PCT = float(os.getenv("BOTTOM_SURGE_OLD_TOKEN_PRICE_UP_PCT", "10"))
 OLD_TOKEN_SURGE_RESOLUTIONS = tuple(
     item.strip()
     for item in os.getenv("BOTTOM_OLD_TOKEN_SURGE_RESOLUTIONS", "1h,5m,1m").split(",")
@@ -1973,6 +1977,22 @@ def run_agent_execution(
     return ActionExecutorAgent(execute=execute).run(context)
 
 
+def surge_price_threshold_pct(age_sec: int) -> float:
+    if age_sec > SURGE_MID_TOKEN_AGE_SEC:
+        return SURGE_OLD_TOKEN_PRICE_UP_PCT
+    if age_sec > SURGE_NEW_TOKEN_AGE_SEC:
+        return SURGE_MID_TOKEN_PRICE_UP_PCT
+    return SURGE_NEW_TOKEN_PRICE_UP_PCT
+
+
+def surge_age_bucket(age_sec: int) -> str:
+    if age_sec > SURGE_MID_TOKEN_AGE_SEC:
+        return "7d+"
+    if age_sec > SURGE_NEW_TOKEN_AGE_SEC:
+        return "48h-7d"
+    return "0-48h"
+
+
 def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
     """Check old tokens for sudden price surge across 1h/5m/1m resolutions.
 
@@ -1984,6 +2004,7 @@ def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
     age_sec = token_age_sec(token)
     if age_sec <= OLD_TOKEN_SURGE_MIN_AGE_SEC:
         return None
+    required_change_pct = surge_price_threshold_pct(age_sec)
 
     address = token_address(token)
     current_mcap = calc_mcap(token)
@@ -2031,10 +2052,12 @@ def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
             if prev_close <= 0:
                 continue
             change_pct = (c["close"] - prev_close) / prev_close * 100
-            if change_pct >= OLD_TOKEN_SURGE_PRICE_UP_PCT:
+            if change_pct >= required_change_pct:
                 hits.append({
                     "resolution": resolution,
                     "change_pct": round(change_pct, 1),
+                    "required_change_pct": required_change_pct,
+                    "age_bucket": surge_age_bucket(age_sec),
                     "from_price": prev_close,
                     "to_price": c["close"],
                     "volume": c["volume"],
@@ -2056,6 +2079,9 @@ def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "signal_type": "old_surge",
         "change_pct": best_hit["change_pct"],
+        "required_change_pct": best_hit["required_change_pct"],
+        "age_bucket": best_hit["age_bucket"],
+        "age_sec": age_sec,
         "resolutions": resolutions_hit,
         "from_price": best_hit["from_price"],
         "to_price": best_hit["to_price"],
@@ -2195,6 +2221,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 send_tg(surge_text, extra={
                     "signal_type": surge_type,
                     "change_pct": surge["change_pct"],
+                    "required_change_pct": surge.get("required_change_pct"),
+                    "age_bucket": surge.get("age_bucket"),
+                    "age_sec": surge.get("age_sec"),
                     "resolutions": surge["resolutions"],
                     "best_resolution": surge["best_resolution"],
                     "current_mcap": surge["current_mcap"],
@@ -2202,11 +2231,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     "address": address,
                 })
                 print(
-                    f"{token_label(token)} old_surge {surge['change_pct']:.1f}% "
+                    f"{token_label(token)} old_surge {surge['change_pct']:.1f}%/"
+                    f"{surge.get('required_change_pct', 0):.1f}% {surge.get('age_bucket', '')} "
                     f"at {surge['best_resolution']} mcap=${surge['current_mcap']:,.0f}"
                 )
             else:
-                print(f"{token_label(token)} old_surge {surge['change_pct']:.1f}% already notified")
+                print(
+                    f"{token_label(token)} old_surge {surge['change_pct']:.1f}%/"
+                    f"{surge.get('required_change_pct', 0):.1f}% already notified"
+                )
 
     # EMA 9/26 crossover detection is disabled by default; keep it behind
     # an explicit flag so bottom abnormal pushes are not driven by K-line crosses.
