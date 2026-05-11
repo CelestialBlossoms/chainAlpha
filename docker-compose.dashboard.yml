@@ -15,7 +15,7 @@ services:
       TG_ALERT_STREAM_KEY: chain_alpha:tg_alerts
       TG_ALERT_STREAM_MAX_AGE_SEC: "3600"
     ports:
-      - "8089:8089"
+      - "8088:8089"
     command:
       - uvicorn
       - web_dashboard.app:app
