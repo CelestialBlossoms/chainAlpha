@@ -171,6 +171,138 @@ def print_token_overview(info: dict, security: dict):
 
 
 # ---------------------------------------------------------------------------
+# Liquidity / Pool Analysis
+# ---------------------------------------------------------------------------
+
+def print_liquidity_analysis(info: dict):
+    """Print pool health & liquidity analysis."""
+    pool = info.get("pool", {})
+    if not pool:
+        return
+
+    price = to_f(info.get("price"))
+    supply = to_f(info.get("circulating_supply"))
+    mcap = price * supply
+    liq = to_f(info.get("liquidity"))
+
+    base_reserve = to_f(pool.get("base_reserve"))
+    quote_reserve = to_f(pool.get("quote_reserve"))
+    base_value = to_f(pool.get("base_reserve_value"))
+    quote_value = to_f(pool.get("quote_reserve_value"))
+
+    init_liq = to_f(pool.get("initial_liquidity"))
+    init_base = to_f(pool.get("initial_base_reserve"))
+    init_quote = to_f(pool.get("initial_quote_reserve"))
+
+    mcap_liq_ratio = mcap / liq if liq > 0 else 0
+    base_quote_ratio = base_value / quote_value if quote_value > 0 else 0
+    liq_growth = (liq - init_liq) / init_liq * 100 if init_liq > 0 else 0
+    pool_supply_pct = base_reserve / supply * 100 if supply > 0 else 0
+    init_pool_supply_pct = init_base / supply * 100 if supply > 0 and init_base > 0 else 0
+    base_change = (base_reserve - init_base) / init_base * 100 if init_base > 0 else 0
+    quote_change = (quote_reserve - init_quote) / init_quote * 100 if init_quote > 0 else 0
+
+    print(f"\n  {'='*60}")
+    print(f"  LIQUIDITY / POOL HEALTH ANALYSIS")
+    print(f"  {'='*60}")
+
+    # Core metrics
+    print(f"\n  --- Pool Metrics ---")
+    print(f"  MCap:          ${mcap:>14,.0f}")
+    print(f"  LP Total:      ${liq:>14,.0f}")
+    print(f"  MCap/LP Ratio: {mcap_liq_ratio:>13.1f}x  ", end="")
+    if mcap_liq_ratio < 5:
+        print("[HEALTHY — ample LP backing]")
+    elif mcap_liq_ratio < 10:
+        print("[MODERATE — LP mildly thin]")
+    elif mcap_liq_ratio < 20:
+        print("[WARNING — LP thin vs market cap]")
+    else:
+        print("[DANGER — severely under-collateralized]")
+
+    # Base/Quote balance
+    print(f"\n  --- Pool Balance ---")
+    print(f"  Base (Token):  ${base_value:>12,.0f}  ({base_reserve:,.0f} tokens, {pool_supply_pct:.1f}% of supply)")
+    print(f"  Quote (SOL):   ${quote_value:>12,.0f}  ({quote_reserve:,.4f} SOL)")
+    print(f"  Base/Quote:    {base_quote_ratio:>12.2f}x  ", end="")
+    if 0.9 <= base_quote_ratio <= 1.1:
+        print("[BALANCED — pool is symmetric, no one-sided dump]")
+    elif base_quote_ratio > 1.1:
+        print("[IMBALANCE — token side is heavier, possible accumulation or trapped sellers]")
+    else:
+        print("[IMBALANCE — SOL side is heavier, possible buys or LP withdrawal]")
+
+    # LP Evolution
+    if init_liq > 0:
+        print(f"\n  --- LP Evolution (from creation) ---")
+        print(f"  Initial LP:    ${init_liq:>12,.0f}  ({init_base:,.0f} tokens + {init_quote:,.4f} SOL)")
+        print(f"  Current LP:    ${liq:>12,.0f}  ({base_reserve:,.0f} tokens + {quote_reserve:,.4f} SOL)")
+        print(f"  LP Growth:     {liq_growth:>+12.0f}%  ", end="")
+        if liq_growth > 100:
+            print("[STRONG GROWTH — organic demand driving LP expansion]")
+        elif liq_growth > 0:
+            print("[MODERATE GROWTH — LP increasing naturally]")
+        elif liq_growth > -20:
+            print("[MILD DECLINE — some LP withdrawn, not alarming]")
+        else:
+            print("[SHARP DECLINE — significant LP removal, possible rug/liquidity exit]")
+
+        print(f"  Token side:    {base_change:>+11.0f}%  ", end="")
+        if base_change > 50:
+            print("[tokens ADDED to pool — accumulation/sell pressure absorbed]")
+        elif base_change < -30:
+            print("[tokens DRAINED from pool — aggressive buying or LP removal]")
+        else:
+            print("[moderate token-side change]")
+
+        print(f"  SOL side:      {quote_change:>+11.0f}%  ", end="")
+        if quote_change > 50:
+            print("[SOL ADDED — deep liquidity build-up]")
+        elif quote_change < -30:
+            print("[SOL DRAINED — significant sells or LP removal]")
+        else:
+            print("[moderate SOL-side change]")
+
+        if init_pool_supply_pct > 0:
+            print(f"  Pool supply %: {init_pool_supply_pct:.1f}% -> {pool_supply_pct:.1f}%", end="")
+            if pool_supply_pct > init_pool_supply_pct * 1.5:
+                print(" [pool holds MORE supply — possible accumulation or trapped sellers]")
+            elif pool_supply_pct < init_pool_supply_pct * 0.5:
+                print(" [pool holds LESS supply — tokens moved to wallets or burned]")
+            else:
+                print(" [stable]")
+
+    # Verdict
+    print(f"\n  --- Liquidity Verdict ---")
+    issues = []
+    if mcap > 0 and liq > 0:
+        lp_depth_pct = liq / mcap * 100
+        if lp_depth_pct > 20:
+            issues.append(f"DEEP liquidity ({lp_depth_pct:.0f}% of MCap) — excellent trade execution")
+        elif lp_depth_pct > 10:
+            issues.append(f"Good liquidity ({lp_depth_pct:.0f}% of MCap)")
+        elif lp_depth_pct > 5:
+            issues.append(f"Thin liquidity ({lp_depth_pct:.0f}% of MCap) — large orders will slip")
+        else:
+            issues.append(f"VERY thin liquidity ({lp_depth_pct:.0f}% of MCap) — high slippage risk")
+
+    if not 0.9 <= base_quote_ratio <= 1.1:
+        direction = "token-heavy" if base_quote_ratio > 1 else "SOL-heavy"
+        issues.append(f"Pool is {direction} ({base_quote_ratio:.2f}x) — potential imbalance risk")
+
+    if liq_growth < -20:
+        issues.append(f"LP declining {liq_growth:.0f}% — liquidity exit detected")
+    elif liq_growth > 50:
+        issues.append(f"LP growing strongly +{liq_growth:.0f}% — healthy demand")
+
+    for issue in issues:
+        print(f"  - {issue}")
+
+    if not issues:
+        print(f"  Pool looks healthy with no warning signals")
+
+
+# ---------------------------------------------------------------------------
 # Holder Analysis
 # ---------------------------------------------------------------------------
 
@@ -251,6 +383,46 @@ def print_bottom_wallets(holders: list, current_price: float):
         tag_str = (tags + " | " + mtags).strip(" |")
         print(f"  {i+1:<3} {addr:<20} {pct:>6.2f}% {usd:>10,.0f} {rpnl:>10,.0f} {upnl:>10,.0f} "
               f"${avg_cost:>10.7f} {mult:>5.1f}x {tag_str}")
+
+    _print_bottom_wallets_analysis(valid, current_price)
+
+
+def _print_bottom_wallets_analysis(bottom_wallets: list, current_price: float):
+    """Print descriptive analysis of bottom-position wallets."""
+    if len(bottom_wallets) < 3:
+        return
+
+    # Count tags
+    bot_count = sum(1 for h in bottom_wallets if "bundler" in (h.get("tags") or []) + (h.get("maker_token_tags") or []))
+    sniper_count = sum(1 for h in bottom_wallets if "sniper" in (h.get("tags") or []) + (h.get("maker_token_tags") or []))
+    dev_count = sum(1 for h in bottom_wallets if "dev_team" in (h.get("tags") or []) + (h.get("maker_token_tags") or []))
+
+    # Realized vs unrealized
+    total_realized = sum(to_f(h.get("realized_profit")) for h in bottom_wallets)
+    total_unreal = sum(to_f(h.get("unrealized_profit")) for h in bottom_wallets)
+    total_cost = sum(to_f(h.get("total_cost")) or to_f(h.get("history_bought_cost")) for h in bottom_wallets)
+    sold_any = sum(1 for h in bottom_wallets if to_f(h.get("history_sold_income")) > 0)
+    avg_mult = current_price / (sum(to_f(h.get("avg_cost")) for h in bottom_wallets) / len(bottom_wallets)) if bottom_wallets else 0
+
+    lines = []
+    lines.append(f"\n  >>> Bottom Chips Analysis <<<")
+    lines.append(f"  Tag makeup: {bot_count} bundlers, {sniper_count} snipers, {dev_count} dev_team")
+    lines.append(f"  Avg return multiple: {avg_mult:.1f}x | Sold any: {sold_any}/{len(bottom_wallets)}")
+
+    if total_realized > 0 and total_realized < total_unreal * 0.5:
+        lines.append(f"  Selling pressure: LOW — realized profit (${total_realized:,.0f}) << unrealized (${total_unreal:,.0f}), bottom chips are HOLDING")
+    elif total_realized > total_unreal:
+        lines.append(f"  Selling pressure: HIGH — realized profit (${total_realized:,.0f}) > unrealized (${total_unreal:,.0f}), bottom chips are DISTRIBUTING")
+    else:
+        lines.append(f"  Selling pressure: MODERATE — realized ${total_realized:,.0f} vs unrealized ${total_unreal:,.0f}")
+
+    if bot_count > len(bottom_wallets) * 0.6:
+        lines.append(f"  [!] {bot_count}/{len(bottom_wallets)} bottom wallets are bot/bundler-tagged — likely coordinated entry, not organic")
+    if sold_any == 0 and total_cost > 0:
+        lines.append(f"  [!] ZERO sellers among bottom wallets — typical of bundled wallets waiting to exit together")
+
+    for line in lines:
+        print(f"  {line}")
 
 
 def print_new_whales(holders: list):
@@ -698,6 +870,7 @@ def main():
 
     price = to_f(info.get("price"))
     print_token_overview(info, security)
+    print_liquidity_analysis(info)
 
     # 2. Holders
     holders_data = fetch_holders(chain, addr)

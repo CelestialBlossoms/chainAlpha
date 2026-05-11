@@ -241,6 +241,83 @@ def print_pnl_summary(r, label):
     print(f"  Unrealized profitable: {r['unrealized_profitable_count']:>4}  sum: ${r['sum_unrealized_profitable']:>14,.2f}")
     print(f"  Unrealized losing:     {r['unrealized_losing_count']:>4}  sum: ${r['sum_unrealized_losing']:>14,.2f}")
 
+    _print_pnl_summary_analysis(r, label)
+
+
+def _print_pnl_summary_analysis(r, label):
+    """Print descriptive interpretation of PnL summary statistics."""
+    lines = [f"\n  >>> PnL Health Assessment ({label}) <<<"]
+
+    total = r["total"]
+    profitable = r["profitable_count"]
+    losing = r["losing_count"]
+    exited = r["wallets_exited"]
+    holding = r["wallets_with_balance"]
+    total_profit = r["total_profit"]
+    total_realized = r["total_realized_profit"]
+    total_unrealized = r["total_unrealized_profit"]
+    total_buy = r["total_buy_vol"]
+    total_sell = r["total_sell_vol"]
+
+    # Win rate assessment
+    if total > 0:
+        win_rate = profitable / (profitable + losing) * 100 if (profitable + losing) > 0 else 0
+    else:
+        win_rate = 0
+
+    if win_rate >= 80:
+        lines.append(f"  Win rate: {win_rate:.0f}% — overwhelmingly profitable, early-entry dominance")
+    elif win_rate >= 50:
+        lines.append(f"  Win rate: {win_rate:.0f}% — reasonably balanced, typical early-stage distribution")
+    elif win_rate >= 30:
+        lines.append(f"  Win rate: {win_rate:.0f}% — tilted toward losers, late buyers are underwater")
+    elif win_rate > 0:
+        lines.append(f"  Win rate: {win_rate:.0f}% — most holders are losing, price declining from entry")
+
+    # Exit analysis
+    exit_pct = exited / (exited + holding) * 100 if (exited + holding) > 0 else 0
+    if exit_pct > 60:
+        lines.append(f"  Exit rate: {exit_pct:.0f}% fully exited — mass departure, early players have cashed out")
+    elif exit_pct > 30:
+        lines.append(f"  Exit rate: {exit_pct:.0f}% fully exited — moderate rotation, partial profit-taking")
+    elif exit_pct > 0:
+        lines.append(f"  Exit rate: {exit_pct:.0f}% fully exited — most holders still in position")
+    else:
+        lines.append(f"  Exit rate: 0% — NO ONE has fully exited, positions are locked or accumulating")
+
+    # Realized vs Unrealized
+    if total_profit > 0:
+        real_ratio = total_realized / total_profit * 100 if total_profit > 0 else 0
+        if real_ratio > 70:
+            lines.append(f"  Profit composition: {real_ratio:.0f}% realized — profits have been TAKEN, selling pressure was absorbed")
+        elif real_ratio > 30:
+            lines.append(f"  Profit composition: {real_ratio:.0f}% realized — balanced between taken and paper profits")
+        else:
+            lines.append(f"  Profit composition: {real_ratio:.0f}% realized — mostly UNREALIZED (paper gains), risk of future sell-off")
+
+    # Flow direction
+    netflow = total_buy - total_sell
+    if total_buy > 0 and total_sell > 0:
+        if netflow > 0:
+            lines.append(f"  Net flow: +${netflow:,.0f} — net BUYING, money flowing in")
+        else:
+            lines.append(f"  Net flow: -${abs(netflow):,.0f} — net SELLING, money flowing out")
+    elif total_sell == 0 and total_buy > 0:
+        lines.append(f"  Net flow: PURE BUY — no selling activity at all")
+
+    # Profit/Loss ratio
+    if r.get("sum_losing_loss") and r["sum_losing_loss"] < 0:
+        pl_ratio = abs(r.get("sum_profitable_profit", 0) / r["sum_losing_loss"])
+        if pl_ratio > 5:
+            lines.append(f"  P/L ratio: {pl_ratio:.1f}x — winners massively outweigh losers, asymmetric upside")
+        elif pl_ratio > 2:
+            lines.append(f"  P/L ratio: {pl_ratio:.1f}x — healthy risk/reward, winners 2-5x losers")
+        elif pl_ratio < 1.5:
+            lines.append(f"  P/L ratio: {pl_ratio:.1f}x — winners barely exceed losers, marginal profitability")
+
+    for line in lines:
+        print(f"  {line}")
+
 
 def print_top_bottom(wallets, label, current_price, top_n=15):
     """Print top earners and top losers."""
@@ -312,6 +389,58 @@ def print_distribution(wallets, label):
         pct = count / len(profits) * 100 if profits else 0
         bar = "#" * int(pct / 2) if pct > 0 else ""
         print(f"  {name:<20} {count:>4} ({pct:>5.1f}%)  {bar}")
+
+    _print_distribution_analysis(wallets, label)
+
+
+def _print_distribution_analysis(wallets, label):
+    """Print descriptive interpretation of PnL distribution shape."""
+    active = [w for w in wallets if w.get("addr_type") != 2]
+    profits = [to_f(w.get("profit")) for w in active]
+    if not profits:
+        return
+
+    total = len(profits)
+    big_winners = sum(1 for p in profits if p > 100)
+    big_losers = sum(1 for p in profits if p < -100)
+    small_win = sum(1 for p in profits if 0 < p <= 100)
+    small_loss = sum(1 for p in profits if -100 <= p < 0)
+    breakeven = sum(1 for p in profits if p == 0)
+    avg_pnl = sum(profits) / total if total else 0
+
+    lines = [f"\n  >>> Distribution Shape Analysis ({label}) <<<"]
+
+    # Skew analysis
+    if big_winners > big_losers * 3 and big_winners > 5:
+        lines.append(f"  Distribution: RIGHT-SKEWED — {big_winners} big winners vs {big_losers} big losers")
+        lines.append(f"       Early-entry whales dominate profits, late buyers mostly small losses. Typical of pump-and-hold.")
+
+    if small_loss > small_win * 2:
+        lines.append(f"  Distribution: MASS RETAIL LOSS — {small_loss} small losers vs {small_win} small winners")
+        lines.append(f"       Most wallets down small amounts: classic retail fade pattern, late entrants underwater")
+
+    if breakeven > total * 0.3:
+        lines.append(f"  Distribution: FLAT — {breakeven}/{total} at breakeven, suggesting snipers who haven't sold yet")
+
+    # Profit concentration
+    winner_avg = sum(p for p in profits if p > 0) / max(sum(1 for p in profits if p > 0), 1)
+    loser_avg = abs(sum(p for p in profits if p < 0)) / max(sum(1 for p in profits if p < 0), 1)
+    if winner_avg > loser_avg * 3:
+        lines.append(f"  Profit concentration: winner avg ${winner_avg:,.0f} >> loser avg ${loser_avg:,.0f}")
+        lines.append(f"       Asymmetric payoff — winning trades pay 3x+ more than losing trades cost")
+
+    # Overall assessment
+    if avg_pnl > 100:
+        lines.append(f"  Overall: STRONG PROFIT — avg P&L ${avg_pnl:,.0f}/wallet, cohort is deep in profit")
+    elif avg_pnl > 10:
+        lines.append(f"  Overall: MODERATE PROFIT — avg P&L ${avg_pnl:,.0f}/wallet, modestly positive")
+    elif avg_pnl > -10:
+        lines.append(f"  Overall: NEAR BREAKEVEN — avg P&L ${avg_pnl:,.0f}/wallet, cohort roughly flat")
+    else:
+        lines.append(f"  Overall: NEGATIVE — avg P&L ${avg_pnl:,.0f}/wallet, cohort is underwater")
+
+    for line in lines:
+        print(f"  {line}")
 
 
 # ---------------------------------------------------------------------------

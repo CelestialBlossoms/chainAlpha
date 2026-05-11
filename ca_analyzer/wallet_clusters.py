@@ -462,6 +462,36 @@ def print_position_distribution(r):
             print(f"  {pct:.2f}%: {count:>3} wallets  {bar}")
         print(f"  Max in single band: {r['narrow_max']} {'[SIGNAL]' if r['narrow_signal'] else ''}")
 
+    _print_position_distribution_analysis(r)
+
+
+def _print_position_distribution_analysis(r):
+    """Print descriptive interpretation of position size distribution."""
+    lines = [f"\n  >>> Position Distribution Analysis <<<"]
+
+    if r["exact_total_wallets"] >= 3:
+        lines.append(f"  [!!] {r['exact_total_wallets']} wallets hold IDENTICAL position percentages — strong bundle signal: same entity split tokens evenly")
+    elif r["exact_total_wallets"] >= 1:
+        lines.append(f"  [!] Exact position matches found ({r['exact_total_wallets']} wallets) — possible coordinated split")
+
+    if r["narrow_max"] >= 5:
+        lines.append(f"  [!!] {r['narrow_max']} wallets clustered in same 0.01% band — suspicious uniformity, likely bot-split")
+    elif r["narrow_max"] >= 3:
+        lines.append(f"  [!] {r['narrow_max']} wallets in same narrow band — mild clustering, could be one entity using multiple wallets")
+
+    dust_count = sum(d['count'] for d in r['distribution'] if 'dust' in d['range'])
+    whale_count = sum(d['count'] for d in r['distribution'] if 'whale' in d['range'] or 'top' in d['range'])
+    if dust_count > r.get('total', 1) * 0.7:
+        lines.append(f"  Dust dominance: {dust_count}/{r.get('total', '?')} wallets are dust (<0.5%) — scattered retail, not bundled")
+    if whale_count > 0:
+        lines.append(f"  {whale_count} whale/top wallets — concentration risk among large holders")
+
+    if not r["equal_distribution_signal"] and r["exact_total_wallets"] < 2 and r["narrow_max"] < 3:
+        lines.append(f"  Distribution looks NATURAL — no exact matches, no tight bands")
+
+    for line in lines:
+        print(f"  {line}")
+
 
 def print_creation_clusters(r):
     print(f"\n  {'='*60}")
@@ -504,6 +534,57 @@ def print_creation_clusters(r):
     if r["recent_signal"]:
         print(f"\n  [!] FRESH WALLETS: {r['recent_48h_pct']:.0f}% created within 48h = likely generated for this token")
 
+    _print_creation_clusters_analysis(r)
+
+
+def _print_creation_clusters_analysis(r):
+    """Print descriptive interpretation of wallet creation time clusters."""
+    lines = [f"\n  >>> Wallet Creation Time Analysis <<<"]
+
+    # Same-second clusters
+    if r["same_second_clusters"]:
+        total_same_second = sum(count for _, count in r["same_second_clusters"])
+        max_ss = max(count for _, count in r["same_second_clusters"])
+        lines.append(f"  [!!] SAME-SECOND BUNDLE: {total_same_second} wallets created at identical timestamps across {len(r['same_second_clusters'])} moments")
+        lines.append(f"       Max {max_ss} wallets at same second — physically impossible for humans, these are programmatically generated wallets")
+        lines.append(f"       This is the STRONGEST bundle signal: one script created multiple wallets in the same second.")
+    else:
+        lines.append(f"  No same-second creation clusters — wallet creation timing looks natural")
+
+    # Hour-level
+    if r["max_hour_count"] >= 10:
+        lines.append(f"  [!!] Hour-level cluster: {r['max_hour_count']} wallets in single hour — likely bot farm batch creation")
+    elif r["max_hour_count"] >= 5:
+        lines.append(f"  [!] Moderate hour cluster: {r['max_hour_count']} wallets in one hour — possible coordinated creation")
+    else:
+        lines.append(f"  Hour-level dispersion is NATURAL (max {r['max_hour_count']} in any hour)")
+
+    # Day-level
+    if r["max_day_count"] >= 15:
+        lines.append(f"  [!!] Day-level cluster: {r['max_day_count']} wallets created on same day — bulk wallet generation")
+    elif r["max_day_count"] >= 7:
+        lines.append(f"  [!] Day cluster: {r['max_day_count']} wallets on one day — moderate concentration")
+
+    # Recent wallet flood
+    if r["recent_signal"]:
+        lines.append(f"  [!!] FRESH WALLET FLOOD: {r['recent_48h_pct']:.0f}% wallets created within 48h of token launch")
+        lines.append(f"       These wallets were likely generated specifically for this token — not organic existing users.")
+    elif r["recent_48h"] > 5:
+        lines.append(f"  {r['recent_48h']} wallets created in last 48h — some recent activity but not overwhelming")
+
+    # Overall creation pattern
+    signals_on = sum([bool(r.get("same_second_clusters")), r.get("same_hour_signal", False),
+                      r.get("same_day_signal", False), r.get("recent_signal", False)])
+    if signals_on >= 3:
+        lines.append(f"  VERDICT: STRONG time-cluster bundle ({signals_on}/4 time signals active) — wallets farmed for this token")
+    elif signals_on >= 1:
+        lines.append(f"  VERDICT: Mild time anomalies ({signals_on}/4 signals) — some clustering but not definitive")
+    else:
+        lines.append(f"  VERDICT: Clean — no temporal bundle signals")
+
+    for line in lines:
+        print(f"  {line}")
+
 
 def print_trading_behavior(r):
     print(f"\n  {'='*60}")
@@ -515,6 +596,50 @@ def print_trading_behavior(r):
     print(f"  Never sold (0%):    {r['zero_sell']:>3} ({r['zero_sell_pct']:.0f}%) {'[SIGNAL]' if r['zero_sell_signal'] else ''}")
     print(f"  Has sold (>0%):     {r['has_sold']:>3} ({r['has_sold_pct']:.0f}%)")
     print(f"  Buy tx distribution: {r['buy_tx_distribution']}")
+
+    _print_trading_behavior_analysis(r)
+
+
+def _print_trading_behavior_analysis(r):
+    """Print descriptive interpretation of buy/sell behavior clusters."""
+    lines = [f"\n  >>> Buy/Sell Behavior Analysis <<<"]
+
+    total = r['total']
+    single_pct = r['single_buy_pct']
+    zero_sell_pct = r['zero_sell_pct']
+    has_sold_pct = r['has_sold_pct']
+
+    # Core bundle pattern: single buy + never sell
+    if single_pct > 70 and zero_sell_pct > 80:
+        lines.append(f"  [!!] CLASSIC BUNDLE PATTERN: {single_pct:.0f}% single-buy + {zero_sell_pct:.0f}% never-sold")
+        lines.append(f"       This pattern indicates a single entity bought into N wallets and hasn't sold any —")
+        lines.append(f"       typical of coordinated bundles waiting for exit liquidity before dumping together.")
+    elif single_pct > 50 and zero_sell_pct > 60:
+        lines.append(f"  [!] MODERATE BUNDLE SIGNAL: {single_pct:.0f}% single-buy + {zero_sell_pct:.0f}% never-sold — suspicious uniformity")
+
+    # Healthy selling pattern
+    if has_sold_pct > 40:
+        lines.append(f"  Healthy selling: {has_sold_pct:.0f}% have sold some — natural profit-taking, not locked in")
+    elif has_sold_pct < 15 and total > 20:
+        lines.append(f"  [!] SELLING ANEMIA: only {has_sold_pct:.0f}% have sold any tokens — when they do sell, the flood could be severe")
+
+    # Multi-buy interpretation
+    multi_pct = r['multi_buy_pct']
+    if multi_pct > 50:
+        lines.append(f"  Multi-buy majority ({multi_pct:.0f}%): wallets buying in multiple tranches — looks like organic accumulation")
+    elif multi_pct < 20:
+        lines.append(f"  Near-universal single-buy ({100-multi_pct:.0f}%): each wallet bought exactly once — bot-like precision")
+
+    # Distribution of buy counts
+    dist = r['buy_tx_distribution']
+    if isinstance(dist, dict):
+        max_key = max(dist, key=dist.get) if dist else None
+        max_val = dist.get(max_key, 0) if max_key is not None else 0
+        if max_val > total * 0.5 and max_key is not None:
+            lines.append(f"  Peak at {max_key} tx/wallet ({max_val}/{total} wallets) — clustered buy behavior")
+
+    for line in lines:
+        print(f"  {line}")
 
 
 def print_tag_ecology(r):
@@ -580,6 +705,59 @@ def print_verdict(score, signals, verdict_label, description):
   TIGHT=uniform LOOSE=dispersed DIV=diverse
   Exact%=identical position%s  Creat=same-second wallet creation
 """)
+
+    _print_verdict_analysis(score, signals, verdict_label)
+
+
+def _print_verdict_analysis(score, signals, verdict_label):
+    """Print detailed interpretation of bundle detection dimensions and their combined meaning."""
+    lines = [f"\n  >>> Bundle Dimension Interpretation <<<"]
+
+    # Dimension explanation
+    dims = {
+        "TIGHT_COST": "Entry cost uniformity — if all wallets bought at near-identical price, suggests one planner executing one strategy",
+        "BOT_BUY_DOMINANCE": "Bot dominance in buy volume (>70%) — bot-tagged wallets dominate buying, vs human/retail participation",
+        "SINGLE_BUY": "Single-buy wallets — each wallet made exactly one purchase, characteristic of a split-and-hold bundle",
+        "ZERO_SELL": "Zero-sell wallets — no selling activity, bundled wallets waiting for coordinated exit",
+        "SINGLE_BOT_DOMINANCE": "Single bot tag dominates — one bot platform label appears on most wallets, suggesting same operator",
+        "EXACT_MATCH": "Identical position percentages — wallets hold exactly the same %, token was split evenly by script",
+        "SAME_SECOND": "Same-second wallet creation — wallets created at identical timestamps, physically impossible for humans",
+    }
+
+    matching_signals = []
+    for sig_name in signals:
+        for key, desc in dims.items():
+            if key in sig_name.upper() or key.replace("_", " ") in sig_name.upper():
+                matching_signals.append((key, desc))
+                break
+
+    if matching_signals:
+        lines.append(f"  Active signal breakdown:")
+        for name, desc in matching_signals[:8]:
+            lines.append(f"    [{name}]: {desc}")
+        lines.append("")
+
+    # Overall interpretation
+    if score >= 5:
+        lines.append(f"  VERDICT: CONFIRMED BUNDLE (score {score}/8)")
+        lines.append(f"  Multiple dimensions are triggered simultaneously: cost uniformity + behavior uniformity +")
+        lines.append(f"  wallet creation patterns all align. This is a coordinated multi-wallet operation.")
+        lines.append(f"  Trading implication: expect synchronized dumps. Track these wallets for exit timing.")
+    elif score >= 3:
+        lines.append(f"  VERDICT: SUSPICIOUS (score {score}/8)")
+        lines.append(f"  Several dimensions show anomalies but not all align. Could be partial bundle or")
+        lines.append(f"  semi-coordinated group. Watch for sudden simultaneous selling across flagged wallets.")
+    elif score >= 1:
+        lines.append(f"  VERDICT: MOSTLY NATURAL (score {score}/8)")
+        lines.append(f"  Minor signals detected but insufficient for bundle confirmation. Likely normal trading")
+        lines.append(f"  with some bot activity (common on Pump.fun). Standard caution advised.")
+    else:
+        lines.append(f"  VERDICT: CLEAN (score 0/8)")
+        lines.append(f"  No bundle signals detected across all 8 dimensions. Wallet distribution, cost basis,")
+        lines.append(f"  trading behavior, creation timing, and tag ecology all appear organic and diverse.")
+
+    for line in lines:
+        print(f"  {line}")
 
 
 # ---------------------------------------------------------------------------

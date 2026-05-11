@@ -70,7 +70,7 @@ def main():
     addr = args.address
 
     if args.modules == "all":
-        selected = ["full", "pnl", "cluster"]
+        selected = ["full", "pnl", "cluster", "pool"]
     else:
         selected = [m.strip() for m in args.modules.split(",") if m.strip() in MODULES]
 

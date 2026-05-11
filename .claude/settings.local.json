@@ -31,7 +31,15 @@
       "PowerShell(New-Item *)",
       "PowerShell(Copy-Item *)",
       "Bash(npm run *)",
-      "Bash(start *)"
+      "Bash(start *)",
+      "PowerShell(Get-Command *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000)",
+      "Bash(node *)",
+      "Bash(export HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 GMGN_API_KEY=gmgn_d600103d8f4dd84c06bd88672c290647)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :8000)",
+      "Bash(taskkill *)",
+      "PowerShell(Stop-Process *)"
     ]
   }
 }

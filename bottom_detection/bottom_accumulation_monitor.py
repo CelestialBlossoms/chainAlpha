@@ -101,6 +101,7 @@ BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO = float(os.getenv("BOTTOM_ABNORMAL_MIN_POOL_
 WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD", "10000"))
 MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_MIN_POOL_LIQUIDITY_USD", str(WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD)))
 USE_AGENT_DECISION = os.getenv("BOTTOM_USE_AGENT_DECISION", "1") != "0"
+EMA_GOLDEN_CROSS_ENABLED = os.getenv("BOTTOM_EMA_GOLDEN_CROSS_ENABLED", "0") == "1"
 
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
@@ -2207,8 +2208,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             else:
                 print(f"{token_label(token)} old_surge {surge['change_pct']:.1f}% already notified")
 
-    # EMA 9/26 crossover detection (independent of abnormal signal)
-    if notify and (frontend_update_allowed or should_notify(analysis)) and candles and len(candles) >= 30:
+    # EMA 9/26 crossover detection is disabled by default; keep it behind
+    # an explicit flag so bottom abnormal pushes are not driven by K-line crosses.
+    if EMA_GOLDEN_CROSS_ENABLED and notify and (frontend_update_allowed or should_notify(analysis)) and candles and len(candles) >= 30:
         prices = [c["close"] for c in candles]
         crossover = detect_ema_crossover(prices)
         if crossover and crossover["type"] == "golden_cross":
@@ -2437,6 +2439,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
     parser.add_argument("--min-pool-liquidity", type=float, default=MIN_POOL_LIQUIDITY_USD, help="Skip non-watchlist tokens below this pool liquidity in USD.")
+    parser.add_argument("--enable-ema-golden-cross", action="store_true", help="Enable EMA9/EMA26 golden-cross Telegram/frontend pushes.")
     parser.add_argument(
         "--trend-order-bys",
         default=",".join(TREND_ORDER_BYS),
@@ -2484,7 +2487,7 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL, EMA_GOLDEN_CROSS_ENABLED
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
@@ -2493,6 +2496,7 @@ def main() -> None:
     TREND_ORDER_BYS = tuple(item.strip() for item in str(args.trend_order_bys).split(",") if item.strip())
     TREND_INTERVALS = tuple(item.strip() for item in str(args.trend_intervals).split(",") if item.strip())
     TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else TREND_INTERVAL
+    EMA_GOLDEN_CROSS_ENABLED = EMA_GOLDEN_CROSS_ENABLED or bool(args.enable_ema_golden_cross)
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()
