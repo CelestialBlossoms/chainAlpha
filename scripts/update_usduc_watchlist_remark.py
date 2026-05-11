@@ -74,7 +74,7 @@ def main() -> None:
                 last_pool_mcap_ratio = EXCLUDED.last_pool_mcap_ratio,
                 narrative_desc = EXCLUDED.narrative_desc,
                 narrative_type = EXCLUDED.narrative_type,
-                remark = EXCLUDED.remark,
+                remark = COALESCE(NULLIF(EXCLUDED.remark, ''), bottom_watchlist_tokens.remark),
                 note = EXCLUDED.note,
                 blacklisted = false
             RETURNING ca, symbol, source, highest_mcap, current_mcap, gmgn_created_at,

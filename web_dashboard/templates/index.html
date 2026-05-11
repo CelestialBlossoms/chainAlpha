@@ -14,6 +14,9 @@
           <h1>热门代币自动检索</h1>
           <p class="desc">实时读取结构化报警数据，按代币去重展示最新信号。Stream: {{ stream_key }}</p>
         </div>
+        <div class="nav-actions">
+          <a class="mini-link" href="/bottom-watchlist">Bottom Watchlist</a>
+        </div>
         <div class="live">
           <span id="conn-dot" class="dot idle"></span>
           <span id="conn-text">连接中</span>
@@ -80,6 +83,8 @@
     const connText = document.querySelector("#conn-text");
     const tabs = Array.from(document.querySelectorAll(".tab"));
     const MAX_VISIBLE_SIGNALS = 10;
+    const SIGNAL_VISIBLE_MS = 30 * 60 * 1000;
+    const EXPIRE_CHECK_MS = 30 * 1000;
     const state = {
       byAddress: new Map(),
       seenIds: new Set(),
@@ -121,9 +126,40 @@
       return `${value.slice(0, 6)}...${value.slice(-6)}`;
     }
 
+    function signalBaseMs(signal) {
+      const ms = safeNum(signal && signal.ts) * 1000;
+      return ms > 0 ? ms : Date.now();
+    }
+
+    function isSignalExpired(signal, now = Date.now()) {
+      return safeNum(signal && signal.visibleUntilMs) > 0 && safeNum(signal.visibleUntilMs) <= now;
+    }
+
+    function pruneExpiredSignals() {
+      const now = Date.now();
+      let changed = false;
+      for (const [address, signal] of state.byAddress.entries()) {
+        if (!isSignalExpired(signal, now)) continue;
+        state.byAddress.delete(address);
+        state.flashed.delete(address);
+        if (state.expandedTokenId === address) state.expandedTokenId = "";
+        if (state.pendingBottomAddress === address) {
+          state.pendingBottomAddress = "";
+          state.pendingBottomCount = 0;
+        }
+        changed = true;
+      }
+      return changed;
+    }
+
     function gmgnUrl(signal) {
       if (!signal || !signal.address) return "https://gmgn.ai/";
       return `https://gmgn.ai/${signal.chain || "sol"}/token/${signal.address}`;
+    }
+
+    function binanceUrl(signal) {
+      if (!signal || !signal.address) return "https://web3.binance.com/zh-CN";
+      return `https://web3.binance.com/zh-CN/token/sol/${signal.address}?ref=NHQT72EV`;
     }
 
     function solscanUrl(signal) {
@@ -374,6 +410,7 @@
       const prev = state.byAddress.get(signal.address);
       if (!prev || signal.ts >= prev.ts) {
         signal.isNew = flash;
+        signal.visibleUntilMs = signalBaseMs(signal) + SIGNAL_VISIBLE_MS;
         state.byAddress.set(signal.address, signal);
         if (!state.expandedTokenId) state.expandedTokenId = signal.address;
         if (flash && signal.isBottom) {
@@ -393,6 +430,7 @@
     }
 
     function allSignals() {
+      pruneExpiredSignals();
       return Array.from(state.byAddress.values());
     }
 
@@ -668,6 +706,7 @@
               <div class="card-actions">
                 <button class="mini-btn copy-btn" type="button" data-address="${htmlEscape(signal.address)}">复制</button>
                 <a class="mini-link" href="${htmlEscape(gmgnUrl(signal))}" target="_blank" rel="noreferrer">GMGN</a>
+                <a class="mini-link" href="${htmlEscape(binanceUrl(signal))}" target="_blank" rel="noreferrer">Binance</a>
                 <a class="mini-link" href="${htmlEscape(solscanUrl(signal))}" target="_blank" rel="noreferrer">Solscan</a>
               </div>
             </div>
@@ -710,6 +749,7 @@
     }
 
     function render() {
+      pruneExpiredSignals();
       const rows = sortedSignals();
       if (state.expandedTokenId && !rows.some((s) => s.address === state.expandedTokenId)) {
         state.expandedTokenId = "";
@@ -757,6 +797,8 @@
       state.seenIds.add(item.id);
       const signal = normalizeItem(item);
       if (!signal) return;
+      signal.visibleUntilMs = signalBaseMs(signal) + SIGNAL_VISIBLE_MS;
+      if (isSignalExpired(signal)) return;
       const existingBottomSignal = signal.address && state.byAddress.has(signal.address);
       const silentBottomUpdate = item.source === "bottom_abnormal" && item.status === "frontend_update" && existingBottomSignal;
       upsertSignal(signal, flash && !silentBottomUpdate);
@@ -860,10 +902,15 @@
       state.byAddress.clear();
       state.seenIds.clear();
       state.expandedTokenId = "";
+      state.flashed.clear();
       state.pendingBottomAddress = "";
       state.pendingBottomCount = 0;
       render();
     });
+
+    setInterval(() => {
+      if (pruneExpiredSignals()) render();
+    }, EXPIRE_CHECK_MS);
 
     loadRecent().finally(connect);
   </script>

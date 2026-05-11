@@ -141,7 +141,8 @@ h1 {
 }
 
 .quick-actions,
-.card-actions {
+.card-actions,
+.nav-actions {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -710,6 +711,77 @@ h1 {
   padding: 32px;
   text-align: center;
   color: var(--muted);
+}
+
+.watchlist-controls {
+  align-items: center;
+}
+
+.watch-summary {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.watchlist-table-wrap {
+  overflow-x: auto;
+}
+
+.watchlist-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.watchlist-table th,
+.watchlist-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.watchlist-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.watchlist-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.watchlist-table tr.is-blacklisted {
+  opacity: .62;
+}
+
+.watch-token {
+  min-width: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.watch-token b {
+  font-size: 15px;
+}
+
+.watch-token span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.watch-narrative {
+  min-width: 280px;
+  max-width: 560px;
+  color: #334155;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* ── Responsive ── */

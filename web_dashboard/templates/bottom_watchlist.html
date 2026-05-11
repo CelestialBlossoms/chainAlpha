@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>底部观察 CA</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="page">
+    <div class="wrap">
+      <header class="topbar">
+        <div>
+          <h1>底部观察 CA</h1>
+          <p class="desc">读取 bottom_watchlist_tokens，展示叙事、类型、市值、最大市值和 CA。</p>
+        </div>
+        <div class="nav-actions">
+          <a class="mini-link" href="/">实时告警</a>
+          <button id="refresh-btn" class="mini-btn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="controls watchlist-controls">
+        <input id="watch-query" class="search" type="search" placeholder="搜索 CA / Symbol / 叙事 / 类型">
+        <select id="watch-sort" class="sort-select">
+          <option value="max_mcap_desc">最大市值高到低</option>
+          <option value="current_mcap_desc">当前市值高到低</option>
+          <option value="last_seen_desc">最近更新</option>
+          <option value="symbol_asc">Symbol A-Z</option>
+        </select>
+        <div id="watch-summary" class="watch-summary">加载中</div>
+      </section>
+
+      <section class="watchlist-table-wrap card">
+        <table class="watchlist-table">
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th>叙事</th>
+              <th>类型</th>
+              <th>当前市值</th>
+              <th>最大市值</th>
+              <th>CA</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="watch-rows"></tbody>
+        </table>
+      </section>
+
+      <div id="watch-empty" class="empty" hidden>没有 bottom_watchlist_tokens 数据</div>
+    </div>
+  </div>
+
+  <script>
+    const rowsEl = document.querySelector("#watch-rows");
+    const emptyEl = document.querySelector("#watch-empty");
+    const queryEl = document.querySelector("#watch-query");
+    const sortEl = document.querySelector("#watch-sort");
+    const summaryEl = document.querySelector("#watch-summary");
+    const refreshBtn = document.querySelector("#refresh-btn");
+    const state = { items: [] };
+
+    function safeNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function htmlEscape(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formatCap(value) {
+      const n = safeNum(value);
+      if (Math.abs(n) >= 1000000000) return `$${(n / 1000000000).toFixed(2)}B`;
+      if (Math.abs(n) >= 1000000) return `$${(n / 1000000).toFixed(2)}M`;
+      if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}K`;
+      return `$${Math.round(n)}`;
+    }
+
+    function shortAddress(address) {
+      const value = String(address || "");
+      if (value.length <= 18) return value || "-";
+      return `${value.slice(0, 7)}...${value.slice(-7)}`;
+    }
+
+    function gmgnUrl(ca) {
+      return ca ? `https://gmgn.ai/sol/token/${ca}` : "https://gmgn.ai/";
+    }
+
+    function binanceUrl(ca) {
+      return ca ? `https://web3.binance.com/zh-CN/token/sol/${ca}?ref=NHQT72EV` : "https://web3.binance.com/zh-CN";
+    }
+
+    async function copyText(text) {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+    }
+
+    function visibleItems() {
+      const q = queryEl.value.trim().toLowerCase();
+      const rows = state.items.filter((item) => {
+        if (!q) return true;
+        return [
+          item.ca,
+          item.symbol,
+          item.narrative,
+          item.token_type,
+          item.source,
+        ].join(" ").toLowerCase().includes(q);
+      });
+      const sorters = {
+        max_mcap_desc: (a, b) => safeNum(b.max_mcap) - safeNum(a.max_mcap),
+        current_mcap_desc: (a, b) => safeNum(b.current_mcap) - safeNum(a.current_mcap),
+        last_seen_desc: (a, b) => String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || "")),
+        symbol_asc: (a, b) => String(a.symbol || "").localeCompare(String(b.symbol || "")),
+      };
+      return rows.sort(sorters[sortEl.value] || sorters.max_mcap_desc);
+    }
+
+    function render() {
+      const rows = visibleItems();
+      const totalCurrent = rows.reduce((sum, item) => sum + safeNum(item.current_mcap), 0);
+      summaryEl.textContent = `${rows.length} 条 | 当前市值合计 ${formatCap(totalCurrent)}`;
+      emptyEl.hidden = rows.length > 0;
+      rowsEl.innerHTML = rows.map((item) => {
+        const ca = item.ca || "";
+        const type = item.token_type || "-";
+        const narrative = item.narrative || "-";
+        return `
+          <tr class="${item.blacklisted ? "is-blacklisted" : ""}">
+            <td>
+              <div class="watch-token">
+                <b>${item.symbol ? "$" + htmlEscape(item.symbol) : "UNKNOWN"}</b>
+                <span>${htmlEscape(item.source || "-")}</span>
+              </div>
+            </td>
+            <td class="watch-narrative">${htmlEscape(narrative)}</td>
+            <td><span class="badge">${htmlEscape(type)}</span></td>
+            <td><b>${formatCap(item.current_mcap)}</b></td>
+            <td><b>${formatCap(item.max_mcap)}</b></td>
+            <td><code class="ca-short" title="${htmlEscape(ca)}">${htmlEscape(shortAddress(ca))}</code></td>
+            <td>
+              <div class="card-actions">
+                <button class="mini-btn copy-btn" type="button" data-ca="${htmlEscape(ca)}">复制</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(ca))}" target="_blank" rel="noreferrer">GMGN</a>
+                <a class="mini-link" href="${htmlEscape(binanceUrl(ca))}" target="_blank" rel="noreferrer">Binance</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function loadWatchlist() {
+      summaryEl.textContent = "加载中";
+      const resp = await fetch("/api/bottom-watchlist?limit=1000");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      state.items = data.items || [];
+      render();
+    }
+
+    rowsEl.addEventListener("click", (event) => {
+      const btn = event.target.closest(".copy-btn");
+      if (!btn) return;
+      copyText(btn.dataset.ca || "");
+    });
+    queryEl.addEventListener("input", render);
+    sortEl.addEventListener("change", render);
+    refreshBtn.addEventListener("click", () => loadWatchlist().catch((err) => {
+      summaryEl.textContent = `加载失败: ${err.message}`;
+    }));
+
+    loadWatchlist().catch((err) => {
+      summaryEl.textContent = `加载失败: ${err.message}`;
+    });
+  </script>
+</body>
+</html>
