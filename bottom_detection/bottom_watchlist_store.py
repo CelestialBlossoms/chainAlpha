@@ -489,6 +489,41 @@ def update_watchlist_seen(
     db_op(_op)
 
 
+def save_watchlist_narrative(
+    address: str,
+    narrative_desc: str = "",
+    narrative_type: str = "",
+    source: str = "",
+) -> None:
+    """Save narrative metadata to bottom_watchlist_tokens."""
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE bottom_watchlist_tokens
+            SET narrative_desc = %s,
+                narrative_type = %s,
+                last_seen_at = now()
+            WHERE ca = %s
+            """,
+            (narrative_desc or "", narrative_type or "", address),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO bottom_watchlist_tokens (
+                    ca, create_at, added_at, last_seen_at, source,
+                    narrative_desc, narrative_type, peak_mcap, last_mcap, current_mcap
+                ) VALUES (
+                    %s, NULL, now(), now(), %s,
+                    %s, %s, 0, 0, 0
+                )
+                """,
+                (address, source or "narrative_fetch", narrative_desc or "", narrative_type or ""),
+            )
+    db_op(_op)
+
+
 def fill_watchlist_create_at(address: str, created_ts: int) -> None:
     def _op(conn):
         cur = conn.cursor()

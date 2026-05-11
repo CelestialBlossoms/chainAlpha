@@ -66,6 +66,26 @@ NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(
 MID_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_MID_TOKEN_AGE_CUTOFF_SEC", str(5 * 24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
+# Fast scan: 100K-300K watchlist tokens checked every 1 min
+FAST_SCAN_ENABLED = os.getenv("BOTTOM_FAST_SCAN_ENABLED", "1") != "0"
+FAST_SCAN_INTERVAL_SEC = int(os.getenv("BOTTOM_FAST_SCAN_INTERVAL_SEC", "60"))
+FAST_SCAN_MIN_MCAP = float(os.getenv("BOTTOM_FAST_SCAN_MIN_MCAP", "100000"))
+FAST_SCAN_MAX_MCAP = float(os.getenv("BOTTOM_FAST_SCAN_MAX_MCAP", "300000"))
+FAST_SCAN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_FAST_SCAN_SNAPSHOT_INTERVAL_SEC", "60"))
+FAST_SCAN_TOKEN_DELAY = float(os.getenv("BOTTOM_FAST_SCAN_TOKEN_DELAY", "0.3"))
+FAST_SCAN_MAX_TOKENS = int(os.getenv("BOTTOM_FAST_SCAN_MAX_TOKENS", "0"))
+SIGNAL_DEDUP_MAX_AGE_SEC = int(os.getenv("BOTTOM_SIGNAL_DEDUP_MAX_AGE_SEC", str(24 * 3600)))
+FIRST_SIGNAL_BASELINE_MAX_AGE_SEC = int(os.getenv("BOTTOM_FIRST_SIGNAL_BASELINE_MAX_AGE_SEC", str(24 * 3600)))
+QUIET_BREAKOUT_ENABLED = os.getenv("BOTTOM_QUIET_BREAKOUT_ENABLED", "1") != "0"
+QUIET_BREAKOUT_MIN_QUIET_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_QUIET_BARS", "24"))
+QUIET_BREAKOUT_RECENT_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_RECENT_BARS", "3"))
+QUIET_BREAKOUT_MAX_RANGE_PCT = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MAX_RANGE_PCT", "7"))
+QUIET_BREAKOUT_MAX_AVG_VOLUME_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MAX_AVG_VOLUME_USD", "2000"))
+QUIET_BREAKOUT_MIN_CHANGE_PCT = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_CHANGE_PCT", "10"))
+QUIET_BREAKOUT_LOW_MCAP_MAX_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_LOW_MCAP_MAX_USD", "300000"))
+QUIET_BREAKOUT_HIGH_MCAP_MIN_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_HIGH_MCAP_MIN_USD", "1000000"))
+QUIET_BREAKOUT_MIN_VOLUME_RATIO = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_VOLUME_RATIO", "3"))
+QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD", "5000"))
 NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m")
 YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", "15m")
 MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "1h")
@@ -312,7 +332,28 @@ def is_new_token(row: dict[str, Any]) -> bool:
     return age > 0 and age <= NEW_TOKEN_AGE_CUTOFF_SEC
 
 
+def is_watchlist_token(row: dict[str, Any]) -> bool:
+    sources = set(row.get("_sources") or [])
+    source = str(row.get("source") or "")
+    return source == "watchlist" or "watchlist" in sources or bool(row.get("watchlist_source"))
+
+
+def is_trending_token(row: dict[str, Any]) -> bool:
+    sources = set(str(item) for item in (row.get("_sources") or []))
+    source = str(row.get("source") or "")
+    return source.startswith("trending") or any(item.startswith("trending") for item in sources)
+
+
+def is_fast_scan_watchlist_token(row: dict[str, Any]) -> bool:
+    if not is_watchlist_token(row):
+        return False
+    mcap = calc_mcap(row) or to_float(row.get("watchlist_last_mcap"))
+    return FAST_SCAN_MIN_MCAP <= mcap <= FAST_SCAN_MAX_MCAP
+
+
 def token_snapshot_interval_sec(row: dict[str, Any]) -> int:
+    if is_fast_scan_watchlist_token(row):
+        return FAST_SCAN_SNAPSHOT_INTERVAL_SEC
     return NEW_TOKEN_SNAPSHOT_INTERVAL_SEC if is_new_token(row) else OLD_TOKEN_SNAPSHOT_INTERVAL_SEC
 
 
@@ -1088,8 +1129,14 @@ def build_snapshot_json(
     pool_summary = summarize_pools(token)
     liquidity = pool_summary["total_liquidity"] or to_float(token.get("liquidity") or token.get("pool_liquidity"))
 
+    holder_count = to_int(
+        token.get("holder_count")
+        or (token.get("stat") or {}).get("holder_count")
+        or (token.get("_gmgn_info") or {}).get("holder_count")
+        or ((token.get("_gmgn_info") or {}).get("stat") or {}).get("holder_count")
+    )
     summary = {
-        "holder_count": len(raw_holders),
+        "holder_count": holder_count or len(raw_holders),
         "non_pool_count": len(holders),
         "top10_pct": sum(h["hold_pct"] for h in holders[:10]),
         "top20_pct": sum(h["hold_pct"] for h in holders[:20]),
@@ -1402,6 +1449,9 @@ def analyze_abnormal_snapshot(
             "netflow_usd": 0.0,
         }
     )
+    current_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:20])
+    previous_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:20]) if previous_holders else 0.0
+    top20_pct_delta = current_top20_pct - previous_top20_pct if previous_holders else 0.0
     if drop_level > 0:
         rule_name = f"NEW_ATH1M_DROP_{int(drop_level / 10000)}W"
         min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD
@@ -1513,6 +1563,9 @@ def analyze_abnormal_snapshot(
         "window_pool_mcap_ratio_delta": window_pool_stats["pool_mcap_ratio_delta"],
         "accumulation_pct_delta": holder_change["accumulation_pct_delta"],
         "distribution_pct_delta": holder_change["distribution_pct_delta"],
+        "top20_pct_delta": top20_pct_delta,
+        "top20_current_pct": current_top20_pct,
+        "top20_previous_pct": previous_top20_pct,
         "new_holder_pct": holder_change["new_holder_pct"],
         "exited_holder_pct": holder_change["exited_holder_pct"],
         "netflow_usd": holder_change["netflow_usd"],
@@ -1777,14 +1830,19 @@ def previous_signal_exists(address: str, signal_type: str) -> bool:
 
     def _op(conn):
         cur = conn.cursor()
+        where_age = "AND snapshot_ts >= %s" if SIGNAL_DEDUP_MAX_AGE_SEC > 0 else ""
+        params = [CHAIN, address, signal_type]
+        if SIGNAL_DEDUP_MAX_AGE_SEC > 0:
+            params.append(now_ts() - SIGNAL_DEDUP_MAX_AGE_SEC)
         cur.execute(
-            """
+            f"""
             SELECT 1
             FROM bottom_top100_snapshots
             WHERE chain=%s AND address=%s AND signal_type=%s
+              {where_age}
             LIMIT 1
             """,
-            (CHAIN, address, signal_type),
+            tuple(params),
         )
         return cur.fetchone() is not None
 
@@ -1817,15 +1875,20 @@ def first_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
 
     def _op(conn):
         cur = conn.cursor()
+        where_age = "AND snapshot_ts >= %s" if FIRST_SIGNAL_BASELINE_MAX_AGE_SEC > 0 else ""
+        params = [CHAIN, address, signal_type]
+        if FIRST_SIGNAL_BASELINE_MAX_AGE_SEC > 0:
+            params.append(now_ts() - FIRST_SIGNAL_BASELINE_MAX_AGE_SEC)
         cur.execute(
-            """
+            f"""
             SELECT snapshot_ts, analysis
             FROM bottom_top100_snapshots
             WHERE chain=%s AND address=%s AND signal_type=%s
+              {where_age}
             ORDER BY snapshot_ts ASC, id ASC
             LIMIT 1
             """,
-            (CHAIN, address, signal_type),
+            tuple(params),
         )
         row = cur.fetchone()
         if not row:
@@ -1875,6 +1938,9 @@ def build_bottom_signal_extra(
         "ath_mcap": analysis.get("ath_mcap", 0),
         "min_ath_mcap": analysis.get("min_ath_mcap", 0),
         "current_mcap": current_mcap,
+        "holder_count": summary.get("holder_count", 0),
+        "created_ts": summary.get("created_ts", 0),
+        "age_sec": summary.get("age_sec", 0),
         "first_signal_mcap": first_mcap,
         "first_signal_ts": first_ts,
         "first_signal_delta_mcap": first_delta,
@@ -1883,6 +1949,20 @@ def build_bottom_signal_extra(
         "max_abnormal_mcap": analysis.get("max_abnormal_mcap", 0),
         "price_change_pct": analysis.get("price_change_pct", 0),
         "required_price_change_pct": analysis.get("required_price_change_pct", 0),
+        "quiet_range_pct": analysis.get("quiet_range_pct", 0),
+        "required_quiet_range_pct": analysis.get("required_quiet_range_pct", 0),
+        "quiet_avg_volume_usd": analysis.get("quiet_avg_volume_usd", 0),
+        "required_quiet_avg_volume_usd": analysis.get("required_quiet_avg_volume_usd", 0),
+        "quiet_total_volume_usd": analysis.get("quiet_total_volume_usd", 0),
+        "breakout_volume_usd": analysis.get("breakout_volume_usd", 0),
+        "breakout_volume_ratio": analysis.get("breakout_volume_ratio", 0),
+        "required_breakout_volume_ratio": analysis.get("required_breakout_volume_ratio", 0),
+        "required_breakout_volume_usd": analysis.get("required_breakout_volume_usd", 0),
+        "quiet_duration_sec": analysis.get("quiet_duration_sec", 0),
+        "quiet_bars": analysis.get("quiet_bars", 0),
+        "breakout_bars": analysis.get("breakout_bars", 0),
+        "quiet_breakout_source_type": analysis.get("source_type", ""),
+        "quiet_breakout_trigger_mode": analysis.get("trigger_mode", ""),
         "bottom_low_mcap": analysis.get("bottom_low_mcap", 0),
         "required_bottom_low_mcap": analysis.get("required_bottom_low_mcap", 0),
         "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
@@ -1892,6 +1972,9 @@ def build_bottom_signal_extra(
         "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
         "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),
         "distribution_pct_delta": analysis.get("distribution_pct_delta", 0),
+        "top20_pct_delta": analysis.get("top20_pct_delta", 0),
+        "top20_current_pct": analysis.get("top20_current_pct", 0),
+        "top20_previous_pct": analysis.get("top20_previous_pct", 0),
         "netflow_usd": analysis.get("netflow_usd", 0),
         "score": analysis.get("score", 0),
         "history_count": analysis.get("history_count", 0),
@@ -2092,6 +2175,121 @@ def check_old_token_surge(token: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def check_watchlist_quiet_breakout(
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    candles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Watchlist/trending signal: long sideways range, then volume or range breakout."""
+    if not QUIET_BREAKOUT_ENABLED or not (is_watchlist_token(token) or is_trending_token(token)):
+        return None
+    if len(candles) < QUIET_BREAKOUT_MIN_QUIET_BARS + QUIET_BREAKOUT_RECENT_BARS:
+        return None
+
+    recent_bars = max(1, QUIET_BREAKOUT_RECENT_BARS)
+    quiet_bars = candles[-(QUIET_BREAKOUT_MIN_QUIET_BARS + recent_bars) : -recent_bars]
+    recent = candles[-recent_bars:]
+    if len(quiet_bars) < QUIET_BREAKOUT_MIN_QUIET_BARS or not recent:
+        return None
+
+    quiet_lows = [to_float(c.get("low")) for c in quiet_bars if to_float(c.get("low")) > 0]
+    quiet_highs = [to_float(c.get("high")) for c in quiet_bars if to_float(c.get("high")) > 0]
+    quiet_volumes = [to_float(c.get("volume")) for c in quiet_bars]
+    if not quiet_lows or not quiet_highs:
+        return None
+    quiet_low = min(quiet_lows)
+    quiet_high = max(quiet_highs)
+    quiet_range_pct = ((quiet_high - quiet_low) / quiet_low * 100) if quiet_low > 0 else 0.0
+    quiet_avg_volume = sum(quiet_volumes) / len(quiet_volumes) if quiet_volumes else 0.0
+    quiet_total_volume = sum(quiet_volumes)
+
+    from_price = to_float(quiet_bars[-1].get("close"))
+    to_price = to_float(recent[-1].get("close"))
+    if from_price <= 0 or to_price <= 0:
+        return None
+    change_pct = (to_price - from_price) / from_price * 100
+    recent_volume = sum(to_float(c.get("volume")) for c in recent)
+    current_mcap = to_float(summary.get("mcap")) or calc_mcap(token)
+    if current_mcap <= 0:
+        return None
+
+    volume_ratio_base = max(quiet_avg_volume * len(recent), 1.0)
+    volume_ratio = recent_volume / volume_ratio_base if volume_ratio_base > 0 else 0.0
+    if quiet_range_pct > QUIET_BREAKOUT_MAX_RANGE_PCT:
+        return None
+    if current_mcap < QUIET_BREAKOUT_LOW_MCAP_MAX_USD:
+        trigger_mode = "volume"
+        if quiet_avg_volume > QUIET_BREAKOUT_MAX_AVG_VOLUME_USD:
+            return None
+        if recent_volume < QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD:
+            return None
+        if volume_ratio < QUIET_BREAKOUT_MIN_VOLUME_RATIO:
+            return None
+    elif current_mcap >= QUIET_BREAKOUT_HIGH_MCAP_MIN_USD:
+        trigger_mode = "range"
+        if change_pct < QUIET_BREAKOUT_MIN_CHANGE_PCT:
+            return None
+    else:
+        return None
+
+    pool_stats = summary.get("pool") or {}
+    quiet_duration_sec = to_int(recent[0].get("ts")) - to_int(quiet_bars[0].get("ts"))
+    source_type = "watchlist" if is_watchlist_token(token) else "trending"
+    return {
+        "score": 100,
+        "signal_type": "quiet_breakout",
+        "abnormal_rule": f"{source_type.upper()}_QUIET_{trigger_mode.upper()}_BREAKOUT",
+        "source_type": source_type,
+        "trigger_mode": trigger_mode,
+        "current_mcap": current_mcap,
+        "ath_mcap": to_float(summary.get("ath_mcap")),
+        "price_change_pct": change_pct,
+        "required_price_change_pct": QUIET_BREAKOUT_MIN_CHANGE_PCT,
+        "low_mcap_max_usd": QUIET_BREAKOUT_LOW_MCAP_MAX_USD,
+        "high_mcap_min_usd": QUIET_BREAKOUT_HIGH_MCAP_MIN_USD,
+        "quiet_range_pct": quiet_range_pct,
+        "required_quiet_range_pct": QUIET_BREAKOUT_MAX_RANGE_PCT,
+        "quiet_avg_volume_usd": quiet_avg_volume,
+        "required_quiet_avg_volume_usd": QUIET_BREAKOUT_MAX_AVG_VOLUME_USD,
+        "quiet_total_volume_usd": quiet_total_volume,
+        "breakout_volume_usd": recent_volume,
+        "breakout_volume_ratio": volume_ratio,
+        "required_breakout_volume_ratio": QUIET_BREAKOUT_MIN_VOLUME_RATIO,
+        "required_breakout_volume_usd": QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD,
+        "quiet_duration_sec": quiet_duration_sec,
+        "quiet_bars": len(quiet_bars),
+        "breakout_bars": len(recent),
+        "from_price": from_price,
+        "to_price": to_price,
+        "pool_total_liquidity": to_float(pool_stats.get("total_liquidity")),
+        "pool_mcap_ratio": to_float(pool_stats.get("liquidity_mcap_ratio")),
+        "pool_mcap_ratio_text": pool_stats.get("liquidity_mcap_ratio_text", "N/A"),
+        "reasons": [
+            f"{source_type} sideways {quiet_duration_sec / 3600:.1f}h range {quiet_range_pct:.1f}%<={QUIET_BREAKOUT_MAX_RANGE_PCT:.1f}%",
+            (
+                f"low mcap volume breakout ${recent_volume:,.0f}>={QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD:,.0f}, "
+                f"{volume_ratio:.1f}x>={QUIET_BREAKOUT_MIN_VOLUME_RATIO:.1f}x"
+                if trigger_mode == "volume"
+                else f"high mcap range breakout {change_pct:.1f}%>={QUIET_BREAKOUT_MIN_CHANGE_PCT:.1f}%"
+            ),
+        ],
+    }
+
+
+def quiet_breakout_signal_text(token: dict[str, Any], signal: dict[str, Any]) -> str:
+    address = token_address(token)
+    return (
+        f"{str(signal.get('source_type') or 'watchlist').title()} quiet breakout | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"CA: {address}\n"
+        f"MCap: ${signal.get('current_mcap', 0):,.0f}\n"
+        f"Mode: {signal.get('trigger_mode') or '-'}\n"
+        f"Sideways: {signal.get('quiet_duration_sec', 0) / 3600:.1f}h | range {signal.get('quiet_range_pct', 0):.1f}%\n"
+        f"Quiet avg volume: ${signal.get('quiet_avg_volume_usd', 0):,.0f}\n"
+        f"Move: {signal.get('price_change_pct', 0):.1f}% | recent volume ${signal.get('breakout_volume_usd', 0):,.0f} ({signal.get('breakout_volume_ratio', 0):.1f}x)\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
 def old_surge_signal_text(token: dict[str, Any], surge: dict[str, Any]) -> str:
     address = token_address(token)
     return (
@@ -2210,6 +2408,23 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
             )
 
+    quiet_breakout = check_watchlist_quiet_breakout(token, summary, candles)
+    if notify and quiet_breakout:
+        quiet_type = quiet_breakout["signal_type"]
+        quiet_already = previous_signal_exists(address, quiet_type)
+        quiet_baseline = first_signal_baseline(address, quiet_type)
+        if not quiet_already:
+            save_snapshot(scan_id + "_quiet", token, summary, holders, quiet_breakout)
+            quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
+            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_breakout), quiet_extra, status="frontend_update")
+            print(
+                f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
+                f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "
+                f"range={quiet_breakout['quiet_range_pct']:.1f}% avg_vol=${quiet_breakout['quiet_avg_volume_usd']:,.0f}"
+            )
+        else:
+            print(f"{token_label(token)} quiet_breakout already notified")
+
     # Old token surge detection (independent of abnormal/EMA signal)
     if notify and OLD_TOKEN_SURGE_ENABLED:
         surge = check_old_token_surge(token)
@@ -2277,6 +2492,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "symbol": token.get("symbol"),
                 "address": address,
                 "current_mcap": current_mcap,
+                "holder_count": summary.get("holder_count", 0),
+                "created_ts": summary.get("created_ts", 0),
+                "age_sec": summary.get("age_sec", 0),
                 "first_signal_mcap": first_mcap,
                 "first_signal_ts": to_int(ema_baseline.get("first_signal_ts")),
                 "first_signal_delta_mcap": first_delta,
@@ -2460,6 +2678,125 @@ def scan_once(args: argparse.Namespace) -> None:
     print(f"scan_id={scan_id} processed={processed}/{len(tokens)} skipped={skipped}")
 
 
+def _fast_snapshot_skip_reason(address: str, token: dict[str, Any]) -> str | None:
+    """Shorter interval check for fast-scan path (100K-300K tokens)."""
+    latest_ts = latest_snapshot_ts(address)
+    if not latest_ts:
+        return None
+    age = now_ts() - latest_ts
+    if age < FAST_SCAN_SNAPSHOT_INTERVAL_SEC:
+        return f"fast快照{age / 60:.1f}m<{FAST_SCAN_SNAPSHOT_INTERVAL_SEC / 60:.1f}m"
+    return None
+
+
+def fast_scan_once(args: argparse.Namespace) -> None:
+    """Scan only watchlist tokens in [FAST_SCAN_MIN_MCAP, FAST_SCAN_MAX_MCAP] MCap range."""
+    scan_id = str(uuid.uuid4())
+
+    watchlist_tokens = fetch_watchlist_tokens()
+    if not watchlist_tokens:
+        return
+
+    # First pass: get MCap for all watchlist tokens without heavy API calls
+    candidates = []
+    for token in watchlist_tokens:
+        address = token_address(token)
+        if not valid_sol_ca(address):
+            continue
+        if token.get("blacklisted") or is_watchlist_blacklisted(address):
+            continue
+
+        # Estimate MCap from watchlist cached value before doing heavier API calls.
+        last_mcap = calc_mcap(token) or to_float(token.get("watchlist_last_mcap"))
+        if last_mcap < FAST_SCAN_MIN_MCAP or last_mcap > FAST_SCAN_MAX_MCAP:
+            continue
+
+        candidates.append(token)
+
+    if not candidates:
+        return
+
+    print(
+        f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
+        f"mode=fast_scan "
+        f"watchlist={len(watchlist_tokens)} in_range={len(candidates)} "
+        f"mcap_range=${FAST_SCAN_MIN_MCAP:,.0f}-${FAST_SCAN_MAX_MCAP:,.0f}"
+    )
+
+    max_tokens = FAST_SCAN_MAX_TOKENS if FAST_SCAN_MAX_TOKENS > 0 else len(candidates)
+    processed = 0
+    skipped = 0
+    for token in candidates[:max_tokens]:
+        try:
+            address = token_address(token)
+
+            # Lightweight metadata fetch (skip security, pool for speed)
+            info, _security = fetch_token_metadata(address)
+            if not info:
+                skipped += 1
+                continue
+            token = merge_token_metadata(token, info, {})
+            fill_watchlist_create_at(token)
+
+            current_mcap = calc_mcap(token) or to_float(token.get("watchlist_last_mcap"))
+            # Re-check MCap after fresh fetch
+            if current_mcap > 0 and (current_mcap < FAST_SCAN_MIN_MCAP or current_mcap > FAST_SCAN_MAX_MCAP):
+                update_watchlist_seen(
+                    address, current_mcap,
+                    pool_liquidity=0, pool_mcap_ratio=0, fee_sol=fee_sol(token),
+                    symbol=token.get("symbol"),
+                )
+                skipped += 1
+                continue
+
+            # Pool data (lightweight)
+            pool_data = fetch_token_pool(address)
+            token = attach_token_pool(token, pool_data)
+            pool_summary, pool_reliable, pool_unreliable_reason = summarize_gmgn_pool_data(pool_data, token)
+            pool_liquidity = to_float(pool_summary.get("total_liquidity"))
+            pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+            if not pool_reliable:
+                pool_liquidity = to_float(token.get("watchlist_last_pool_liquidity"))
+                pool_mcap_ratio = to_float(token.get("watchlist_last_pool_mcap_ratio"))
+
+            # Delete check
+            if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
+                deleted = delete_watchlist_token(
+                    address, "mcap_below_threshold",
+                    current_mcap=current_mcap,
+                    pool_liquidity=pool_liquidity,
+                    pool_mcap_ratio=pool_mcap_ratio,
+                    metadata={"threshold": WATCHLIST_DELETE_BELOW_MCAP_USD, "trigger": "fast_scan"},
+                )
+                if deleted:
+                    print(f"  {address[:8]} fast_scan deleted: mcap ${current_mcap:,.0f}")
+                skipped += 1
+                continue
+
+            # Update watchlist seen timestamp + MCap
+            update_watchlist_seen(
+                address, current_mcap,
+                pool_liquidity=pool_liquidity, pool_mcap_ratio=pool_mcap_ratio,
+                fee_sol=fee_sol(token), symbol=token.get("symbol"),
+            )
+
+            may_notify = bool(args.notify)
+            # Use fast-scan specific snapshot interval
+            skip_reason = _fast_snapshot_skip_reason(address, token)
+            if skip_reason:
+                skipped += 1
+                continue
+
+            if handle_token(scan_id, token, may_notify, frontend_update_allowed=True):
+                processed += 1
+        except Exception as exc:
+            print(f"  {token_label(token)} fast_scan failed: {exc}")
+        time.sleep(args.fast_token_delay)
+
+    if processed or skipped:
+        print(f"  scan_id={scan_id} fast_scan processed={processed}/{len(candidates)} skipped={skipped}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Monitor multi-interval trending tokens with one JSON snapshot table.")
     parser.add_argument("--once", action="store_true", help="Run once and exit.")
@@ -2472,6 +2809,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
     parser.add_argument("--min-pool-liquidity", type=float, default=MIN_POOL_LIQUIDITY_USD, help="Skip non-watchlist tokens below this pool liquidity in USD.")
+    parser.add_argument("--fast-scan", action="store_true", default=FAST_SCAN_ENABLED, help="Enable 1-min fast scan for 100K-300K watchlist tokens.")
+    parser.add_argument("--fast-interval", type=int, default=FAST_SCAN_INTERVAL_SEC, help="Fast scan interval seconds.")
+    parser.add_argument("--fast-min-mcap", type=float, default=FAST_SCAN_MIN_MCAP, help="Fast scan minimum MCap in USD.")
+    parser.add_argument("--fast-max-mcap", type=float, default=FAST_SCAN_MAX_MCAP, help="Fast scan maximum MCap in USD.")
+    parser.add_argument("--fast-snapshot-interval", type=int, default=FAST_SCAN_SNAPSHOT_INTERVAL_SEC, help="Fast scan per-token snapshot interval seconds.")
+    parser.add_argument("--fast-token-delay", type=float, default=FAST_SCAN_TOKEN_DELAY, help="Fast scan delay between tokens.")
+    parser.add_argument("--fast-max-tokens", type=int, default=FAST_SCAN_MAX_TOKENS, help="Fast scan max tokens per cycle.")
+    parser.add_argument("--verbose", action="store_true", help="Verbose logging.")
     parser.add_argument("--enable-ema-golden-cross", action="store_true", help="Enable EMA9/EMA26 golden-cross Telegram/frontend pushes.")
     parser.add_argument(
         "--trend-order-bys",
@@ -2520,7 +2865,7 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 
 def main() -> None:
-    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL, EMA_GOLDEN_CROSS_ENABLED
+    global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL, EMA_GOLDEN_CROSS_ENABLED, FAST_SCAN_ENABLED, FAST_SCAN_INTERVAL_SEC, FAST_SCAN_MIN_MCAP, FAST_SCAN_MAX_MCAP, FAST_SCAN_SNAPSHOT_INTERVAL_SEC, FAST_SCAN_TOKEN_DELAY, FAST_SCAN_MAX_TOKENS
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
@@ -2530,6 +2875,13 @@ def main() -> None:
     TREND_INTERVALS = tuple(item.strip() for item in str(args.trend_intervals).split(",") if item.strip())
     TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else TREND_INTERVAL
     EMA_GOLDEN_CROSS_ENABLED = EMA_GOLDEN_CROSS_ENABLED or bool(args.enable_ema_golden_cross)
+    FAST_SCAN_ENABLED = bool(args.fast_scan)
+    FAST_SCAN_INTERVAL_SEC = args.fast_interval
+    FAST_SCAN_MIN_MCAP = args.fast_min_mcap
+    FAST_SCAN_MAX_MCAP = args.fast_max_mcap
+    FAST_SCAN_SNAPSHOT_INTERVAL_SEC = args.fast_snapshot_interval
+    FAST_SCAN_TOKEN_DELAY = args.fast_token_delay
+    FAST_SCAN_MAX_TOKENS = args.fast_max_tokens
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()
@@ -2537,8 +2889,24 @@ def main() -> None:
         scan_once(args)
         if args.once or not args.watch:
             break
-        print(f"sleep {args.interval}s")
-        time.sleep(args.interval)
+        if not FAST_SCAN_ENABLED or FAST_SCAN_INTERVAL_SEC <= 0:
+            print(f"sleep {args.interval:.0f}s")
+            time.sleep(args.interval)
+            continue
+
+        next_full_scan_at = time.time() + args.interval
+        while True:
+            sleep_left = min(FAST_SCAN_INTERVAL_SEC, max(0, next_full_scan_at - time.time()))
+            if sleep_left <= 0:
+                break
+            print(f"sleep {sleep_left:.0f}s")
+            time.sleep(sleep_left)
+            if time.time() >= next_full_scan_at:
+                break
+            try:
+                fast_scan_once(args)
+            except Exception as exc:
+                print(f"fast_scan failed: {exc}")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@
           <p class="desc">实时读取结构化报警数据，按代币去重展示最新信号。Stream: {{ stream_key }}</p>
         </div>
         <div class="nav-actions">
-          <a class="mini-link" href="/bottom-watchlist">Bottom Watchlist</a>
+          <a class="mini-link" href="/bottom-watchlist">重点CA异动</a>
         </div>
         <div class="live">
           <span id="conn-dot" class="dot idle"></span>
@@ -37,8 +37,8 @@
       </section>
 
       <button id="bottom-alert-banner" class="bottom-alert-banner" type="button" hidden>
-        <span class="bottom-alert-title">新底部异动</span>
-        <span id="bottom-alert-text" class="bottom-alert-text">点击查看最新底部异动</span>
+        <span class="bottom-alert-title">新底部代币异动</span>
+        <span id="bottom-alert-text" class="bottom-alert-text">点击查看最新底部代币异动</span>
         <span class="bottom-alert-action">查看</span>
       </button>
 
@@ -49,13 +49,10 @@
           <option value="mcap_desc">市值高到低</option>
           <option value="change_desc">涨幅高到低</option>
           <option value="holders_desc">持有人高到低</option>
-          <option value="repeat_desc">复推次数高到低</option>
         </select>
         <div class="tabs">
           <button class="tab active" type="button" data-tab="all">全部</button>
-          <button class="tab" type="button" data-tab="repeat">复推</button>
-          <button class="tab" type="button" data-tab="new">首推</button>
-          <button class="tab" type="button" data-tab="bottom">底部异动</button>
+          <button class="tab" type="button" data-tab="bottom">底部代币异动</button>
           <button class="tab" type="button" data-tab="daily1m">每日1M</button>
           <button id="clear-btn" class="clear-btn" type="button">清空页面</button>
         </div>
@@ -197,6 +194,13 @@
       }).format(new Date(ms));
     }
 
+    function fmtAge(seconds) {
+      const value = safeNum(seconds);
+      if (value <= 0) return "-";
+      if (value < 24 * 60 * 60) return `${(value / 3600).toFixed(1)}小时`;
+      return `${(value / 86400).toFixed(1)}天`;
+    }
+
     function isRecentDaily1m(item) {
       const ts = safeNum(item && item.ts);
       if (!ts) return false;
@@ -234,12 +238,12 @@
             source: item.source || "", status: item.status || "", address, chain: "sol",
             symbol: extra.symbol || item.title || "UNKNOWN", name: "",
             narrative: extra.narrative || extra.narrative_desc || `EMA金叉: EMA9上穿EMA26 (${extra.strength || "normal"})`,
-            mcap: safeNum(extra.current_mcap), holders: 0, feeSol: 0, tradeVolume: 0,
+            mcap: safeNum(extra.current_mcap), holders: safeNum(extra.holder_count), feeSol: 0, tradeVolume: 0,
             priceChange: 0, wave: `EMA9=${extra.ema9?.toFixed(10)}`, drawdown: 0,
             repeatCount: 1, repeatType: "EMA金叉",
             capPath: `EMA26下方${extra.bars_below || 0}根后金叉`, holderDelta: 0,
             pool: "", liquidity: safeNum(extra.pool_liquidity),
-            createdTime: "", age: "", verdict: "ema_golden_cross",
+            createdTime: fmtTime(extra.created_ts), age: fmtAge(extra.age_sec), verdict: "ema_golden_cross",
             trend: {}, tags: {}, top10: {}, top100: {}, bottomProfit: {},
             rawText: item.text || "", rawStats: extra,
             isNew: false, isBottom: true,
@@ -251,15 +255,18 @@
             firstSignalTime: fmtTime(extra.first_signal_ts || item.ts),
             firstSignalChangePct: safeNum(extra.first_signal_change_pct),
             firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
-            poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
-            historyCount: 0, reasons: [`EMA9(${extra.ema9?.toFixed(10)}) 上穿 EMA26(${extra.ema26?.toFixed(10)})`],
+          poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
+          top20Pct: 0,
+          historyCount: 0, reasons: [`EMA9(${extra.ema9?.toFixed(10)}) 上穿 EMA26(${extra.ema26?.toFixed(10)})`],
           };
         }
 
         const poolLiquidity = safeNum(extra.pool_total_liquidity);
         const poolMcapRatio = safeNum(extra.pool_mcap_ratio);
-        if (signalType === "watch" || poolLiquidity < 4000 || poolMcapRatio < 0.10) return null;
+        const isQuietBreakout = signalType === "quiet_breakout";
+        if (signalType === "watch" || (!isQuietBreakout && (poolLiquidity < 4000 || poolMcapRatio < 0.10))) return null;
         const isAbnormal = signalType === "abnormal" || signalType === "new_revival";
+        const bottomVerdict = isQuietBreakout ? "横盘异动" : "底部代币异动";
         return {
           id: item.id,
           ts: safeNum(item.ts),
@@ -270,23 +277,23 @@
           chain: "sol",
           symbol: extra.symbol || item.title || "UNKNOWN",
           name: "",
-          narrative: extra.narrative || extra.narrative_desc || `底部${isAbnormal ? "异动" : "观察"}: ${extra.abnormal_rule || ""}`,
+          narrative: extra.narrative || extra.narrative_desc || (isQuietBreakout ? `长时间横盘低量后异动: ${extra.abnormal_rule || ""}` : `底部代币异动: ${extra.abnormal_rule || ""}`),
           mcap: safeNum(extra.current_mcap),
-          holders: 0,
+          holders: safeNum(extra.holder_count),
           feeSol: 0,
           tradeVolume: 0,
           priceChange: safeNum(extra.price_change_pct),
           wave: extra.abnormal_rule || "",
           drawdown: 0,
           repeatCount: 1,
-          repeatType: isAbnormal ? "底部异动" : "底部观察",
+          repeatType: bottomVerdict,
           capPath: `ATH $${formatCap(extra.ath_mcap)} → 当前 $${formatCap(extra.current_mcap)}`,
           holderDelta: 0,
           pool: extra.pool_main_exchange || "",
           liquidity: poolLiquidity,
-          createdTime: "",
-          age: "",
-          verdict: isAbnormal ? "底部异动" : "底部观察",
+          createdTime: fmtTime(extra.created_ts),
+          age: fmtAge(extra.age_sec),
+          verdict: bottomVerdict,
           trend: {},
           tags: {
             bottom: {
@@ -304,6 +311,7 @@
           rawStats: extra,
           isNew: false,
           isBottom: true,
+          isQuietBreakout,
           narrativeType: extra.narrative_type || "",
           athMcap: safeNum(extra.ath_mcap),
           abnormalRule: extra.abnormal_rule || "",
@@ -316,7 +324,12 @@
           poolMcapRatioText: extra.pool_mcap_ratio_text || "",
           accumulationPct: safeNum(extra.accumulation_pct_delta),
           distributionPct: safeNum(extra.distribution_pct_delta),
+          top20Pct: safeNum(extra.top20_pct_delta),
           netflowUsd: safeNum(extra.netflow_usd),
+          quietRangePct: safeNum(extra.quiet_range_pct),
+          quietAvgVolumeUsd: safeNum(extra.quiet_avg_volume_usd),
+          breakoutVolumeUsd: safeNum(extra.breakout_volume_usd),
+          quietDurationSec: safeNum(extra.quiet_duration_sec),
           historyCount: safeNum(extra.history_count),
           reasons: extra.reasons || [],
         };
@@ -436,8 +449,6 @@
 
     function matches(signal) {
       const tabMatch = state.tab === "all" ||
-        (state.tab === "repeat" && safeNum(signal.repeatCount) > 1 && !signal.isBottom && !signal.isDaily1m) ||
-        (state.tab === "new" && safeNum(signal.repeatCount) <= 1 && !signal.isBottom && !signal.isDaily1m) ||
         (state.tab === "bottom" && signal.isBottom) ||
         (state.tab === "daily1m" && signal.isDaily1m);
       if (!tabMatch) return false;
@@ -455,7 +466,6 @@
         mcap_desc: (a, b) => b.mcap - a.mcap,
         change_desc: (a, b) => b.priceChange - a.priceChange,
         holders_desc: (a, b) => b.holders - a.holders,
-        repeat_desc: (a, b) => b.repeatCount - a.repeatCount || b.ts - a.ts,
       };
       return rows.sort(sorters[key] || sorters.time_desc).slice(0, MAX_VISIBLE_SIGNALS);
     }
@@ -545,7 +555,6 @@
       }
 
       if (signal.isBottom) {
-        const reasonsHtml = (signal.reasons || []).map((r) => `<li>${htmlEscape(r)}</li>`).join("");
         return `
           <div class="metric-grid">
             ${metric("当前市值", formatCap(signal.mcap))}
@@ -553,24 +562,20 @@
             ${metric("ATH市值", formatCap(signal.athMcap))}
             ${metric("池/市值", `${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% (${htmlEscape(signal.poolMcapRatioText)})`)}
             ${metric("流动性", formatCap(signal.liquidity))}
+            ${metric("创建时间", htmlEscape(signal.createdTime || "-"))}
+            ${metric("币龄", htmlEscape(signal.age || "-"))}
             ${metric("快照历史", `${safeNum(signal.historyCount)}次`)}
             ${metric("首次异动市值", formatCap(signal.firstSignalMcap || signal.mcap))}
             ${metric("首次异动时间", htmlEscape(signal.firstSignalTime || signal.time || "-"))}
             ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
           </div>
           <div class="metric-grid two">
-            ${metric("增持", `+${safeNum(signal.accumulationPct * 100).toFixed(2)}%`, "green-text")}
-            ${metric("减持", `-${safeNum(signal.distributionPct * 100).toFixed(2)}%`, "red-text")}
+            ${metric("Top20增持", `${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%`, safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text")}
             ${metric("净买入", formatCap(signal.netflowUsd))}
-            ${metric("评分", `${safeNum(signal.rawStats.score)}/100`)}
           </div>
           <section class="detail-section">
-            <h3>检测理由</h3>
-            <ul class="reason-list">${reasonsHtml || "<li>无</li>"}</ul>
-          </section>
-          <section class="detail-section">
             <h3>筹码变化</h3>
-            <p>Top100 增持 ${safeNum(signal.accumulationPct * 100).toFixed(2)}% | 减持 ${safeNum(signal.distributionPct * 100).toFixed(2)}%</p>
+            <p>Top20 增持: ${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</p>
             <p>净流入: ${formatCap(signal.netflowUsd)}</p>
           </section>
         `;
@@ -585,7 +590,6 @@
           ${metric("手续费", `${safeNum(signal.feeSol).toFixed(2)} SOL`)}
           ${metric("交易量", formatCap(signal.tradeVolume))}
           ${metric("回撤", `${safeNum(signal.drawdown).toFixed(1)}%`)}
-          ${metric("复推", signal.repeatCount > 1 ? `第${signal.repeatCount}次 ${signal.repeatType}` : "首推")}
           ${metric("流动性", formatCap(signal.liquidity))}
         </div>
         <section class="detail-section">
@@ -641,6 +645,7 @@
       const flashClass = flashed ? " new-card" : "";
       const bottomClass = signal.isBottom ? " bottom-signal-card" : "";
       const m1Class = signal.isDaily1m ? ` m1-${signal.m1Zone}` : "";
+      const quietClass = signal.isQuietBreakout ? " quiet-breakout-card" : "";
 
       let badges = "";
       if (signal.isDaily1m) {
@@ -649,16 +654,13 @@
           : (signal.m1Zone === "yellow" ? '<span class="badge badge-orange">观察区</span>' : '<span class="badge badge-green">安全区</span>');
         badges = zoneBadge;
       } else if (signal.isBottom) {
-        if (signal.verdict === "ema_golden_cross") {
+        if (signal.isQuietBreakout) {
+          badges = '<span class="badge badge-red">横盘异动</span>';
+        } else if (signal.verdict === "ema_golden_cross") {
           badges = '<span class="badge badge-blue">EMA金叉</span>';
         } else {
-          const isAbnormal = signal.verdict === "底部异动";
-          badges = isAbnormal ? '<span class="badge badge-orange">异动</span>' : '<span class="badge">观察</span>';
+          badges = '<span class="badge badge-orange">底部代币异动</span>';
         }
-      } else if (signal.repeatCount > 1) {
-        badges = `<span class="badge badge-blue">第${signal.repeatCount}次复推</span>`;
-      } else {
-        badges = '<span class="badge badge-green">首推</span>';
       }
       if (!signal.isDaily1m && !signal.isBottom) {
         badges += focusTagBadges(signal);
@@ -670,13 +672,19 @@
           ? `<span>ATH ${formatCap(signal.athMcap)} · 池比 ${safeNum(signal.poolMcapRatio * 100).toFixed(1)}% · 首次 ${htmlEscape(signal.firstSignalTime || signal.time || "-")}</span>`
           : `<span>${htmlEscape(signal.verdict || "-")} · Rug ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% · 捆绑 ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}%</span>`);
 
-      const stat4label = signal.isDaily1m ? "跌幅" : (signal.isBottom ? "档位" : "复推");
+      const stat4label = signal.isDaily1m ? "跌幅" : (signal.isBottom ? "池子" : "流动性");
       const stat4value = signal.isDaily1m
         ? `${safeNum(signal.m1DropPct).toFixed(1)}%`
-        : (signal.isBottom ? htmlEscape(signal.abnormalRule || "-") : (signal.repeatCount > 1 ? `${signal.repeatCount}次` : "首推"));
+        : formatCap(signal.liquidity);
+      const bottomStats = signal.isBottom
+        ? `
+              <div class="card-stat"><span>创建</span><b>${htmlEscape(signal.createdTime || "-")}</b></div>
+              <div class="card-stat"><span>币龄</span><b>${htmlEscape(signal.age || "-")}</b></div>
+              <div class="card-stat"><span>Top20增持</span><b class="${safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text"}">${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</b></div>`
+        : "";
 
       return `
-        <article class="card signal-card${bottomClass}${m1Class}${expandedClass}${flashClass}" data-address="${htmlEscape(signal.address)}">
+        <article class="card signal-card${bottomClass}${m1Class}${quietClass}${expandedClass}${flashClass}" data-address="${htmlEscape(signal.address)}">
           <div class="card-main" data-action="toggle">
             <div class="card-top">
               <div class="card-title">
@@ -697,8 +705,9 @@
             <div class="card-stats">
               <div class="card-stat"><span>市值</span><b>${formatCap(signal.mcap)}</b></div>
               <div class="card-stat"><span>涨幅</span><b class="${priceClass}">${formatPct(signal.priceChange)}</b></div>
-              <div class="card-stat"><span>持有人</span><b>${signal.isBottom ? "-" : safeNum(signal.holders)}</b></div>
+              <div class="card-stat"><span>持有人</span><b>${safeNum(signal.holders)}</b></div>
               <div class="card-stat"><span>${stat4label}</span><b>${stat4value}</b></div>
+              ${bottomStats}
             </div>
             <div class="card-risk">${riskLine}</div>
             <div class="card-ca">
@@ -741,11 +750,11 @@
       const signal = state.pendingBottomAddress ? state.byAddress.get(state.pendingBottomAddress) : null;
       if (!signal || !signal.isBottom || state.pendingBottomCount <= 0) {
         bottomAlertBanner.hidden = true;
-        bottomAlertText.textContent = "点击查看最新底部异动";
+        bottomAlertText.textContent = "点击查看最新底部代币异动";
         return;
       }
       bottomAlertBanner.hidden = false;
-      bottomAlertText.textContent = `${state.pendingBottomCount}条新底部异动 · $${signal.symbol || "UNKNOWN"} · ${shortAddress(signal.address)} · ${formatCap(signal.mcap)}`;
+      bottomAlertText.textContent = `${state.pendingBottomCount}条新底部代币异动 · $${signal.symbol || "UNKNOWN"} · ${shortAddress(signal.address)} · ${formatCap(signal.mcap)}`;
     }
 
     function render() {

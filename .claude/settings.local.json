@@ -39,7 +39,9 @@
       "Bash(netstat -ano)",
       "Bash(findstr :8000)",
       "Bash(taskkill *)",
-      "PowerShell(Stop-Process *)"
+      "PowerShell(Stop-Process *)",
+      "Bash(Get-ChildItem -Path D:\\\\github\\\\chainAlpha -Directory -Depth 1)",
+      "Bash(Select-Object Name)"
     ]
   }
 }
