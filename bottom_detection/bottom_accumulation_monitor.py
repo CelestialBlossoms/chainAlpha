@@ -76,6 +76,7 @@ FAST_SCAN_TOKEN_DELAY = float(os.getenv("BOTTOM_FAST_SCAN_TOKEN_DELAY", "0.3"))
 FAST_SCAN_MAX_TOKENS = int(os.getenv("BOTTOM_FAST_SCAN_MAX_TOKENS", "0"))
 SIGNAL_DEDUP_MAX_AGE_SEC = int(os.getenv("BOTTOM_SIGNAL_DEDUP_MAX_AGE_SEC", str(24 * 3600)))
 FIRST_SIGNAL_BASELINE_MAX_AGE_SEC = int(os.getenv("BOTTOM_FIRST_SIGNAL_BASELINE_MAX_AGE_SEC", str(24 * 3600)))
+FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT = float(os.getenv("BOTTOM_FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT", "0"))
 QUIET_BREAKOUT_ENABLED = os.getenv("BOTTOM_QUIET_BREAKOUT_ENABLED", "1") != "0"
 QUIET_BREAKOUT_MIN_QUIET_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_QUIET_BARS", "24"))
 QUIET_BREAKOUT_RECENT_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_RECENT_BARS", "3"))
@@ -1450,8 +1451,14 @@ def analyze_abnormal_snapshot(
         }
     )
     current_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:20])
+    current_top50_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:50])
+    current_top100_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:100])
     previous_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:20]) if previous_holders else 0.0
+    previous_top50_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:50]) if previous_holders else 0.0
+    previous_top100_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:100]) if previous_holders else 0.0
     top20_pct_delta = current_top20_pct - previous_top20_pct if previous_holders else 0.0
+    top50_pct_delta = current_top50_pct - previous_top50_pct if previous_holders else 0.0
+    top100_pct_delta = current_top100_pct - previous_top100_pct if previous_holders else 0.0
     if drop_level > 0:
         rule_name = f"NEW_ATH1M_DROP_{int(drop_level / 10000)}W"
         min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD
@@ -1566,6 +1573,12 @@ def analyze_abnormal_snapshot(
         "top20_pct_delta": top20_pct_delta,
         "top20_current_pct": current_top20_pct,
         "top20_previous_pct": previous_top20_pct,
+        "top50_pct_delta": top50_pct_delta,
+        "top50_current_pct": current_top50_pct,
+        "top50_previous_pct": previous_top50_pct,
+        "top100_pct_delta": top100_pct_delta,
+        "top100_current_pct": current_top100_pct,
+        "top100_previous_pct": previous_top100_pct,
         "new_holder_pct": holder_change["new_holder_pct"],
         "exited_holder_pct": holder_change["exited_holder_pct"],
         "netflow_usd": holder_change["netflow_usd"],
@@ -1904,6 +1917,37 @@ def first_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
     return db_op(_op) or {}
 
 
+def latest_frontend_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
+    if not address or not signal_type or signal_type == "watch":
+        return {}
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT snapshot_ts, analysis
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s AND signal_type=%s
+            ORDER BY snapshot_ts DESC, id DESC
+            OFFSET 1
+            LIMIT 1
+            """,
+            (CHAIN, address, signal_type),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {}
+        analysis = row[1] or {}
+        if not isinstance(analysis, dict):
+            return {}
+        return {
+            "last_signal_ts": int(row[0] or 0),
+            "last_signal_mcap": to_float(analysis.get("current_mcap")),
+        }
+
+    return db_op(_op) or {}
+
+
 def build_bottom_signal_extra(
     token: dict[str, Any],
     summary: dict[str, Any],
@@ -1975,6 +2019,12 @@ def build_bottom_signal_extra(
         "top20_pct_delta": analysis.get("top20_pct_delta", 0),
         "top20_current_pct": analysis.get("top20_current_pct", 0),
         "top20_previous_pct": analysis.get("top20_previous_pct", 0),
+        "top50_pct_delta": analysis.get("top50_pct_delta", 0),
+        "top50_current_pct": analysis.get("top50_current_pct", 0),
+        "top50_previous_pct": analysis.get("top50_previous_pct", 0),
+        "top100_pct_delta": analysis.get("top100_pct_delta", 0),
+        "top100_current_pct": analysis.get("top100_current_pct", 0),
+        "top100_previous_pct": analysis.get("top100_previous_pct", 0),
         "netflow_usd": analysis.get("netflow_usd", 0),
         "score": analysis.get("score", 0),
         "history_count": analysis.get("history_count", 0),
@@ -1988,6 +2038,17 @@ def build_bottom_signal_extra(
         "watchlist_narrative_desc": watchlist_narrative_desc,
         "watchlist_narrative_type": watchlist_narrative_type,
     }
+
+
+def frontend_repeat_update_allowed(extra: dict[str, Any], analysis: dict[str, Any], latest_baseline: dict[str, Any]) -> tuple[bool, str]:
+    current_mcap = to_float(extra.get("current_mcap"))
+    last_mcap = to_float(latest_baseline.get("last_signal_mcap"))
+    if last_mcap > 0 and current_mcap <= last_mcap:
+        return False, f"mcap_not_above_last:${current_mcap:,.0f}<=${last_mcap:,.0f}"
+    recent_change_pct = to_float(analysis.get("raw_kline_change_pct"))
+    if recent_change_pct <= FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT:
+        return False, f"recent_kline_not_up:{recent_change_pct:.1f}%<={FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT:.1f}%"
+    return True, f"mcap_up:${last_mcap:,.0f}->${current_mcap:,.0f}, recent_kline={recent_change_pct:.1f}%"
 
 
 def notify_skip_reason(analysis: dict[str, Any]) -> str:
@@ -2352,8 +2413,17 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             send_tg(signal_text, extra=web_extra)
             publish_frontend_signal_update(signal_text, web_extra)
     elif notify and should_notify(analysis) and already_notified:
-        if frontend_update_allowed or should_notify(analysis):
+        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+        latest_baseline = latest_frontend_signal_baseline(address, analysis.get("signal_type", ""))
+        repeat_allowed, repeat_reason = frontend_repeat_update_allowed(web_extra, analysis, latest_baseline)
+        if not repeat_allowed:
+            print(
+                f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
+                f"skip frontend update: {repeat_reason}"
+            )
+        elif frontend_update_allowed or should_notify(analysis):
             if USE_AGENT_DECISION:
+                analysis = {**analysis, **web_extra, "repeat_update_reason": repeat_reason}
                 agent_context = run_agent_execution(
                     token=token,
                     summary=summary,
@@ -2369,15 +2439,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 action_execution = agent_context.decision.get("action_executor") if agent_context else {}
                 print(
                     f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                    f"agent action={action_execution.get('action')} results={action_execution.get('results')}"
+                    f"agent action={action_execution.get('action')} repeat={repeat_reason} results={action_execution.get('results')}"
                 )
             else:
-                web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
                 publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
                 print(
                     f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                    f"frontend updated mcap ${web_extra.get('first_signal_mcap', 0):,.0f}->${web_extra.get('current_mcap', 0):,.0f} "
-                    f"({web_extra.get('first_signal_change_pct', 0):+.1f}%)"
+                    f"frontend updated: {repeat_reason}"
                 )
         else:
             print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")

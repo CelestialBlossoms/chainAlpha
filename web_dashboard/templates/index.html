@@ -256,7 +256,7 @@
             firstSignalChangePct: safeNum(extra.first_signal_change_pct),
             firstSignalDeltaMcap: safeNum(extra.first_signal_delta_mcap),
           poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
-          top20Pct: 0,
+          top20Pct: 0, top50Pct: 0, top100Pct: 0,
           historyCount: 0, reasons: [`EMA9(${extra.ema9?.toFixed(10)}) 上穿 EMA26(${extra.ema26?.toFixed(10)})`],
           };
         }
@@ -325,6 +325,8 @@
           accumulationPct: safeNum(extra.accumulation_pct_delta),
           distributionPct: safeNum(extra.distribution_pct_delta),
           top20Pct: safeNum(extra.top20_pct_delta),
+          top50Pct: safeNum(extra.top50_pct_delta),
+          top100Pct: safeNum(extra.top100_pct_delta),
           netflowUsd: safeNum(extra.netflow_usd),
           quietRangePct: safeNum(extra.quiet_range_pct),
           quietAvgVolumeUsd: safeNum(extra.quiet_avg_volume_usd),
@@ -571,11 +573,14 @@
           </div>
           <div class="metric-grid two">
             ${metric("Top20增持", `${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%`, safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text")}
+            ${metric("Top50增持", `${safeNum(signal.top50Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top50Pct * 100).toFixed(2)}%`, safeNum(signal.top50Pct) >= 0 ? "green-text" : "red-text")}
+            ${metric("Top100增持", `${safeNum(signal.top100Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top100Pct * 100).toFixed(2)}%`, safeNum(signal.top100Pct) >= 0 ? "green-text" : "red-text")}
             ${metric("净买入", formatCap(signal.netflowUsd))}
           </div>
           <section class="detail-section">
             <h3>筹码变化</h3>
             <p>Top20 增持: ${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</p>
+            <p>Top50 增持: ${safeNum(signal.top50Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top50Pct * 100).toFixed(2)}% | Top100 增持: ${safeNum(signal.top100Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top100Pct * 100).toFixed(2)}%</p>
             <p>净流入: ${formatCap(signal.netflowUsd)}</p>
           </section>
         `;
@@ -680,7 +685,9 @@
         ? `
               <div class="card-stat"><span>创建</span><b>${htmlEscape(signal.createdTime || "-")}</b></div>
               <div class="card-stat"><span>币龄</span><b>${htmlEscape(signal.age || "-")}</b></div>
-              <div class="card-stat"><span>Top20增持</span><b class="${safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text"}">${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</b></div>`
+              <div class="card-stat"><span>Top20增持</span><b class="${safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text"}">${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</b></div>
+              <div class="card-stat"><span>Top50增持</span><b class="${safeNum(signal.top50Pct) >= 0 ? "green-text" : "red-text"}">${safeNum(signal.top50Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top50Pct * 100).toFixed(2)}%</b></div>
+              <div class="card-stat"><span>Top100增持</span><b class="${safeNum(signal.top100Pct) >= 0 ? "green-text" : "red-text"}">${safeNum(signal.top100Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top100Pct * 100).toFixed(2)}%</b></div>`
         : "";
 
       return `
