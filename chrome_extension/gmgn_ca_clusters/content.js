@@ -28,7 +28,7 @@
     caView: "CA\u5206\u6790",
     abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
-    abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u5207\u6362\u5230 CA \u5206\u6790",
+    abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA\uff0cGMGN \u6253\u5f00\u8be6\u60c5",
     abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
     new1mView: "1m\u65b0\u5e01",
     new1mTitle: "1m\u65b0\u5e01\u68c0\u6d4b",
@@ -320,7 +320,7 @@
             const narrative = item.narrative || item.abnormal_rule || item.source || "";
             return `<div class="ca-abnormal-row">
               <div class="ca-abnormal-token">
-                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.analyze}">
+                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
                   <b>${escapeHtml(symbol)}</b>
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
@@ -371,7 +371,7 @@
             const narrative = item.abnormal_rule || "plugin_new_1m";
             return `<div class="ca-abnormal-row ca-new1m-row">
               <div class="ca-abnormal-token">
-                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.analyze}">
+                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
                   <b>${escapeHtml(symbol)}</b>
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
@@ -514,19 +514,13 @@
     panel.querySelectorAll(".ca-watch-ca").forEach((button) => {
       if (button.dataset.caReady === "1") return;
       button.dataset.caReady = "1";
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         const ca = button.getAttribute("data-ca") || "";
         if (!ca) return;
-        STATE.view = "ca";
         STATE.ca = ca;
-        STATE.result = null;
-        STATE.error = "";
-        render();
-        window.setTimeout(() => {
-          const input = panel.querySelector(".ca-cluster-input");
-          input?.focus();
-          input?.select();
-        }, 0);
+        copyText(ca, false);
       });
     });
   }
@@ -720,7 +714,7 @@
     STATE.new1mTimer = 0;
   }
 
-  async function copyText(text) {
+  async function copyText(text, rerender = true) {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -733,11 +727,11 @@
       input.remove();
     }
     STATE.copied = text;
-    render();
+    if (rerender) render();
     setTimeout(() => {
       if (STATE.copied === text) {
         STATE.copied = "";
-        render();
+        if (rerender) render();
       }
     }, 1200);
   }
