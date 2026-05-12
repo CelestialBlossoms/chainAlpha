@@ -160,7 +160,6 @@ def health_api(request: Request):
         "service": "chain-alpha-ca-clusters",
         "redis_ok": client is not None,
         "redis_error": "" if client is not None else get_redis_disabled_reason(),
-        "auth_enabled": False,
     }
 
 
@@ -196,7 +195,6 @@ def plugin_health(request: Request, limit: int = 20):
         "ok": client is not None,
         "redis_ok": client is not None,
         "redis_error": "" if client is not None else get_redis_disabled_reason(),
-        "auth_enabled": False,
         "recent_plugin_count": len(recent_items),
         "plugin_new_1m_count": new_1m_count,
         "items": recent_items,
