@@ -7,18 +7,12 @@ async function getServiceMode() {
   return DEFAULT_MODE;
 }
 
-async function getApiKey() {
-  const data = await chrome.storage.local.get({ apiKey: "" });
-  return String(data.apiKey || "").trim();
-}
-
 function serviceModes(preferredMode, options = {}) {
   return ["server"];
 }
 
 async function fetchServiceJson(path, options = {}) {
   const preferredMode = await getServiceMode();
-  const apiKey = await getApiKey();
   const modes = serviceModes(preferredMode, options);
   let lastError = null;
 
@@ -26,8 +20,7 @@ async function fetchServiceJson(path, options = {}) {
     const baseUrl = SERVICE_URLS[mode];
     const url = `${baseUrl}${path}`;
     try {
-      const headers = apiKey ? { "X-Chain-Alpha-Key": apiKey } : {};
-      const resp = await fetch(url, { method: "GET", headers });
+      const resp = await fetch(url, { method: "GET" });
       const text = await resp.text();
       let payload = {};
       try {
@@ -53,18 +46,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GET_SERVICE_CONFIG") {
-    Promise.all([getServiceMode(), getApiKey()])
-      .then(([mode, apiKey]) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode], hasApiKey: Boolean(apiKey) }))
-      .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
-    return true;
-  }
-
-  if (message.type === "SET_API_KEY") {
-    const apiKey = String(message.apiKey || "").trim();
-    chrome.storage.local
-      .set({ apiKey })
-      .then(() => getServiceMode())
-      .then((mode) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode], hasApiKey: Boolean(apiKey) }))
+    getServiceMode()
+      .then((mode) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode] }))
       .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
     return true;
   }

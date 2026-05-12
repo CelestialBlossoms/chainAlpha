@@ -13,7 +13,6 @@ services:
     environment:
       TZ: Asia/Shanghai
       CHAIN_ALPHA_REDIS_ENABLED: "1"
-      CHAIN_ALPHA_PLUGIN_API_KEY: "${CHAIN_ALPHA_PLUGIN_API_KEY:-}"
       PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
     ports:
       - "8012:8089"
