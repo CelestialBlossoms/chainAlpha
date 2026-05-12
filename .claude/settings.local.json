@@ -41,7 +41,8 @@
       "Bash(taskkill *)",
       "PowerShell(Stop-Process *)",
       "Bash(Get-ChildItem -Path D:\\\\github\\\\chainAlpha -Directory -Depth 1)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:d.get\\(k\\) for k in ['symbol','name','price','holder_count','launchpad_platform','open_timestamp']}, indent=2\\)\\)\")"
     ]
   }
 }

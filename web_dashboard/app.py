@@ -14,7 +14,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,12 +27,20 @@ if str(ROOT_DIR) not in sys.path:
 from redis_client import get_redis_client, get_redis_disabled_reason
 from tg_alert_stream import TG_ALERT_STREAM_KEY, read_recent_tg_alerts
 from db_client import db_op
+from ca_analyzer.cluster_api import analyze_ca_clusters
 
 
 BASE_DIR = Path(__file__).resolve().parent
 SSE_BLOCK_MS = int(os.getenv("TG_DASHBOARD_SSE_BLOCK_MS", "30000"))
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["chrome-extension://*", "http://localhost:*", "http://127.0.0.1:*"],
+    allow_origin_regex=r"chrome-extension://.*|http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
@@ -157,6 +166,21 @@ def recent(limit: int = 100):
 def bottom_watchlist_api(limit: int = 500):
     limit = max(1, min(limit, 2000))
     return {"items": fetch_bottom_watchlist(limit)}
+
+
+@app.get("/api/ca-clusters")
+async def ca_clusters_api(address: str, chain: str = "sol", limit: int = 100):
+    address = address.strip()
+    chain = chain.strip().lower() or "sol"
+    if not address or len(address) < 32:
+        raise HTTPException(status_code=400, detail="invalid token address")
+    limit = max(20, min(limit, 200))
+    result = await asyncio.to_thread(analyze_ca_clusters, address, chain, limit)
+    if not result.get("ok"):
+        if result.get("error_type") == "empty_holders":
+            raise HTTPException(status_code=404, detail=result.get("error") or "no holder data")
+        raise HTTPException(status_code=502, detail=result.get("error") or "cluster analysis failed")
+    return result
 
 
 @app.get("/events")

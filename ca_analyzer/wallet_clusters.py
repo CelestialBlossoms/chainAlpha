@@ -6,7 +6,7 @@ Usage:
     D:/software/anaconda/envs/py312/python.exe scripts/analyze_wallet_clusters.py <CA>
     D:/software/anaconda/envs/py312/python.exe scripts/analyze_wallet_clusters.py <CA> --chain sol
 """
-import argparse, json, shutil, subprocess, sys
+import argparse, json, shutil, subprocess, sys, time
 from collections import Counter, defaultdict
 
 
@@ -18,17 +18,30 @@ def gmgn_exe():
     return [exe]
 
 
-def run_gmgn(args_list, timeout=60):
+def run_gmgn(args_list, timeout=60, retries=2):
     cmd = gmgn_exe() + args_list + ["--raw"]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout)
-    if r.returncode != 0:
-        print(f"  [ERR] {' '.join(args_list[:4])}: {r.stderr[:200]}")
-        return {}
-    try:
-        return json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return {}
+    last_err = ""
+    for attempt in range(retries + 1):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            last_err = "timeout"
+            r = None
+
+        if r is not None and r.returncode == 0:
+            try:
+                return json.loads(r.stdout)
+            except json.JSONDecodeError:
+                last_err = f"json decode failed: {r.stdout[:120]}"
+        else:
+            last_err = (r.stderr if r is not None else last_err).strip()
+
+        if attempt < retries:
+            time.sleep(0.8 * (attempt + 1))
+
+    print(f"  [ERR] {' '.join(args_list[:4])}: {last_err[:240]}")
+    return {}
 
 
 def to_f(v, default=0.0):

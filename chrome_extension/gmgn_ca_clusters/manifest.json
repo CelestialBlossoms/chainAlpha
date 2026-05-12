@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Chain Alpha GMGN CA Clusters",
+  "version": "0.1.0",
+  "description": "Show local Chain Alpha CA cluster analysis on GMGN token pages.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "https://*.gmgn.ai/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://43.163.225.175:8012/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://gmgn.ai/*", "https://*.gmgn.ai/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Chain Alpha"
+  }
+}
