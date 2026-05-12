@@ -39,6 +39,12 @@
     liquidity: "\u6d41\u52a8\u6027",
     priceChange: "\u6da8\u5e45",
     tokenAge: "\u5e01\u9f84",
+    bundleControl: "\u63a7\u76d8",
+    bundleTagged: "\u6807\u8bb0\u6346\u7ed1",
+    bundleSource: "\u540c\u6e90",
+    bundleGmgn: "GMGN\u6346\u7ed1",
+    ratTrader: "\u8001\u9f20\u4ed3",
+    top10: "Top10",
     updated: "\u66f4\u65b0",
     serviceLocal: "\u672c\u5730",
     serviceServer: "\u670d\u52a1\u5668",
@@ -129,6 +135,11 @@
   function toNumber(value) {
     const n = Number(value || 0);
     return Number.isFinite(n) ? n : 0;
+  }
+
+  function normalizePercent(value) {
+    const n = toNumber(value);
+    return Math.abs(n) > 0 && Math.abs(n) <= 1 ? n * 100 : n;
   }
 
   function shortCa(ca) {
@@ -384,6 +395,12 @@
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
                 <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
                 <span><em>1m\u91cf</em><b>${fmtUsd(item.volume_usd)}</b></span>
+                <span><em>${L.bundleControl}</em><b>${fmtPct(item.control_ratio)}</b></span>
+                <span><em>${L.bundleTagged}</em><b>${fmtPct(item.associated_supply)}</b></span>
+                <span><em>${L.bundleSource}</em><b>${fmtPct(item.source_cluster_supply)}</b></span>
+                <span><em>${L.bundleGmgn}</em><b>${fmtPct(item.trend_bundler_rate)}</b></span>
+                <span><em>${L.ratTrader}</em><b>${fmtPct(item.trend_rat_trader_amount_rate)}</b></span>
+                <span><em>${L.top10}</em><b>${fmtPct(item.trend_top10_holder_rate)}</b></span>
                 <span><em>${L.updated}</em><b>${escapeHtml(fmtTime(item.ts))}</b></span>
               </div>
             </div>`;
@@ -611,6 +628,13 @@
       bottom_to_current_pct: toNumber(extra.bottom_to_current_pct),
       volume_usd: toNumber(extra.volume_usd),
       age_sec: toNumber(extra.age_sec),
+      control_ratio: toNumber(extra.control_ratio),
+      associated_supply: toNumber(extra.associated_supply),
+      source_cluster_size: toNumber(extra.source_cluster_size),
+      source_cluster_supply: toNumber(extra.source_cluster_supply),
+      trend_bundler_rate: normalizePercent(extra.trend_bundler_rate),
+      trend_rat_trader_amount_rate: normalizePercent(extra.trend_rat_trader_amount_rate),
+      trend_top10_holder_rate: normalizePercent(extra.trend_top10_holder_rate),
     };
   }
 
