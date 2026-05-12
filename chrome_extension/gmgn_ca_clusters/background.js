@@ -1,12 +1,52 @@
 const SERVICE_URLS = {
   local: "http://127.0.0.1:8000",
-  server: "http://43.163.225.175:8010",
+  server: "http://43.163.225.175:8012",
+  dashboard: "http://43.163.225.175:8010",
 };
-const DEFAULT_MODE = "local";
+const DEFAULT_MODE = "server";
 
 async function getServiceMode() {
   const data = await chrome.storage.local.get({ serviceMode: DEFAULT_MODE });
-  return SERVICE_URLS[data.serviceMode] ? data.serviceMode : DEFAULT_MODE;
+  return data.serviceMode === "local" || data.serviceMode === "server" ? data.serviceMode : DEFAULT_MODE;
+}
+
+function serviceModes(preferredMode, options = {}) {
+  if (options.preferDashboard === true) {
+    return ["dashboard", "server", "local"];
+  }
+  if (preferredMode === "local") {
+    return ["local", "server", "dashboard"];
+  }
+  return ["server", "dashboard", "local"];
+}
+
+async function fetchServiceJson(path, options = {}) {
+  const preferredMode = await getServiceMode();
+  const modes = serviceModes(preferredMode, options);
+  let lastError = null;
+
+  for (const mode of modes) {
+    const baseUrl = SERVICE_URLS[mode];
+    const url = `${baseUrl}${path}`;
+    try {
+      const resp = await fetch(url, { method: "GET" });
+      const text = await resp.text();
+      let payload = {};
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        payload = { detail: text };
+      }
+      if (resp.ok) {
+        return { ok: true, mode, baseUrl, data: payload };
+      }
+      lastError = { status: resp.status, mode, baseUrl, error: payload.detail || `HTTP ${resp.status}` };
+    } catch (err) {
+      lastError = { status: 0, mode, baseUrl, error: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  return { ok: false, ...(lastError || { status: 0, error: "service unavailable" }) };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -32,57 +72,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_BOTTOM_ABNORMAL") {
     const limit = Math.max(1, Math.min(Number(message.limit || 300), 500));
-    getServiceMode()
-      .then((mode) => {
-        const baseUrl = SERVICE_URLS[mode];
-        const url = `${baseUrl}/api/recent?limit=${encodeURIComponent(limit)}`;
-        return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
-      })
-      .then(async (resp) => {
-        const text = await resp.resp.text();
-        let payload = {};
-        try {
-          payload = text ? JSON.parse(text) : {};
-        } catch {
-          payload = { detail: text };
-        }
-        if (!resp.resp.ok) {
-          sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.detail || `HTTP ${resp.resp.status}` });
-          return;
-        }
-        sendResponse({ ok: true, mode: resp.mode, baseUrl: resp.baseUrl, data: payload });
-      })
-      .catch((err) => {
-        sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
-      });
+    fetchServiceJson(`/api/recent?limit=${encodeURIComponent(limit)}`).then(sendResponse);
     return true;
   }
 
   if (message.type === "GET_PLUGIN_NEW_1M") {
     const limit = Math.max(1, Math.min(Number(message.limit || 200), 500));
-    getServiceMode()
-      .then((mode) => {
-        const baseUrl = SERVICE_URLS[mode];
-        const url = `${baseUrl}/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`;
-        return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
-      })
-      .then(async (resp) => {
-        const text = await resp.resp.text();
-        let payload = {};
-        try {
-          payload = text ? JSON.parse(text) : {};
-        } catch {
-          payload = { detail: text };
-        }
-        if (!resp.resp.ok) {
-          sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.detail || `HTTP ${resp.resp.status}` });
-          return;
-        }
-        sendResponse({ ok: true, mode: resp.mode, baseUrl: resp.baseUrl, data: payload });
-      })
-      .catch((err) => {
-        sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
-      });
+    fetchServiceJson(`/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`, { preferDashboard: true }).then(sendResponse);
     return true;
   }
 
@@ -94,29 +90,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const chain = String(message.chain || "sol").trim() || "sol";
   const limit = Number(message.limit || 100);
 
-  getServiceMode()
-    .then((mode) => {
-      const baseUrl = SERVICE_URLS[mode];
-      const url = `${baseUrl}/api/ca-clusters?chain=${encodeURIComponent(chain)}&limit=${encodeURIComponent(limit)}&address=${encodeURIComponent(address)}`;
-      return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
-    })
-    .then(async (resp) => {
-      const text = await resp.resp.text();
-      let payload = {};
-      try {
-        payload = text ? JSON.parse(text) : {};
-      } catch {
-        payload = { detail: text };
-      }
-      if (!resp.resp.ok) {
-        sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.detail || `HTTP ${resp.resp.status}` });
+  fetchServiceJson(`/api/ca-clusters?chain=${encodeURIComponent(chain)}&limit=${encodeURIComponent(limit)}&address=${encodeURIComponent(address)}`)
+    .then((resp) => {
+      if (resp.ok && resp.data && resp.data.ok === false) {
+        sendResponse({ ok: false, status: resp.status || 200, mode: resp.mode, baseUrl: resp.baseUrl, error: resp.data.error || "Analysis returned no data." });
         return;
       }
-      if (payload && payload.ok === false) {
-        sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.error || "Analysis returned no data." });
-        return;
-      }
-      sendResponse({ ok: true, mode: resp.mode, baseUrl: resp.baseUrl, data: payload });
+      sendResponse(resp);
     })
     .catch((err) => {
       sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });

@@ -9,6 +9,7 @@
     "https://*.gmgn.ai/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
+    "http://43.163.225.175:8012/*",
     "http://43.163.225.175:8010/*"
   ],
   "content_scripts": [
