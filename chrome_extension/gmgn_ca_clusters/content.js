@@ -25,6 +25,10 @@
     openHint: "\u6253\u5f00 GMGN \u4ee3\u5e01\u9875\uff0c\u6216\u624b\u52a8\u8f93\u5165 CA\u3002",
     refresh: "\u5237\u65b0",
     clear: "\u6e05\u7a7a",
+    apiKey: "\u5bc6\u94a5",
+    apiKeySet: "\u5df2\u8bbe\u5bc6\u94a5",
+    apiKeyUnset: "\u672a\u8bbe\u5bc6\u94a5",
+    apiKeyPrompt: "\u8bf7\u8f93\u5165 Chain Alpha \u63a5\u53e3\u5bc6\u94a5\uff08\u7559\u7a7a\u53ef\u6e05\u9664\uff09",
     caView: "CA\u5206\u6790",
     abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
@@ -86,6 +90,7 @@
     new1mTimer: 0,
     serviceMode: "local",
     serviceBaseUrl: "",
+    hasApiKey: false,
   };
 
   function fmtPct(value) {
@@ -445,6 +450,7 @@
         <div class="ca-cluster-title">${L.title}</div>
         <div class="ca-cluster-actions">
           <button class="ca-cluster-button ca-service-toggle" title="${STATE.serviceBaseUrl || ""}">${STATE.serviceMode === "server" ? L.serviceServer : L.serviceLocal}</button>
+          <button class="ca-cluster-button ca-api-key" title="${STATE.hasApiKey ? L.apiKeySet : L.apiKeyUnset}">${L.apiKey}</button>
           <button class="ca-cluster-button ca-cluster-refresh" title="${L.refresh}">R</button>
           <button class="ca-cluster-button ca-cluster-clear" title="${L.clear}">C</button>
           <button class="ca-cluster-button ca-cluster-toggle" title="${L.collapse}">${STATE.collapsed ? "+" : "-"}</button>
@@ -467,6 +473,7 @@
       render();
     });
     panel.querySelector(".ca-service-toggle")?.addEventListener("click", () => toggleServiceMode());
+    panel.querySelector(".ca-api-key")?.addEventListener("click", () => setApiKey());
     panel.querySelector(".ca-cluster-refresh")?.addEventListener("click", () => analyze(STATE.ca, true));
     panel.querySelector(".ca-abnormal-refresh")?.addEventListener("click", () => loadBottomWatchlist(true));
     panel.querySelector(".ca-new1m-refresh")?.addEventListener("click", () => loadPluginNew1m(true));
@@ -680,7 +687,10 @@
     try {
       const response = await chrome.runtime.sendMessage({ type: "GET_PLUGIN_NEW_1M", limit: 200 });
       if (!response || !response.ok) {
-        throw new Error((response && response.error) || "No response from extension background worker.");
+        const where = response && (response.baseUrl || response.mode || response.status)
+          ? ` [${response.mode || "?"} ${response.baseUrl || ""} HTTP ${response.status || 0}]`
+          : "";
+        throw new Error(`${(response && response.error) || "No response from extension background worker."}${where}`);
       }
       STATE.serviceMode = response.mode || STATE.serviceMode;
       STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
@@ -754,9 +764,30 @@
       if (response && response.ok) {
         STATE.serviceMode = response.mode || STATE.serviceMode;
         STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
+        STATE.hasApiKey = Boolean(response.hasApiKey);
         render();
       }
     } catch {}
+  }
+
+  async function setApiKey() {
+    const apiKey = window.prompt(L.apiKeyPrompt, "");
+    if (apiKey === null) return;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "SET_API_KEY", apiKey });
+      if (response && response.ok) {
+        STATE.serviceMode = response.mode || STATE.serviceMode;
+        STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
+        STATE.hasApiKey = Boolean(response.hasApiKey);
+        STATE.error = "";
+        STATE.abnormalError = "";
+        STATE.new1mError = "";
+        render();
+      }
+    } catch (err) {
+      STATE.error = `${L.apiError}: ${err.message || err}`;
+      render();
+    }
   }
 
   async function toggleServiceMode() {

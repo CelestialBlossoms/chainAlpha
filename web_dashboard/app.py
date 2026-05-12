@@ -33,6 +33,7 @@ from ca_analyzer.cluster_api import analyze_ca_clusters
 
 BASE_DIR = Path(__file__).resolve().parent
 SSE_BLOCK_MS = int(os.getenv("TG_DASHBOARD_SSE_BLOCK_MS", "30000"))
+PLUGIN_API_KEY = os.getenv("CHAIN_ALPHA_PLUGIN_API_KEY", "").strip()
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
 app.add_middleware(
@@ -70,6 +71,18 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
+
+
+def require_plugin_key(request: Request) -> None:
+    if not PLUGIN_API_KEY:
+        return
+    provided = (
+        request.headers.get("x-chain-alpha-key")
+        or request.query_params.get("key")
+        or ""
+    ).strip()
+    if provided != PLUGIN_API_KEY:
+        raise HTTPException(status_code=401, detail="invalid api key")
 
 
 def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
@@ -153,13 +166,15 @@ def index(request: Request):
 
 
 @app.get("/api/health")
-def health_api():
+def health_api(request: Request):
+    require_plugin_key(request)
     client = get_redis_client()
     return {
         "ok": True,
         "service": "chain-alpha-ca-clusters",
         "redis_ok": client is not None,
         "redis_error": "" if client is not None else get_redis_disabled_reason(),
+        "auth_enabled": bool(PLUGIN_API_KEY),
     }
 
 
@@ -169,13 +184,15 @@ def bottom_watchlist(request: Request):
 
 
 @app.get("/api/recent")
-def recent(limit: int = 100):
+def recent(request: Request, limit: int = 100):
+    require_plugin_key(request)
     limit = max(1, min(limit, 500))
     return {"items": [normalize_alert(item.get("id", ""), item) for item in read_recent_tg_alerts(limit)]}
 
 
 @app.get("/api/plugin/new-1m")
-def plugin_new_1m(limit: int = 100):
+def plugin_new_1m(request: Request, limit: int = 100):
+    require_plugin_key(request)
     limit = max(1, min(limit, 500))
     items = [
         normalize_alert(item.get("id", ""), item)
@@ -186,7 +203,8 @@ def plugin_new_1m(limit: int = 100):
 
 
 @app.get("/api/plugin/health")
-def plugin_health(limit: int = 20):
+def plugin_health(request: Request, limit: int = 20):
+    require_plugin_key(request)
     limit = max(1, min(limit, 100))
     client = get_redis_client()
     recent_items = [normalize_alert(item.get("id", ""), item) for item in read_recent_plugin_signals(limit)]
@@ -195,6 +213,7 @@ def plugin_health(limit: int = 20):
         "ok": client is not None,
         "redis_ok": client is not None,
         "redis_error": "" if client is not None else get_redis_disabled_reason(),
+        "auth_enabled": bool(PLUGIN_API_KEY),
         "recent_plugin_count": len(recent_items),
         "plugin_new_1m_count": new_1m_count,
         "items": recent_items,
@@ -202,13 +221,15 @@ def plugin_health(limit: int = 20):
 
 
 @app.get("/api/bottom-watchlist")
-def bottom_watchlist_api(limit: int = 500):
+def bottom_watchlist_api(request: Request, limit: int = 500):
+    require_plugin_key(request)
     limit = max(1, min(limit, 2000))
     return {"items": fetch_bottom_watchlist(limit)}
 
 
 @app.get("/api/ca-clusters")
-async def ca_clusters_api(address: str, chain: str = "sol", limit: int = 100):
+async def ca_clusters_api(request: Request, address: str, chain: str = "sol", limit: int = 100):
+    require_plugin_key(request)
     address = address.strip()
     chain = chain.strip().lower() or "sol"
     if not address or len(address) < 32:
@@ -224,6 +245,8 @@ async def ca_clusters_api(address: str, chain: str = "sol", limit: int = 100):
 
 @app.get("/events")
 async def events(request: Request, last_id: str = "$"):
+    require_plugin_key(request)
+
     async def generator():
         client = get_redis_client()
         if client is None:

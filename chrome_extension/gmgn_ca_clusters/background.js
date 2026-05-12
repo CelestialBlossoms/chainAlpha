@@ -1,27 +1,24 @@
 const SERVICE_URLS = {
-  local: "http://127.0.0.1:8000",
-  server: "http://43.163.225.175:8012",
-  dashboard: "http://43.163.225.175:8010",
+  server: "http://43.163.225.175:8010",
 };
 const DEFAULT_MODE = "server";
 
 async function getServiceMode() {
-  const data = await chrome.storage.local.get({ serviceMode: DEFAULT_MODE });
-  return data.serviceMode === "local" || data.serviceMode === "server" ? data.serviceMode : DEFAULT_MODE;
+  return DEFAULT_MODE;
+}
+
+async function getApiKey() {
+  const data = await chrome.storage.local.get({ apiKey: "" });
+  return String(data.apiKey || "").trim();
 }
 
 function serviceModes(preferredMode, options = {}) {
-  if (options.preferDashboard === true) {
-    return ["dashboard", "server", "local"];
-  }
-  if (preferredMode === "local") {
-    return ["local", "server", "dashboard"];
-  }
-  return ["server", "dashboard", "local"];
+  return ["server"];
 }
 
 async function fetchServiceJson(path, options = {}) {
   const preferredMode = await getServiceMode();
+  const apiKey = await getApiKey();
   const modes = serviceModes(preferredMode, options);
   let lastError = null;
 
@@ -29,7 +26,8 @@ async function fetchServiceJson(path, options = {}) {
     const baseUrl = SERVICE_URLS[mode];
     const url = `${baseUrl}${path}`;
     try {
-      const resp = await fetch(url, { method: "GET" });
+      const headers = apiKey ? { "X-Chain-Alpha-Key": apiKey } : {};
+      const resp = await fetch(url, { method: "GET", headers });
       const text = await resp.text();
       let payload = {};
       try {
@@ -55,14 +53,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GET_SERVICE_CONFIG") {
-    getServiceMode()
-      .then((mode) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode] }))
+    Promise.all([getServiceMode(), getApiKey()])
+      .then(([mode, apiKey]) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode], hasApiKey: Boolean(apiKey) }))
+      .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
+    return true;
+  }
+
+  if (message.type === "SET_API_KEY") {
+    const apiKey = String(message.apiKey || "").trim();
+    chrome.storage.local
+      .set({ apiKey })
+      .then(() => getServiceMode())
+      .then((mode) => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode], hasApiKey: Boolean(apiKey) }))
       .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
     return true;
   }
 
   if (message.type === "SET_SERVICE_MODE") {
-    const mode = SERVICE_URLS[message.mode] ? message.mode : DEFAULT_MODE;
+    const mode = DEFAULT_MODE;
     chrome.storage.local
       .set({ serviceMode: mode })
       .then(() => sendResponse({ ok: true, mode, baseUrl: SERVICE_URLS[mode] }))
@@ -78,7 +86,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_PLUGIN_NEW_1M") {
     const limit = Math.max(1, Math.min(Number(message.limit || 200), 500));
-    fetchServiceJson(`/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`, { preferDashboard: true }).then(sendResponse);
+    fetchServiceJson(`/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`, { serverOnly: true }).then(sendResponse);
     return true;
   }
 
