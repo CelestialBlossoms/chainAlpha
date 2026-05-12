@@ -263,10 +263,10 @@
 
         const poolLiquidity = safeNum(extra.pool_total_liquidity);
         const poolMcapRatio = safeNum(extra.pool_mcap_ratio);
-        const isQuietBreakout = signalType === "quiet_breakout";
+        const isQuietBreakout = signalType === "quiet_breakout" || signalType === "quiet_runup";
         if (signalType === "watch" || (!isQuietBreakout && (poolLiquidity < 4000 || poolMcapRatio < 0.10))) return null;
         const isAbnormal = signalType === "abnormal" || signalType === "new_revival";
-        const bottomVerdict = isQuietBreakout ? "横盘异动" : "底部代币异动";
+        const bottomVerdict = signalType === "quiet_runup" ? "横盘拉伸" : (isQuietBreakout ? "横盘异动" : "底部代币异动");
         return {
           id: item.id,
           ts: safeNum(item.ts),
@@ -277,7 +277,7 @@
           chain: "sol",
           symbol: extra.symbol || item.title || "UNKNOWN",
           name: "",
-          narrative: extra.narrative || extra.narrative_desc || (isQuietBreakout ? `长时间横盘低量后异动: ${extra.abnormal_rule || ""}` : `底部代币异动: ${extra.abnormal_rule || ""}`),
+          narrative: extra.narrative || extra.narrative_desc || (isQuietBreakout ? `长时间横盘后异动: ${extra.abnormal_rule || ""}` : `底部代币异动: ${extra.abnormal_rule || ""}`),
           mcap: safeNum(extra.current_mcap),
           holders: safeNum(extra.holder_count),
           feeSol: 0,
@@ -660,7 +660,7 @@
         badges = zoneBadge;
       } else if (signal.isBottom) {
         if (signal.isQuietBreakout) {
-          badges = '<span class="badge badge-red">横盘异动</span>';
+          badges = signal.verdict === "横盘拉伸" ? '<span class="badge badge-red">横盘拉伸</span>' : '<span class="badge badge-red">横盘异动</span>';
         } else if (signal.verdict === "ema_golden_cross") {
           badges = '<span class="badge badge-blue">EMA金叉</span>';
         } else {

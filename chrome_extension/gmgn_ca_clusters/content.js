@@ -1,5 +1,4 @@
 (function () {
-  const BASE58_CA = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
   const L = {
     none: "\u65e0",
     wallet: "\u94b1\u5305",
@@ -26,6 +25,17 @@
     openHint: "\u6253\u5f00 GMGN \u4ee3\u5e01\u9875\uff0c\u6216\u624b\u52a8\u8f93\u5165 CA\u3002",
     refresh: "\u5237\u65b0",
     clear: "\u6e05\u7a7a",
+    caView: "CA\u5206\u6790",
+    abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
+    abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
+    abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u5207\u6362\u5230 CA \u5206\u6790",
+    abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
+    currentMcap: "\u5f53\u524d\u5e02\u503c",
+    maxMcap: "\u6700\u9ad8\u5e02\u503c",
+    liquidity: "\u6d41\u52a8\u6027",
+    priceChange: "\u6da8\u5e45",
+    tokenAge: "\u5e01\u9f84",
+    updated: "\u66f4\u65b0",
     serviceLocal: "\u672c\u5730",
     serviceServer: "\u670d\u52a1\u5668",
     collapse: "\u6536\u8d77",
@@ -45,34 +55,29 @@
     profit: "\u76c8\u5229",
   };
   const POS_KEY = "ca_cluster_panel_position_v1";
+  const LAYOUT_KEY = "ca_cluster_panel_layout_v2";
+  const DEFAULT_WIDTH = 336;
+  const DEFAULT_HEIGHT = 520;
+  const MIN_WIDTH = 280;
+  const MIN_HEIGHT = 220;
   const STATE = {
     ca: "",
     loading: false,
     collapsed: false,
-    lastUrl: location.href,
-    lastDetectedCa: "",
-    pendingScan: 0,
     result: null,
     error: "",
     copied: "",
     dragging: false,
-    ignoredCa: "",
+    resizing: false,
+    view: "ca",
+    abnormalLoading: false,
+    abnormalItems: [],
+    abnormalError: "",
+    abnormalTimer: 0,
+    abnormalLastCount: 0,
     serviceMode: "local",
     serviceBaseUrl: "",
   };
-
-  function extractCa() {
-    const hrefCandidates = location.href.match(BASE58_CA) || [];
-    const hrefCandidate = hrefCandidates.find((item) => item.length >= 40);
-    if (hrefCandidate) return hrefCandidate;
-
-    const pathCandidates = location.pathname.match(BASE58_CA) || [];
-    const tokenCandidate = pathCandidates.find((item) => item.length >= 40);
-    if (tokenCandidate) return tokenCandidate;
-
-    const bodyCandidates = (document.body?.innerText || "").match(BASE58_CA) || [];
-    return bodyCandidates.find((item) => item.length >= 40) || "";
-  }
 
   function fmtPct(value) {
     const n = Number(value || 0);
@@ -96,8 +101,33 @@
     return `${sign}$${abs.toFixed(0)}`;
   }
 
+  function fmtTime(value) {
+    if (!value) return "-";
+    const raw = Number(value);
+    const date = Number.isFinite(raw) ? new Date(raw < 1000000000000 ? raw * 1000 : raw) : new Date(value);
+    if (!Number.isFinite(date.getTime())) return "-";
+    return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function fmtAge(seconds) {
+    const value = Number(seconds || 0);
+    if (!Number.isFinite(value) || value <= 0) return "-";
+    if (value < 3600) return `${Math.max(1, Math.round(value / 60))}m`;
+    if (value < 86400) return `${(value / 3600).toFixed(1)}h`;
+    return `${(value / 86400).toFixed(1)}d`;
+  }
+
+  function toNumber(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function shortCa(ca) {
     return ca ? `${ca.slice(0, 6)}...${ca.slice(-4)}` : "No CA";
+  }
+
+  function gmgnUrl(ca, chain = "sol") {
+    return ca ? `https://gmgn.ai/${encodeURIComponent(chain || "sol")}/token/${encodeURIComponent(ca)}` : "https://gmgn.ai/";
   }
 
   function walletName(wallet) {
@@ -117,7 +147,7 @@
   }
 
   const panel = createPanel();
-  restorePanelPosition();
+  restorePanelLayout();
 
   function row(label, value) {
     return `<div class="ca-cluster-row"><div class="ca-cluster-label">${escapeHtml(label)}</div><div class="ca-cluster-value">${value}</div></div>`;
@@ -251,15 +281,89 @@
     `;
   }
 
+  function renderAbnormalHead() {
+    return `<div class="ca-abnormal-head">
+      <div>
+        <h3>${L.abnormalTitle}</h3>
+        <p>${L.abnormalHint}</p>
+      </div>
+      <button class="ca-cluster-button ca-abnormal-refresh" title="${L.refresh}">R</button>
+    </div>`;
+  }
+
+  function renderAbnormalContent() {
+    if (STATE.abnormalLoading) {
+      return `<div class="ca-cluster-loading">${L.analyzing} ${L.abnormalView}</div>`;
+    }
+    if (STATE.abnormalError) {
+      return `<div class="ca-cluster-error">${escapeHtml(STATE.abnormalError)}</div>`;
+    }
+    const items = STATE.abnormalItems || [];
+    if (!items.length) {
+      return `<div class="ca-cluster-empty">${L.abnormalEmpty}</div>`;
+    }
+    return `<div class="ca-abnormal-list">
+        ${items
+          .slice(0, 60)
+          .map((item) => {
+            const ca = String(item.ca || "");
+            const symbol = item.symbol || item.token_type || "?";
+            const narrative = item.narrative || item.abnormal_rule || item.source || "";
+            return `<div class="ca-abnormal-row">
+              <div class="ca-abnormal-token">
+                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.analyze}">
+                  <b>${escapeHtml(symbol)}</b>
+                  <span>${escapeHtml(shortCa(ca))}</span>
+                </button>
+                <a class="ca-gmgn-link" href="${escapeAttr(gmgnUrl(ca, item.chain || "sol"))}" target="_blank" rel="noreferrer">GMGN</a>
+              </div>
+              <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
+              <div class="ca-abnormal-metrics">
+                <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
+                <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
+                <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
+                <span><em>${L.maxMcap}</em><b>${fmtUsd(item.max_mcap || item.ath_mcap || item.peak_mcap)}</b></span>
+                <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
+                <span><em>${L.updated}</em><b>${escapeHtml(fmtTime(item.ts || item.last_seen_at || item.added_at))}</b></span>
+              </div>
+            </div>`;
+          })
+          .join("")}
+      </div>`;
+  }
+
+  function renderAbnormalView() {
+    return `${renderAbnormalHead()}<div class="ca-abnormal-content">${renderAbnormalContent()}</div>`;
+  }
+
+  function updateAbnormalContent() {
+    const container = panel.querySelector(".ca-abnormal-content");
+    if (STATE.view !== "abnormal" || !container) return false;
+    const body = panel.querySelector(".ca-cluster-body");
+    const scrollTop = body ? body.scrollTop : 0;
+    container.innerHTML = renderAbnormalContent();
+    attachAbnormalRowHandlers();
+    if (body) body.scrollTop = scrollTop;
+    return true;
+  }
+
   function render() {
     panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""}`;
-    const body = STATE.loading
+    const caBody = STATE.loading
       ? `<div class="ca-cluster-loading">${L.analyzing} ${escapeHtml(shortCa(STATE.ca))}</div>`
       : STATE.error
         ? `<div class="ca-cluster-error">${escapeHtml(STATE.error)}</div>`
         : STATE.result
           ? renderResult(STATE.result)
           : `<div class="ca-cluster-empty">${L.openHint}</div>`;
+    const body = STATE.view === "abnormal" ? renderAbnormalView() : caBody;
+    const inputRow =
+      STATE.view === "ca"
+        ? `<div class="ca-cluster-input-row">
+          <input class="ca-cluster-input" value="${escapeAttr(STATE.ca)}" placeholder="Token CA" />
+          <button class="ca-cluster-button ca-cluster-run" title="${L.analyze}">${L.run}</button>
+        </div>`
+        : "";
 
     panel.innerHTML = `
       <div class="ca-cluster-header">
@@ -272,12 +376,14 @@
         </div>
       </div>
       <div class="ca-cluster-body">
-        <div class="ca-cluster-input-row">
-          <input class="ca-cluster-input" value="${escapeAttr(STATE.ca)}" placeholder="Token CA" />
-          <button class="ca-cluster-button ca-cluster-run" title="${L.analyze}">${L.run}</button>
-        </div>
+        ${inputRow}
         ${body}
       </div>
+      <div class="ca-bottom-tabs">
+        <button class="ca-view-button${STATE.view === "ca" ? " is-active" : ""}" data-view="ca">${L.caView}</button>
+        <button class="ca-view-button${STATE.view === "abnormal" ? " is-active" : ""}" data-view="abnormal">${L.abnormalView}</button>
+      </div>
+      <div class="ca-resize-handle" title="Resize"></div>
     `;
 
     panel.querySelector(".ca-cluster-toggle")?.addEventListener("click", () => {
@@ -286,18 +392,56 @@
     });
     panel.querySelector(".ca-service-toggle")?.addEventListener("click", () => toggleServiceMode());
     panel.querySelector(".ca-cluster-refresh")?.addEventListener("click", () => analyze(STATE.ca, true));
+    panel.querySelector(".ca-abnormal-refresh")?.addEventListener("click", () => loadBottomWatchlist(true));
     panel.querySelector(".ca-cluster-clear")?.addEventListener("click", () => clearPanel());
     panel.querySelector(".ca-cluster-run")?.addEventListener("click", () => {
       const value = panel.querySelector(".ca-cluster-input")?.value?.trim() || "";
-      STATE.ignoredCa = "";
       analyze(value, true);
     });
     attachDragHandlers();
+    attachResizeHandlers();
+    panel.querySelectorAll(".ca-view-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const view = button.getAttribute("data-view") || "ca";
+        STATE.view = view;
+        render();
+        if (view === "abnormal") {
+          startAbnormalAutoRefresh();
+          if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
+            loadBottomWatchlist(false);
+          }
+        } else {
+          stopAbnormalAutoRefresh();
+        }
+      });
+    });
+    attachAbnormalRowHandlers();
     panel.querySelectorAll(".ca-copy-button").forEach((button) => {
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         copyText(button.getAttribute("data-copy") || "");
+      });
+    });
+  }
+
+  function attachAbnormalRowHandlers() {
+    panel.querySelectorAll(".ca-watch-ca").forEach((button) => {
+      if (button.dataset.caReady === "1") return;
+      button.dataset.caReady = "1";
+      button.addEventListener("click", () => {
+        const ca = button.getAttribute("data-ca") || "";
+        if (!ca) return;
+        STATE.view = "ca";
+        STATE.ca = ca;
+        STATE.result = null;
+        STATE.error = "";
+        render();
+        window.setTimeout(() => {
+          const input = panel.querySelector(".ca-cluster-input");
+          input?.focus();
+          input?.select();
+        }, 0);
       });
     });
   }
@@ -310,7 +454,6 @@
       return;
     }
     if (!force && ca === STATE.ca && STATE.result) return;
-    if (!force && ca === STATE.ignoredCa) return;
     STATE.ca = ca;
     STATE.loading = true;
     STATE.error = "";
@@ -331,6 +474,90 @@
       STATE.loading = false;
       render();
     }
+  }
+
+  function normalizeBottomAbnormal(item) {
+    if (!item || item.source !== "bottom_abnormal") return null;
+    const extra = item.extra || {};
+    const signalType = String(extra.signal_type || "");
+    if (signalType === "watch") return null;
+    const ca = String(extra.address || item.ca || "").trim();
+    if (!ca) return null;
+    const currentMcap = toNumber(extra.current_mcap);
+    const athMcap = toNumber(extra.ath_mcap);
+    const maxMcap = Math.max(
+      currentMcap,
+      athMcap,
+      toNumber(extra.max_abnormal_mcap),
+      toNumber(extra.first_signal_mcap),
+    );
+    return {
+      id: item.id || `${ca}:${item.ts || ""}`,
+      ca,
+      ts: toNumber(item.ts),
+      symbol: extra.symbol || item.title || "UNKNOWN",
+      source: item.source || "",
+      status: item.status || "",
+      signal_type: signalType,
+      abnormal_rule: extra.abnormal_rule || "",
+      narrative: extra.narrative || extra.narrative_desc || item.text || "",
+      current_mcap: currentMcap,
+      max_mcap: maxMcap,
+      ath_mcap: athMcap,
+      liquidity: toNumber(extra.pool_total_liquidity || extra.pool_liquidity),
+      price_change_pct: toNumber(extra.price_change_pct),
+      age_sec: toNumber(extra.age_sec),
+      pool_mcap_ratio: toNumber(extra.pool_mcap_ratio),
+    };
+  }
+
+  async function loadBottomWatchlist(force) {
+    if (!force && (STATE.abnormalLoading || STATE.abnormalItems.length)) return;
+    const hasRows = STATE.abnormalItems.length > 0;
+    STATE.abnormalLoading = true;
+    STATE.abnormalError = "";
+    if (!hasRows) {
+      if (!updateAbnormalContent()) render();
+    }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_BOTTOM_ABNORMAL", limit: 300 });
+      if (!response || !response.ok) {
+        throw new Error((response && response.error) || "No response from extension background worker.");
+      }
+      STATE.serviceMode = response.mode || STATE.serviceMode;
+      STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
+      const seen = new Set();
+      STATE.abnormalItems = (Array.isArray(response.data?.items) ? response.data.items : [])
+        .map(normalizeBottomAbnormal)
+        .filter((item) => {
+          if (!item || seen.has(item.ca)) return false;
+          seen.add(item.ca);
+          return true;
+        })
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      STATE.abnormalLastCount = STATE.abnormalItems.length;
+    } catch (err) {
+      if (!hasRows) STATE.abnormalItems = [];
+      STATE.abnormalError = `${L.apiError}: ${err.message || err}`;
+    } finally {
+      STATE.abnormalLoading = false;
+      if (!updateAbnormalContent()) render();
+    }
+  }
+
+  function startAbnormalAutoRefresh() {
+    if (STATE.abnormalTimer) return;
+    STATE.abnormalTimer = window.setInterval(() => {
+      if (STATE.view === "abnormal" && !STATE.abnormalLoading) {
+        loadBottomWatchlist(true);
+      }
+    }, 10000);
+  }
+
+  function stopAbnormalAutoRefresh() {
+    if (!STATE.abnormalTimer) return;
+    window.clearInterval(STATE.abnormalTimer);
+    STATE.abnormalTimer = 0;
   }
 
   async function copyText(text) {
@@ -356,7 +583,6 @@
   }
 
   function clearPanel() {
-    STATE.ignoredCa = STATE.ca || STATE.lastDetectedCa || "";
     STATE.ca = "";
     STATE.result = null;
     STATE.error = "";
@@ -407,23 +633,36 @@
     return escapeHtml(value).replaceAll("`", "&#96;");
   }
 
-  function restorePanelPosition() {
+  function restorePanelLayout() {
     try {
-      const saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
+      const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || localStorage.getItem(POS_KEY) || "null");
       if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
-        applyPanelPosition(saved.left, saved.top);
+        applyPanelLayout(
+          saved.left,
+          saved.top,
+          Number.isFinite(saved.width) ? saved.width : DEFAULT_WIDTH,
+          Number.isFinite(saved.height) ? saved.height : DEFAULT_HEIGHT,
+        );
         return;
       }
     } catch {}
     const left = Math.max(8, window.innerWidth - 354);
-    applyPanelPosition(left, 92);
+    applyPanelLayout(left, 92, DEFAULT_WIDTH, DEFAULT_HEIGHT);
   }
 
   function applyPanelPosition(left, top) {
-    const width = panel.offsetWidth || 336;
-    const height = Math.min(panel.offsetHeight || 420, window.innerHeight - 16);
-    const maxLeft = Math.max(8, window.innerWidth - width - 8);
-    const maxTop = Math.max(8, window.innerHeight - Math.min(height, 120) - 8);
+    applyPanelLayout(left, top, panel.offsetWidth || DEFAULT_WIDTH, panel.offsetHeight || DEFAULT_HEIGHT);
+  }
+
+  function applyPanelLayout(left, top, width, height) {
+    const safeWidth = Math.min(Math.max(MIN_WIDTH, width), Math.max(MIN_WIDTH, window.innerWidth - 16));
+    const safeHeight = Math.min(Math.max(MIN_HEIGHT, height), Math.max(MIN_HEIGHT, window.innerHeight - 16));
+    panel.style.width = `${safeWidth}px`;
+    panel.style.height = `${safeHeight}px`;
+    panel.style.maxHeight = "none";
+
+    const maxLeft = Math.max(8, window.innerWidth - safeWidth - 8);
+    const maxTop = Math.max(8, window.innerHeight - safeHeight - 8);
     const x = Math.min(Math.max(8, left), maxLeft);
     const y = Math.min(Math.max(8, top), maxTop);
     panel.style.left = `${x}px`;
@@ -431,9 +670,9 @@
     panel.style.right = "auto";
   }
 
-  function savePanelPosition() {
+  function savePanelLayout() {
     const rect = panel.getBoundingClientRect();
-    localStorage.setItem(POS_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }));
   }
 
   function attachDragHandlers() {
@@ -456,7 +695,7 @@
       };
       const onUp = () => {
         STATE.dragging = false;
-        savePanelPosition();
+        savePanelLayout();
         header.removeEventListener("pointermove", onMove);
         header.removeEventListener("pointerup", onUp);
         header.removeEventListener("pointercancel", onUp);
@@ -468,41 +707,46 @@
     });
   }
 
-  function tick() {
-    const ca = extractCa();
-    const changed = location.href !== STATE.lastUrl || ca !== STATE.lastDetectedCa;
-    if (location.href !== STATE.lastUrl && ca !== STATE.ignoredCa) {
-      STATE.ignoredCa = "";
-    }
-    STATE.lastUrl = location.href;
-    STATE.lastDetectedCa = ca;
-    if (changed && ca && ca !== STATE.ca) analyze(ca, false);
-  }
+  function attachResizeHandlers() {
+    const handle = panel.querySelector(".ca-resize-handle");
+    if (!handle || handle.dataset.resizeReady === "1") return;
+    handle.dataset.resizeReady = "1";
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = panel.getBoundingClientRect();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = rect.width;
+      const startHeight = rect.height;
+      const startLeft = rect.left;
+      const startTop = rect.top;
+      STATE.resizing = true;
+      handle.setPointerCapture(event.pointerId);
 
-  function scheduleTick() {
-    clearTimeout(STATE.pendingScan);
-    STATE.pendingScan = setTimeout(tick, 350);
-  }
+      const onMove = (moveEvent) => {
+        if (!STATE.resizing) return;
+        applyPanelLayout(
+          startLeft,
+          startTop,
+          startWidth + moveEvent.clientX - startX,
+          startHeight + moveEvent.clientY - startY,
+        );
+      };
+      const onUp = () => {
+        STATE.resizing = false;
+        savePanelLayout();
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+      };
 
-  function wrapHistory(name) {
-    const original = history[name];
-    history[name] = function (...args) {
-      const result = original.apply(this, args);
-      scheduleTick();
-      return result;
-    };
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+    });
   }
 
   render();
   loadServiceConfig();
-  wrapHistory("pushState");
-  wrapHistory("replaceState");
-  window.addEventListener("popstate", scheduleTick);
-  new MutationObserver(scheduleTick).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
-  const initialCa = extractCa();
-  if (initialCa) analyze(initialCa, false);
-  setInterval(tick, 1500);
 })();

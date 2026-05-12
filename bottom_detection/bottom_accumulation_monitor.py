@@ -87,6 +87,12 @@ QUIET_BREAKOUT_LOW_MCAP_MAX_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_LOW_MCA
 QUIET_BREAKOUT_HIGH_MCAP_MIN_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_HIGH_MCAP_MIN_USD", "1000000"))
 QUIET_BREAKOUT_MIN_VOLUME_RATIO = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_VOLUME_RATIO", "3"))
 QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD", "5000"))
+QUIET_RUNUP_ENABLED = os.getenv("BOTTOM_QUIET_RUNUP_ENABLED", "1") != "0"
+QUIET_RUNUP_LOOKBACK_BARS = int(os.getenv("BOTTOM_QUIET_RUNUP_LOOKBACK_BARS", "120"))
+QUIET_RUNUP_MIN_QUIET_BARS = int(os.getenv("BOTTOM_QUIET_RUNUP_MIN_QUIET_BARS", "6"))
+QUIET_RUNUP_MAX_RANGE_PCT = float(os.getenv("BOTTOM_QUIET_RUNUP_MAX_RANGE_PCT", "10"))
+QUIET_RUNUP_MIN_GAIN_PCT = float(os.getenv("BOTTOM_QUIET_RUNUP_MIN_GAIN_PCT", "80"))
+QUIET_RUNUP_MIN_BREAKOUT_VOLUME_RATIO = float(os.getenv("BOTTOM_QUIET_RUNUP_MIN_BREAKOUT_VOLUME_RATIO", "3"))
 NEW_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_NEW_TOKEN_KLINE_RESOLUTION", "5m")
 YOUNG_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_YOUNG_TOKEN_KLINE_RESOLUTION", "15m")
 MID_TOKEN_KLINE_RESOLUTION = os.getenv("BOTTOM_MID_TOKEN_KLINE_RESOLUTION", "1h")
@@ -2337,6 +2343,112 @@ def check_watchlist_quiet_breakout(
     }
 
 
+def check_quiet_runup(
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    candles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Find an earlier sideways window followed by a sustained run-up to current price."""
+    if not QUIET_RUNUP_ENABLED or not (is_watchlist_token(token) or is_trending_token(token)):
+        return None
+    min_quiet = max(3, QUIET_RUNUP_MIN_QUIET_BARS)
+    lookback = candles[-QUIET_RUNUP_LOOKBACK_BARS:] if QUIET_RUNUP_LOOKBACK_BARS > 0 else candles
+    if len(lookback) < min_quiet + 3:
+        return None
+
+    current_mcap = to_float(summary.get("mcap")) or calc_mcap(token)
+    current_price = to_float(lookback[-1].get("close"))
+    if current_mcap <= 0 or current_price <= 0:
+        return None
+
+    best: dict[str, Any] | None = None
+    max_start = len(lookback) - min_quiet - 2
+    for start in range(0, max_start + 1):
+        quiet = lookback[start : start + min_quiet]
+        lows = [to_float(c.get("low")) for c in quiet if to_float(c.get("low")) > 0]
+        highs = [to_float(c.get("high")) for c in quiet if to_float(c.get("high")) > 0]
+        volumes = [to_float(c.get("volume")) for c in quiet]
+        if not lows or not highs:
+            continue
+        quiet_low = min(lows)
+        quiet_high = max(highs)
+        quiet_range_pct = ((quiet_high - quiet_low) / quiet_low * 100) if quiet_low > 0 else 0.0
+        if quiet_range_pct > QUIET_RUNUP_MAX_RANGE_PCT:
+            continue
+
+        quiet_close = to_float(quiet[-1].get("close"))
+        if quiet_close <= 0:
+            continue
+        runup = lookback[start + min_quiet :]
+        runup_gain_pct = (current_price - quiet_close) / quiet_close * 100
+        if runup_gain_pct < QUIET_RUNUP_MIN_GAIN_PCT:
+            continue
+
+        quiet_avg_volume = sum(volumes) / len(volumes) if volumes else 0.0
+        runup_volume = sum(to_float(c.get("volume")) for c in runup)
+        volume_ratio = runup_volume / max(quiet_avg_volume * len(runup), 1.0)
+        if volume_ratio < QUIET_RUNUP_MIN_BREAKOUT_VOLUME_RATIO:
+            continue
+
+        item = {
+            "quiet": quiet,
+            "runup": runup,
+            "quiet_range_pct": quiet_range_pct,
+            "quiet_avg_volume": quiet_avg_volume,
+            "runup_volume": runup_volume,
+            "volume_ratio": volume_ratio,
+            "gain_pct": runup_gain_pct,
+            "quiet_close": quiet_close,
+        }
+        if best is None or item["gain_pct"] > best["gain_pct"]:
+            best = item
+
+    if not best:
+        return None
+
+    quiet = best["quiet"]
+    runup = best["runup"]
+    pool_stats = summary.get("pool") or {}
+    source_type = "watchlist" if is_watchlist_token(token) else "trending"
+    quiet_duration_sec = to_int(quiet[-1].get("ts")) - to_int(quiet[0].get("ts"))
+    runup_duration_sec = to_int(runup[-1].get("ts")) - to_int(runup[0].get("ts")) if runup else 0
+    return {
+        "score": 100,
+        "signal_type": "quiet_runup",
+        "abnormal_rule": f"{source_type.upper()}_QUIET_RUNUP",
+        "source_type": source_type,
+        "trigger_mode": "runup",
+        "current_mcap": current_mcap,
+        "ath_mcap": to_float(summary.get("ath_mcap")),
+        "price_change_pct": best["gain_pct"],
+        "required_price_change_pct": QUIET_RUNUP_MIN_GAIN_PCT,
+        "quiet_range_pct": best["quiet_range_pct"],
+        "required_quiet_range_pct": QUIET_RUNUP_MAX_RANGE_PCT,
+        "quiet_avg_volume_usd": best["quiet_avg_volume"],
+        "breakout_volume_usd": best["runup_volume"],
+        "breakout_volume_ratio": best["volume_ratio"],
+        "required_breakout_volume_ratio": QUIET_RUNUP_MIN_BREAKOUT_VOLUME_RATIO,
+        "quiet_duration_sec": quiet_duration_sec,
+        "runup_duration_sec": runup_duration_sec,
+        "quiet_bars": len(quiet),
+        "breakout_bars": len(runup),
+        "from_price": best["quiet_close"],
+        "to_price": current_price,
+        "quiet_from_ts": to_int(quiet[0].get("ts")),
+        "quiet_to_ts": to_int(quiet[-1].get("ts")),
+        "runup_from_ts": to_int(runup[0].get("ts")) if runup else 0,
+        "runup_to_ts": to_int(runup[-1].get("ts")) if runup else 0,
+        "pool_total_liquidity": to_float(pool_stats.get("total_liquidity")),
+        "pool_mcap_ratio": to_float(pool_stats.get("liquidity_mcap_ratio")),
+        "pool_mcap_ratio_text": pool_stats.get("liquidity_mcap_ratio_text", "N/A"),
+        "reasons": [
+            f"{source_type} quiet window {quiet_duration_sec / 3600:.1f}h range {best['quiet_range_pct']:.1f}%<={QUIET_RUNUP_MAX_RANGE_PCT:.1f}%",
+            f"runup {best['gain_pct']:.1f}%>={QUIET_RUNUP_MIN_GAIN_PCT:.1f}% after quiet window",
+            f"runup volume ${best['runup_volume']:,.0f}, {best['volume_ratio']:.1f}x>={QUIET_RUNUP_MIN_BREAKOUT_VOLUME_RATIO:.1f}x",
+        ],
+    }
+
+
 def quiet_breakout_signal_text(token: dict[str, Any], signal: dict[str, Any]) -> str:
     address = token_address(token)
     return (
@@ -2492,6 +2604,29 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             )
         else:
             print(f"{token_label(token)} quiet_breakout already notified")
+
+    quiet_runup = check_quiet_runup(token, summary, candles)
+    if notify and quiet_runup:
+        runup_type = quiet_runup["signal_type"]
+        runup_already = previous_signal_exists(address, runup_type)
+        runup_baseline = first_signal_baseline(address, runup_type)
+        runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
+        if not runup_already:
+            save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
+            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update")
+            print(
+                f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
+                f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
+                f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
+            )
+        else:
+            latest_baseline = latest_frontend_signal_baseline(address, runup_type)
+            repeat_allowed, repeat_reason = frontend_repeat_update_allowed(runup_extra, quiet_runup, latest_baseline)
+            if repeat_allowed:
+                publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update")
+                print(f"{token_label(token)} quiet_runup frontend updated: {repeat_reason}")
+            else:
+                print(f"{token_label(token)} quiet_runup already notified, skip frontend update: {repeat_reason}")
 
     # Old token surge detection (independent of abnormal/EMA signal)
     if notify and OLD_TOKEN_SURGE_ENABLED:

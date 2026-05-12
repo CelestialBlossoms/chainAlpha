@@ -151,6 +151,11 @@ def index(request: Request):
     )
 
 
+@app.get("/api/health")
+def health_api():
+    return {"ok": True, "service": "chain-alpha-ca-clusters"}
+
+
 @app.get("/bottom-watchlist", response_class=HTMLResponse)
 def bottom_watchlist(request: Request):
     return templates.TemplateResponse(request, "bottom_watchlist.html", {})

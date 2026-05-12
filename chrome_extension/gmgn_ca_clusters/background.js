@@ -30,6 +30,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "GET_BOTTOM_ABNORMAL") {
+    const limit = Math.max(1, Math.min(Number(message.limit || 300), 500));
+    getServiceMode()
+      .then((mode) => {
+        const baseUrl = SERVICE_URLS[mode];
+        const url = `${baseUrl}/api/recent?limit=${encodeURIComponent(limit)}`;
+        return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
+      })
+      .then(async (resp) => {
+        const text = await resp.resp.text();
+        let payload = {};
+        try {
+          payload = text ? JSON.parse(text) : {};
+        } catch {
+          payload = { detail: text };
+        }
+        if (!resp.resp.ok) {
+          sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.detail || `HTTP ${resp.resp.status}` });
+          return;
+        }
+        sendResponse({ ok: true, mode: resp.mode, baseUrl: resp.baseUrl, data: payload });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
+      });
+    return true;
+  }
+
   if (message.type !== "ANALYZE_CA") {
     return false;
   }
