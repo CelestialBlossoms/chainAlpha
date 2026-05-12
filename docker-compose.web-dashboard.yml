@@ -1,10 +1,10 @@
 services:
-  ca-clusters-api:
+  web-dashboard-api:
     image: chain-alpha-python:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: chain-alpha-ca-clusters-api
+    container_name: chain-alpha-web-dashboard-api
     restart: unless-stopped
     working_dir: /app
     volumes:
@@ -15,7 +15,7 @@ services:
       CHAIN_ALPHA_REDIS_ENABLED: "1"
       PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
     ports:
-      - "8012:8089"
+      - "8010:8089"
     command:
       - uvicorn
       - web_dashboard.app:app

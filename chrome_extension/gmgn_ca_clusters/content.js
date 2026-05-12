@@ -48,6 +48,7 @@
     analyzing: "\u6b63\u5728\u5206\u6790",
     noValidCa: "\u6ca1\u6709\u8bc6\u522b\u5230\u6709\u6548 CA\u3002",
     apiError: "\u672c\u5730\u63a5\u53e3\u4e0d\u53ef\u7528\u6216\u5206\u6790\u5931\u8d25",
+    new1mApiError: "1m\u65b0\u5e01\u63a5\u53e3\u6216 Redis \u6d41\u4e0d\u53ef\u7528",
     walletCount: "\u94b1\u5305\u6570",
     holdPct: "\u6301\u4ed3\u5360\u6bd4",
     buyVolume: "\u4e70\u5165\u989d",
@@ -694,7 +695,7 @@
         .sort((a, b) => (b.ts || 0) - (a.ts || 0));
     } catch (err) {
       if (!hasRows) STATE.new1mItems = [];
-      STATE.new1mError = `${L.apiError}: ${err.message || err}`;
+      STATE.new1mError = `${L.new1mApiError}: ${err.message || err}`;
     } finally {
       STATE.new1mLoading = false;
       if (!updateNew1mContent()) render();

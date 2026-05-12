@@ -154,7 +154,13 @@ def index(request: Request):
 
 @app.get("/api/health")
 def health_api():
-    return {"ok": True, "service": "chain-alpha-ca-clusters"}
+    client = get_redis_client()
+    return {
+        "ok": True,
+        "service": "chain-alpha-ca-clusters",
+        "redis_ok": client is not None,
+        "redis_error": "" if client is not None else get_redis_disabled_reason(),
+    }
 
 
 @app.get("/bottom-watchlist", response_class=HTMLResponse)
@@ -177,6 +183,22 @@ def plugin_new_1m(limit: int = 100):
         if item.get("source") == "plugin_new_1m"
     ]
     return {"items": items}
+
+
+@app.get("/api/plugin/health")
+def plugin_health(limit: int = 20):
+    limit = max(1, min(limit, 100))
+    client = get_redis_client()
+    recent_items = [normalize_alert(item.get("id", ""), item) for item in read_recent_plugin_signals(limit)]
+    new_1m_count = sum(1 for item in recent_items if item.get("source") == "plugin_new_1m")
+    return {
+        "ok": client is not None,
+        "redis_ok": client is not None,
+        "redis_error": "" if client is not None else get_redis_disabled_reason(),
+        "recent_plugin_count": len(recent_items),
+        "plugin_new_1m_count": new_1m_count,
+        "items": recent_items,
+    }
 
 
 @app.get("/api/bottom-watchlist")
