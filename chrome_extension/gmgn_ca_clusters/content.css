@@ -93,7 +93,7 @@
 
 .ca-bottom-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   padding: 7px 10px 9px;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
@@ -201,6 +201,10 @@
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 6px;
   background: #111821;
+}
+
+.ca-new1m-row {
+  border-color: rgba(248, 113, 113, 0.34);
 }
 
 .ca-abnormal-token {

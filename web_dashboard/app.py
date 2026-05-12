@@ -26,6 +26,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from redis_client import get_redis_client, get_redis_disabled_reason
 from tg_alert_stream import TG_ALERT_STREAM_KEY, read_recent_tg_alerts
+from plugin_signal_stream import read_recent_plugin_signals
 from db_client import db_op
 from ca_analyzer.cluster_api import analyze_ca_clusters
 
@@ -165,6 +166,17 @@ def bottom_watchlist(request: Request):
 def recent(limit: int = 100):
     limit = max(1, min(limit, 500))
     return {"items": [normalize_alert(item.get("id", ""), item) for item in read_recent_tg_alerts(limit)]}
+
+
+@app.get("/api/plugin/new-1m")
+def plugin_new_1m(limit: int = 100):
+    limit = max(1, min(limit, 500))
+    items = [
+        normalize_alert(item.get("id", ""), item)
+        for item in read_recent_plugin_signals(limit)
+        if item.get("source") == "plugin_new_1m"
+    ]
+    return {"items": items}
 
 
 @app.get("/api/bottom-watchlist")

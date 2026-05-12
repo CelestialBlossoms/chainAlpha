@@ -1,6 +1,6 @@
 const SERVICE_URLS = {
   local: "http://127.0.0.1:8000",
-  server: "http://43.163.225.175:8012",
+  server: "http://43.163.225.175:8010",
 };
 const DEFAULT_MODE = "local";
 
@@ -36,6 +36,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then((mode) => {
         const baseUrl = SERVICE_URLS[mode];
         const url = `${baseUrl}/api/recent?limit=${encodeURIComponent(limit)}`;
+        return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
+      })
+      .then(async (resp) => {
+        const text = await resp.resp.text();
+        let payload = {};
+        try {
+          payload = text ? JSON.parse(text) : {};
+        } catch {
+          payload = { detail: text };
+        }
+        if (!resp.resp.ok) {
+          sendResponse({ ok: false, status: resp.resp.status, mode: resp.mode, baseUrl: resp.baseUrl, error: payload.detail || `HTTP ${resp.resp.status}` });
+          return;
+        }
+        sendResponse({ ok: true, mode: resp.mode, baseUrl: resp.baseUrl, data: payload });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
+      });
+    return true;
+  }
+
+  if (message.type === "GET_PLUGIN_NEW_1M") {
+    const limit = Math.max(1, Math.min(Number(message.limit || 200), 500));
+    getServiceMode()
+      .then((mode) => {
+        const baseUrl = SERVICE_URLS[mode];
+        const url = `${baseUrl}/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`;
         return fetch(url, { method: "GET" }).then(async (resp) => ({ resp, mode, baseUrl }));
       })
       .then(async (resp) => {

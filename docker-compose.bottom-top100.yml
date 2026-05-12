@@ -66,3 +66,36 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  plugin-new-1m-monitor:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-plugin-new-1m
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+      PLUGIN_NEW_1M_INTERVAL_SEC: "60"
+      PLUGIN_NEW_1M_TREND_LIMIT: "100"
+      PLUGIN_NEW_1M_MAX_TOKENS: "80"
+      PLUGIN_NEW_1M_MAX_AGE_SEC: "172800"
+      PLUGIN_NEW_1M_DEDUP_SEC: "900"
+      PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
+      BOTTOM_TREND_INTERVALS: "1m"
+      BOTTOM_TREND_ORDER_BYS: "default"
+      BOTTOM_NEW_TOKEN_KLINE_RESOLUTION: "1m"
+      BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC: "60"
+    command:
+      - python
+      - monitor_plugin_new_1m_tokens.py
+      - --watch
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
