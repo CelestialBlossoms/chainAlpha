@@ -27,6 +27,7 @@
     clear: "\u6e05\u7a7a",
     caView: "CA\u5206\u6790",
     abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
+    watchView: "\u5f02\u52a8\u76d1\u63a7",
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
     abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA\uff0cGMGN \u6253\u5f00\u8be6\u60c5",
     abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
@@ -409,12 +410,17 @@
       </div>`;
   }
 
-  function renderAbnormalView() {
-    return `${renderAbnormalHead()}<div class="ca-abnormal-content">${renderAbnormalContent()}</div>`;
-  }
-
-  function renderNew1mView() {
-    return `${renderNew1mHead()}<div class="ca-new1m-content">${renderNew1mContent()}</div>`;
+  function renderWatchView() {
+    return `<div class="ca-watch-grid">
+      <section class="ca-watch-section">
+        ${renderAbnormalHead()}
+        <div class="ca-abnormal-content">${renderAbnormalContent()}</div>
+      </section>
+      <section class="ca-watch-section">
+        ${renderNew1mHead()}
+        <div class="ca-new1m-content">${renderNew1mContent()}</div>
+      </section>
+    </div>`;
   }
 
   function updateAbnormalContent() {
@@ -430,7 +436,7 @@
 
   function updateNew1mContent() {
     const container = panel.querySelector(".ca-new1m-content");
-    if (STATE.view !== "new1m" || !container) return false;
+    if (STATE.view !== "abnormal" || !container) return false;
     const body = panel.querySelector(".ca-cluster-body");
     const scrollTop = body ? body.scrollTop : 0;
     container.innerHTML = renderNew1mContent();
@@ -448,7 +454,7 @@
         : STATE.result
           ? renderResult(STATE.result)
           : `<div class="ca-cluster-empty">${L.openHint}</div>`;
-    const body = STATE.view === "abnormal" ? renderAbnormalView() : STATE.view === "new1m" ? renderNew1mView() : caBody;
+    const body = STATE.view === "abnormal" ? renderWatchView() : caBody;
     const inputRow =
       STATE.view === "ca"
         ? `<div class="ca-cluster-input-row">
@@ -473,8 +479,7 @@
       </div>
       <div class="ca-bottom-tabs">
         <button class="ca-view-button${STATE.view === "ca" ? " is-active" : ""}" data-view="ca">${L.caView}</button>
-        <button class="ca-view-button${STATE.view === "abnormal" ? " is-active" : ""}" data-view="abnormal">${L.abnormalView}</button>
-        <button class="ca-view-button${STATE.view === "new1m" ? " is-active" : ""}" data-view="new1m">${L.new1mView}</button>
+        <button class="ca-view-button${STATE.view === "abnormal" ? " is-active" : ""}" data-view="abnormal">${L.watchView}</button>
       </div>
       <div class="ca-resize-handle" title="Resize"></div>
     `;
@@ -501,13 +506,10 @@
         render();
         if (view === "abnormal") {
           startAbnormalAutoRefresh();
-          stopNew1mAutoRefresh();
+          startNew1mAutoRefresh();
           if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
             loadBottomWatchlist(false);
           }
-        } else if (view === "new1m") {
-          stopAbnormalAutoRefresh();
-          startNew1mAutoRefresh();
           if (!STATE.new1mItems.length && !STATE.new1mLoading) {
             loadPluginNew1m(false);
           }
@@ -726,7 +728,7 @@
   function startNew1mAutoRefresh() {
     if (STATE.new1mTimer) return;
     STATE.new1mTimer = window.setInterval(() => {
-      if (STATE.view === "new1m" && !STATE.new1mLoading) {
+      if (STATE.view === "abnormal" && !STATE.new1mLoading) {
         loadPluginNew1m(true);
       }
     }, 10000);
