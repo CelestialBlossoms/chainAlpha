@@ -426,27 +426,25 @@
   function updateAbnormalContent() {
     const container = panel.querySelector(".ca-abnormal-content");
     if (STATE.view !== "abnormal" || !container) return false;
-    const body = panel.querySelector(".ca-cluster-body");
-    const scrollTop = body ? body.scrollTop : 0;
+    const scrollTop = container.scrollTop;
     container.innerHTML = renderAbnormalContent();
     attachAbnormalRowHandlers();
-    if (body) body.scrollTop = scrollTop;
+    container.scrollTop = scrollTop;
     return true;
   }
 
   function updateNew1mContent() {
     const container = panel.querySelector(".ca-new1m-content");
     if (STATE.view !== "abnormal" || !container) return false;
-    const body = panel.querySelector(".ca-cluster-body");
-    const scrollTop = body ? body.scrollTop : 0;
+    const scrollTop = container.scrollTop;
     container.innerHTML = renderNew1mContent();
     attachAbnormalRowHandlers();
-    if (body) body.scrollTop = scrollTop;
+    container.scrollTop = scrollTop;
     return true;
   }
 
   function render() {
-    panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""}`;
+    panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""}${STATE.view === "abnormal" ? " ca-watch-mode" : ""}`;
     const caBody = STATE.loading
       ? `<div class="ca-cluster-loading">${L.analyzing} ${escapeHtml(shortCa(STATE.ca))}</div>`
       : STATE.error

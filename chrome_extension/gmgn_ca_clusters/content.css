@@ -84,6 +84,10 @@
   box-sizing: border-box;
 }
 
+.ca-watch-mode .ca-cluster-body {
+  overflow: hidden;
+}
+
 .ca-collapsed .ca-cluster-body,
 .ca-collapsed .ca-cluster-refresh,
 .ca-collapsed .ca-bottom-tabs,
@@ -178,14 +182,19 @@
 
 .ca-watch-grid {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
 }
 
 .ca-watch-section {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
   min-width: 0;
+  min-height: 0;
   padding-bottom: 10px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
 }
@@ -193,6 +202,14 @@
 .ca-watch-section:last-child {
   padding-bottom: 0;
   border-bottom: 0;
+}
+
+.ca-abnormal-content,
+.ca-new1m-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain;
 }
 
 .ca-abnormal-head h3 {
