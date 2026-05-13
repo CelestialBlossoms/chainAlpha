@@ -17,6 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 import requests
+from config import GMGN_API_KEY
 from binance_narrative import get_binance_narrative, compact_narrative
 from bottom_detection.bottom_watchlist_store import save_watchlist_narrative
 
@@ -38,7 +39,8 @@ def gmgn_cli(args_list: list[str], timeout: int = GMGN_TIMEOUT) -> dict | None:
 
 
 def gmgn_api(endpoint: str, address: str, chain: str = "sol", api_key: str = "") -> dict:
-    headers = {"X-APIKEY": api_key or "gmgn_d600103d8f4dd84c06bd88672c290647"}
+    key = api_key or GMGN_API_KEY
+    headers = {"X-APIKEY": key} if key else {}
     params = {
         "chain": chain,
         "address": address,
@@ -50,7 +52,7 @@ def gmgn_api(endpoint: str, address: str, chain: str = "sol", api_key: str = "")
 
 
 def fetch_token_meta(address: str, chain: str = "sol") -> dict:
-    """Try gmgn-cli first, fall back to direct API."""
+    """Try gmgn-cli first, fall back to direct API. Returns full token metadata + pool."""
     info = gmgn_cli(["token", "info", "--chain", chain, "--address", address])
     if info and info.get("code") != 0:
         info = None
@@ -59,15 +61,19 @@ def fetch_token_meta(address: str, chain: str = "sol") -> dict:
     if not info or info.get("code") != 0:
         return {}
     d = info.get("data", info) if isinstance(info, dict) else {}
+    pool = d.get("pool", {}) or {}
+    ts = int(d.get("creation_timestamp") or d.get("open_timestamp") or 0)
     return {
         "symbol": str(d.get("symbol") or "").strip(),
         "name": str(d.get("name") or "").strip(),
         "price": float(d.get("price") or 0),
         "supply": float(d.get("circulating_supply") or 0),
         "mcap": float(d.get("price") or 0) * float(d.get("circulating_supply") or 0),
+        "liquidity": float(d.get("liquidity") or 0),
         "launchpad": str(d.get("launchpad_platform") or "").strip(),
         "twitter": str((d.get("link") or {}).get("twitter_username") or "").strip(),
         "holders": d.get("holder_count", 0),
+        "created_ts": ts,
     }
 
 
@@ -124,15 +130,22 @@ def main():
         print(f"  No Binance narrative found for this token")
         return
 
-    # 3. Save to bottom-watchlist
+    # 3. Save to bottom-watchlist with full metadata fill
     print(f"[3/3] Saving to bottom_watchlist_tokens...")
     save_watchlist_narrative(
         address,
         narrative_desc=desc,
         narrative_type=ntype,
         source=source or "narrative_fetch",
+        symbol=meta.get("symbol", ""),
+        name=meta.get("name", ""),
+        mcap=meta.get("mcap", 0),
+        liquidity=meta.get("liquidity", 0),
+        holders=meta.get("holders", 0),
+        launchpad=meta.get("launchpad", ""),
+        created_ts=meta.get("created_ts", 0),
     )
-    print(f"  Done! narrative saved to bottom_watchlist_tokens for {address[:12]}..")
+    print(f"  Done! narrative + metadata saved to bottom_watchlist_tokens for {address[:12]}..")
 
 
 if __name__ == "__main__":

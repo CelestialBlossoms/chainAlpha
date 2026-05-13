@@ -27,9 +27,9 @@ D:\software\anaconda\envs\py312\python.exe -m pip install paramiko
 import paramiko
 import sys
 
-host = "43.163.225.175"
+host = "<server-host>"
 username = "root"
-password = "1314zxcV1314"
+password = "<server-password>"
 
 commands = [
     "cd /opt/chainAlpha && pwd && git rev-parse --short HEAD",
@@ -108,9 +108,9 @@ Found orphan containers ([chain-alpha-tg-ca-bot chain-alpha-tg-dashboard])
 @'
 import paramiko
 
-host = "43.163.225.175"
+host = "<server-host>"
 username = "root"
-password = "1314zxcV1314"
+password = "<server-password>"
 command = "docker ps --filter name=chain-alpha-bottom-top100 --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'"
 
 client = paramiko.SSHClient()

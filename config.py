@@ -1,9 +1,15 @@
+import os
 from urllib.parse import urlparse
+
+from env_loader import load_project_env
+
+
+load_project_env()
 
 # ---------------------------------------------------------------------------
 # Database Configuration
 # ---------------------------------------------------------------------------
-DATABASE_URL = "postgresql://xf22610:1314zxcV1314@43.163.225.175:5432/chainAlpha"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/chainAlpha")
 
 
 def parse_db_url(url: str) -> dict:
@@ -23,9 +29,9 @@ DB_CONFIG = parse_db_url(DATABASE_URL)
 # ---------------------------------------------------------------------------
 # API / Bot Configuration
 # ---------------------------------------------------------------------------
-TG_BOT_TOKEN = "8783449989:AAHNtioBE7LUx423YyEk6CB-sks_8i1HGnE"
-TG_CHAT_ID = "5666543170"
-GMGN_API_KEY = "gmgn_d6d3b278fffc6b5151ed2d36e659a804"
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
+GMGN_API_KEY = os.getenv("GMGN_API_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Scanner Configuration

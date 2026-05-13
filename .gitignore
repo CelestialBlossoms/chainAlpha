@@ -1,0 +1,36 @@
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+gmgn_account_*/.env
+gmgn_account_*/.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local IDE and OS files
+.idea/
+.vscode/
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+
+# Local runtime state / outputs
+sol_token_scanner_state.json
+tool-outputs/
+*.db
+data/

@@ -1,14 +1,18 @@
 import os
 
+from env_loader import load_project_env
+
+load_project_env()
+
 try:
     import redis
 except ImportError:
     redis = None
 
 
-REDIS_HOST = os.getenv("CHAIN_ALPHA_REDIS_HOST", "43.163.225.175")
+REDIS_HOST = os.getenv("CHAIN_ALPHA_REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("CHAIN_ALPHA_REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("CHAIN_ALPHA_REDIS_PASSWORD", "1314zxcV,1314")
+REDIS_PASSWORD = os.getenv("CHAIN_ALPHA_REDIS_PASSWORD", "")
 REDIS_DB = int(os.getenv("CHAIN_ALPHA_REDIS_DB", "0"))
 REDIS_ENABLED = os.getenv("CHAIN_ALPHA_REDIS_ENABLED", "1") != "0"
 REDIS_SOCKET_TIMEOUT = float(os.getenv("CHAIN_ALPHA_REDIS_SOCKET_TIMEOUT", "2"))
