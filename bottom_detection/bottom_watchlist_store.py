@@ -494,32 +494,71 @@ def save_watchlist_narrative(
     narrative_desc: str = "",
     narrative_type: str = "",
     source: str = "",
+    symbol: str = "",
+    name: str = "",
+    mcap: float = 0,
+    liquidity: float = 0,
+    holders: int = 0,
+    launchpad: str = "",
+    created_ts: int = 0,
 ) -> None:
-    """Save narrative metadata to bottom_watchlist_tokens."""
+    """Save narrative + token metadata to bottom_watchlist_tokens. Fills missing fields."""
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE bottom_watchlist_tokens
-            SET narrative_desc = %s,
-                narrative_type = %s,
-                last_seen_at = now()
+            SET narrative_desc = CASE WHEN %s != '' THEN %s ELSE COALESCE(narrative_desc, '') END,
+                narrative_type = CASE WHEN %s != '' THEN %s ELSE COALESCE(narrative_type, '') END,
+                last_seen_at = now(),
+                last_mcap = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_mcap, 0) END,
+                current_mcap = CASE WHEN %s > 0 THEN %s ELSE COALESCE(current_mcap, 0) END,
+                peak_mcap = CASE WHEN %s > 0 AND COALESCE(peak_mcap, 0) = 0 THEN %s ELSE COALESCE(peak_mcap, 0) END,
+                last_pool_liquidity = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_pool_liquidity, 0) END,
+                symbol = CASE WHEN %s != '' THEN %s ELSE COALESCE(symbol, '') END,
+                source = CASE WHEN COALESCE(source, '') = '' AND %s != '' THEN %s ELSE COALESCE(source, '') END,
+                note = CASE WHEN %s != '' THEN %s ELSE COALESCE(note, '') END
             WHERE ca = %s
             """,
-            (narrative_desc or "", narrative_type or "", address),
+            (
+                narrative_desc, narrative_desc,
+                narrative_type, narrative_type,
+                mcap, mcap,
+                mcap, mcap,
+                mcap, mcap,
+                liquidity, liquidity,
+                symbol, symbol,
+                source, source,
+                name, name,
+                address,
+            ),
         )
         if cur.rowcount == 0:
             cur.execute(
                 """
                 INSERT INTO bottom_watchlist_tokens (
                     ca, create_at, added_at, last_seen_at, source,
-                    narrative_desc, narrative_type, peak_mcap, last_mcap, current_mcap
+                    narrative_desc, narrative_type, symbol, note,
+                    peak_mcap, last_mcap, current_mcap,
+                    last_pool_liquidity, token_created_at, gmgn_created_at
                 ) VALUES (
-                    %s, NULL, now(), now(), %s,
-                    %s, %s, 0, 0, 0
+                    %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END, now(), now(), %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s
                 )
                 """,
-                (address, source or "narrative_fetch", narrative_desc or "", narrative_type or ""),
+                (
+                    address,
+                    created_ts, created_ts,
+                    source or "narrative_fetch",
+                    narrative_desc or "", narrative_type or "",
+                    symbol or "", name or "",
+                    mcap, mcap, mcap,
+                    liquidity,
+                    created_ts if created_ts > 0 else None,
+                    created_ts if created_ts > 0 else None,
+                ),
             )
     db_op(_op)
 
