@@ -245,7 +245,7 @@
 
 .ca-abnormal-token {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 6px;
   align-items: start;
   min-width: 0;
@@ -463,6 +463,31 @@
 
 .ca-copy-button:hover {
   background: #2b3647;
+}
+
+.ca-copy-ca-button {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.ca-dismiss-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(248, 113, 113, 0.32);
+  border-radius: 5px;
+  background: #2a1720;
+  color: #fecaca;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 18px;
+}
+
+.ca-dismiss-button:hover {
+  background: #3a1d28;
 }
 
 .ca-cluster-chip {

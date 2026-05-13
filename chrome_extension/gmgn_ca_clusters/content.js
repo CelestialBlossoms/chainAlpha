@@ -4,6 +4,8 @@
     wallet: "\u94b1\u5305",
     copied: "\u5df2\u590d\u5236",
     copy: "\u590d\u5236",
+    copyCa: "\u590d\u5236CA",
+    dismiss: "\u79fb\u9664",
     title: "CA \u6346\u7ed1\u5206\u6790",
     token: "\u4ee3\u5e01",
     mcapLp: "\u5e02\u503c/\u6c60\u5b50",
@@ -87,6 +89,7 @@
     abnormalError: "",
     abnormalTimer: 0,
     abnormalLastCount: 0,
+    dismissedSignals: {},
     new1mLoading: false,
     new1mItems: [],
     new1mError: "",
@@ -336,7 +339,11 @@
                   <b>${escapeHtml(symbol)}</b>
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
+                <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
+                  ${STATE.copied === ca ? L.copied : L.copyCa}
+                </button>
                 <a class="ca-gmgn-link" href="${escapeAttr(gmgnUrl(ca, item.chain || "sol"))}" target="_blank" rel="noreferrer">GMGN</a>
+                <button class="ca-dismiss-button" data-source="bottom_abnormal" data-ca="${escapeAttr(ca)}" data-id="${escapeAttr(item.id)}" title="${L.dismiss}">X</button>
               </div>
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
@@ -387,7 +394,11 @@
                   <b>${escapeHtml(symbol)}</b>
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
+                <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
+                  ${STATE.copied === ca ? L.copied : L.copyCa}
+                </button>
                 <a class="ca-gmgn-link" href="${escapeAttr(gmgnUrl(ca, item.chain || "sol"))}" target="_blank" rel="noreferrer">GMGN</a>
+                <button class="ca-dismiss-button" data-source="plugin_new_1m" data-ca="${escapeAttr(ca)}" data-id="${escapeAttr(item.id)}" title="${L.dismiss}">X</button>
               </div>
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
@@ -429,6 +440,8 @@
     const scrollTop = container.scrollTop;
     container.innerHTML = renderAbnormalContent();
     attachAbnormalRowHandlers();
+    attachCopyHandlers();
+    attachDismissHandlers();
     container.scrollTop = scrollTop;
     return true;
   }
@@ -439,6 +452,8 @@
     const scrollTop = container.scrollTop;
     container.innerHTML = renderNew1mContent();
     attachAbnormalRowHandlers();
+    attachCopyHandlers();
+    attachDismissHandlers();
     container.scrollTop = scrollTop;
     return true;
   }
@@ -518,7 +533,14 @@
       });
     });
     attachAbnormalRowHandlers();
+    attachCopyHandlers();
+    attachDismissHandlers();
+  }
+
+  function attachCopyHandlers() {
     panel.querySelectorAll(".ca-copy-button").forEach((button) => {
+      if (button.dataset.copyReady === "1") return;
+      button.dataset.copyReady = "1";
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -540,6 +562,50 @@
         copyText(ca, false);
       });
     });
+  }
+
+  function attachDismissHandlers() {
+    panel.querySelectorAll(".ca-dismiss-button").forEach((button) => {
+      if (button.dataset.dismissReady === "1") return;
+      button.dataset.dismissReady = "1";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissSignal(
+          button.getAttribute("data-source") || "",
+          button.getAttribute("data-ca") || "",
+          button.getAttribute("data-id") || "",
+        );
+      });
+    });
+  }
+
+  function dismissedSignalKey(source, ca) {
+    return `${source || ""}:${ca || ""}`;
+  }
+
+  function isSignalDismissed(item, source) {
+    return Boolean(item && item.ca && item.id && STATE.dismissedSignals[dismissedSignalKey(source, item.ca)] === item.id);
+  }
+
+  function compareSignalsDesc(a, b) {
+    const tsDiff = ((b && b.ts) || 0) - ((a && a.ts) || 0);
+    if (tsDiff !== 0) return tsDiff;
+    return String((b && b.id) || "").localeCompare(String((a && a.id) || ""));
+  }
+
+  function dismissSignal(source, ca, id) {
+    if (!source || !ca || !id) return;
+    STATE.dismissedSignals[dismissedSignalKey(source, ca)] = id;
+    if (source === "bottom_abnormal") {
+      STATE.abnormalItems = STATE.abnormalItems.filter((item) => !(item.ca === ca && item.id === id));
+      updateAbnormalContent();
+      return;
+    }
+    if (source === "plugin_new_1m") {
+      STATE.new1mItems = STATE.new1mItems.filter((item) => !(item.ca === ca && item.id === id));
+      updateNew1mContent();
+    }
   }
 
   async function analyze(ca, force) {
@@ -656,12 +722,13 @@
       const seen = new Set();
       STATE.abnormalItems = (Array.isArray(response.data?.items) ? response.data.items : [])
         .map(normalizeBottomAbnormal)
+        .sort(compareSignalsDesc)
         .filter((item) => {
           if (!item || seen.has(item.ca)) return false;
           seen.add(item.ca);
+          if (isSignalDismissed(item, "bottom_abnormal")) return false;
           return true;
-        })
-        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+        });
       STATE.abnormalLastCount = STATE.abnormalItems.length;
     } catch (err) {
       if (!hasRows) STATE.abnormalItems = [];
@@ -708,12 +775,13 @@
       const seen = new Set();
       STATE.new1mItems = (Array.isArray(response.data?.items) ? response.data.items : [])
         .map(normalizePluginNew1m)
+        .sort(compareSignalsDesc)
         .filter((item) => {
           if (!item || seen.has(item.ca)) return false;
           seen.add(item.ca);
+          if (isSignalDismissed(item, "plugin_new_1m")) return false;
           return true;
-        })
-        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+        });
     } catch (err) {
       if (!hasRows) STATE.new1mItems = [];
       STATE.new1mError = `${L.new1mApiError}: ${err.message || err}`;
@@ -751,13 +819,22 @@
       input.remove();
     }
     STATE.copied = text;
-    if (rerender) render();
+    refreshCopiedState(rerender);
     setTimeout(() => {
       if (STATE.copied === text) {
         STATE.copied = "";
-        if (rerender) render();
+        refreshCopiedState(rerender);
       }
     }, 1200);
+  }
+
+  function refreshCopiedState(rerender) {
+    if (rerender) {
+      render();
+      return;
+    }
+    updateAbnormalContent();
+    updateNew1mContent();
   }
 
   function clearPanel() {
