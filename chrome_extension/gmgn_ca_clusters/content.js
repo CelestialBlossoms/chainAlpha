@@ -89,6 +89,7 @@
     abnormalError: "",
     abnormalTimer: 0,
     abnormalLastCount: 0,
+    abnormalRequestId: 0,
     dismissedSignals: {},
     new1mLoading: false,
     new1mItems: [],
@@ -316,7 +317,7 @@
   }
 
   function renderAbnormalContent() {
-    if (STATE.abnormalLoading) {
+    if (STATE.abnormalLoading && !STATE.abnormalItems.length) {
       return `<div class="ca-cluster-loading">${L.analyzing} ${L.abnormalView}</div>`;
     }
     if (STATE.abnormalError) {
@@ -707,6 +708,8 @@
   async function loadBottomWatchlist(force) {
     if (!force && (STATE.abnormalLoading || STATE.abnormalItems.length)) return;
     const hasRows = STATE.abnormalItems.length > 0;
+    const requestId = STATE.abnormalRequestId + 1;
+    STATE.abnormalRequestId = requestId;
     STATE.abnormalLoading = true;
     STATE.abnormalError = "";
     if (!hasRows) {
@@ -714,6 +717,7 @@
     }
     try {
       const response = await chrome.runtime.sendMessage({ type: "GET_BOTTOM_ABNORMAL", limit: 300 });
+      if (requestId !== STATE.abnormalRequestId) return;
       if (!response || !response.ok) {
         throw new Error((response && response.error) || "No response from extension background worker.");
       }
@@ -731,9 +735,11 @@
         });
       STATE.abnormalLastCount = STATE.abnormalItems.length;
     } catch (err) {
+      if (requestId !== STATE.abnormalRequestId) return;
       if (!hasRows) STATE.abnormalItems = [];
       STATE.abnormalError = `${L.apiError}: ${err.message || err}`;
     } finally {
+      if (requestId !== STATE.abnormalRequestId) return;
       STATE.abnormalLoading = false;
       if (!updateAbnormalContent()) render();
     }

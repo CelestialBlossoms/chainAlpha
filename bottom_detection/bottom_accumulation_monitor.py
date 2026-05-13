@@ -28,6 +28,7 @@ if str(ROOT_DIR) not in sys.path:
 from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
 from binance_narrative import compact_narrative, get_binance_narrative, resolve_cached_or_db_narrative
+from plugin_signal_stream import publish_plugin_signal
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
     clean_redis_stream_for_ca,
@@ -1652,6 +1653,7 @@ def publish_frontend_signal_update(text: str, extra: dict[str, Any], status: str
     if not address:
         return
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+    publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
 
 
 def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_fee_sol: float) -> str:

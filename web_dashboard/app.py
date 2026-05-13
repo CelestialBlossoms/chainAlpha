@@ -185,18 +185,31 @@ def plugin_new_1m(request: Request, limit: int = 100):
     return {"items": items}
 
 
+@app.get("/api/plugin/bottom-abnormal")
+def plugin_bottom_abnormal(request: Request, limit: int = 100):
+    limit = max(1, min(limit, 500))
+    items = [
+        normalize_alert(item.get("id", ""), item)
+        for item in read_recent_plugin_signals(limit)
+        if item.get("source") == "bottom_abnormal"
+    ]
+    return {"items": items}
+
+
 @app.get("/api/plugin/health")
 def plugin_health(request: Request, limit: int = 20):
     limit = max(1, min(limit, 100))
     client = get_redis_client()
     recent_items = [normalize_alert(item.get("id", ""), item) for item in read_recent_plugin_signals(limit)]
     new_1m_count = sum(1 for item in recent_items if item.get("source") == "plugin_new_1m")
+    bottom_abnormal_count = sum(1 for item in recent_items if item.get("source") == "bottom_abnormal")
     return {
         "ok": client is not None,
         "redis_ok": client is not None,
         "redis_error": "" if client is not None else get_redis_disabled_reason(),
         "recent_plugin_count": len(recent_items),
         "plugin_new_1m_count": new_1m_count,
+        "plugin_bottom_abnormal_count": bottom_abnormal_count,
         "items": recent_items,
     }
 

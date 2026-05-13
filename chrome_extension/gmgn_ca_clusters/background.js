@@ -63,7 +63,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_BOTTOM_ABNORMAL") {
     const limit = Math.max(1, Math.min(Number(message.limit || 300), 500));
-    fetchServiceJson(`/api/recent?limit=${encodeURIComponent(limit)}`).then(sendResponse);
+    fetchServiceJson(`/api/plugin/bottom-abnormal?limit=${encodeURIComponent(limit)}`, { serverOnly: true }).then(sendResponse);
     return true;
   }
 
