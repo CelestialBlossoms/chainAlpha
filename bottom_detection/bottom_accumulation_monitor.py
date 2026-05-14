@@ -2841,6 +2841,11 @@ def scan_once(
                 print(f"{token_label(token)} blacklisted, skipped")
                 skipped += 1
                 continue
+            pre_skip_reason = recent_snapshot_skip_reason(address, token)
+            if pre_skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {pre_skip_reason}")
+                continue
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
