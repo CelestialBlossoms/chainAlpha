@@ -656,7 +656,8 @@
   }
 
   async function loadBottomWatchlist(force) {
-    if (!force && (STATE.abnormalLoading || STATE.abnormalItems.length)) return;
+    if (STATE.abnormalLoading) return;
+    if (!force && STATE.abnormalItems.length) return;
     const hasRows = STATE.abnormalItems.length > 0;
     const requestId = STATE.abnormalRequestId + 1;
     STATE.abnormalRequestId = requestId;
@@ -666,7 +667,7 @@
       if (!updateAbnormalContent()) render();
     }
     try {
-      const response = await chrome.runtime.sendMessage({ type: "GET_BOTTOM_ABNORMAL", limit: 300 });
+      const response = await chrome.runtime.sendMessage({ type: "GET_BOTTOM_ABNORMAL", limit: 100 });
       if (requestId !== STATE.abnormalRequestId) return;
       if (!response || !response.ok) {
         throw new Error((response && response.error) || "No response from extension background worker.");

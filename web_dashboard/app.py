@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from decimal import Decimal
@@ -36,6 +37,8 @@ from ca_analyzer.cluster_api import analyze_ca_clusters
 
 BASE_DIR = Path(__file__).resolve().parent
 SSE_BLOCK_MS = int(os.getenv("TG_DASHBOARD_SSE_BLOCK_MS", "30000"))
+PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC = float(os.getenv("PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC", "3"))
+_PLUGIN_BOTTOM_ABNORMAL_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
 app.add_middleware(
@@ -150,6 +153,40 @@ def enrich_bottom_abnormal_history(items: list[dict[str, Any]]) -> list[dict[str
             extra["abnormal_signal_count"] = len(history)
             previous_mcap = current_mcap
     return items
+
+
+def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
+    extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+    return {
+        "id": item.get("id") or "",
+        "ts": item.get("ts") or 0,
+        "source": "bottom_abnormal",
+        "status": item.get("status") or "",
+        "ca": extra.get("address") or item.get("ca") or "",
+        "title": item.get("title") or "",
+        "text": item.get("text") or "",
+        "extra": {
+            "signal_type": extra.get("signal_type") or "",
+            "abnormal_rule": extra.get("abnormal_rule") or "",
+            "address": extra.get("address") or item.get("ca") or "",
+            "symbol": extra.get("symbol") or item.get("title") or "UNKNOWN",
+            "narrative": extra.get("narrative") or extra.get("narrative_desc") or "",
+            "narrative_desc": extra.get("narrative_desc") or extra.get("narrative") or "",
+            "current_mcap": extra.get("current_mcap") or 0,
+            "first_signal_mcap": extra.get("first_signal_mcap") or 0,
+            "first_signal_ts": extra.get("first_signal_ts") or 0,
+            "ath_mcap": extra.get("ath_mcap") or 0,
+            "max_abnormal_mcap": extra.get("max_abnormal_mcap") or 0,
+            "pool_total_liquidity": extra.get("pool_total_liquidity") or extra.get("pool_liquidity") or 0,
+            "pool_liquidity": extra.get("pool_liquidity") or 0,
+            "price_change_pct": extra.get("price_change_pct") or 0,
+            "age_sec": extra.get("age_sec") or 0,
+            "pool_mcap_ratio": extra.get("pool_mcap_ratio") or 0,
+            "abnormal_mcap_change_history": extra.get("abnormal_mcap_change_history") or [],
+            "abnormal_mcap_change_text": extra.get("abnormal_mcap_change_text") or "",
+            "abnormal_signal_count": extra.get("abnormal_signal_count") or 0,
+        },
+    }
 
 
 def sse_message(event: str, data: dict[str, Any]) -> str:
@@ -337,13 +374,29 @@ def recent(request: Request, limit: int = 100):
 @app.get("/api/plugin/bottom-abnormal")
 def plugin_bottom_abnormal(request: Request, limit: int = 100):
     limit = max(1, min(limit, 500))
-    history_limit = min(500, max(limit, limit * 5))
-    items = [
-        normalize_alert(item.get("id", ""), item)
-        for item in read_recent_plugin_signals(history_limit)
-        if item.get("source") == "bottom_abnormal"
-    ]
-    return {"items": enrich_bottom_abnormal_history(items)[-limit:]}
+    now = time.monotonic()
+    cache_limit = int(_PLUGIN_BOTTOM_ABNORMAL_CACHE.get("limit") or 0)
+    cache_ts = float(_PLUGIN_BOTTOM_ABNORMAL_CACHE.get("ts") or 0)
+    if (
+        limit <= cache_limit
+        and now - cache_ts <= PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC
+        and isinstance(_PLUGIN_BOTTOM_ABNORMAL_CACHE.get("items"), list)
+    ):
+        return {"items": _PLUGIN_BOTTOM_ABNORMAL_CACHE["items"][-limit:], "cached": True}
+
+    history_limit = min(500, max(limit, limit * 3))
+    items = []
+    for item in read_recent_plugin_signals(history_limit):
+        if item.get("source") != "bottom_abnormal":
+            continue
+        normalized = normalize_alert(item.get("id", ""), item)
+        extra = normalized.get("extra") if isinstance(normalized.get("extra"), dict) else {}
+        if str(extra.get("signal_type") or "") == "watch":
+            continue
+        items.append(normalized)
+    items = [compact_bottom_abnormal_item(item) for item in enrich_bottom_abnormal_history(items)][-limit:]
+    _PLUGIN_BOTTOM_ABNORMAL_CACHE.update({"ts": now, "limit": limit, "items": items})
+    return {"items": items, "cached": False}
 
 
 @app.get("/api/plugin/health")
