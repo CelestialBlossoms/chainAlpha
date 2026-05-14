@@ -320,11 +320,6 @@ def health_api(request: Request):
     }
 
 
-@app.get("/bottom-watchlist", response_class=HTMLResponse)
-def bottom_watchlist(request: Request):
-    return templates.TemplateResponse(request, "bottom_watchlist.html", {})
-
-
 @app.get("/onchain-guides", response_class=HTMLResponse)
 def onchain_guides(request: Request):
     return templates.TemplateResponse(request, "onchain_guides.html", {})
