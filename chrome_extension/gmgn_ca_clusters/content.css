@@ -238,9 +238,15 @@
   background: #111821;
 }
 
+.ca-abnormal-row-priority {
+  border-color: rgba(248, 113, 113, 0.92);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.28), 0 0 12px rgba(127, 29, 29, 0.28);
+  background: #17141a;
+}
+
 .ca-abnormal-token {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   gap: 6px;
   align-items: start;
   min-width: 0;
@@ -284,6 +290,27 @@
   color: #d1fae5;
   text-decoration: none;
   font-size: 10px;
+}
+
+.ca-priority-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 96px;
+  padding: 0 6px;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  border-radius: 5px;
+  background: rgba(127, 29, 29, 0.45);
+  color: #fecaca;
+  font-size: 10px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-priority-text {
+  color: #fecaca;
 }
 
 .ca-watch-note {

@@ -42,6 +42,8 @@
     liquidity: "\u6d41\u52a8\u6027",
     priceChange: "\u6da8\u5e45",
     abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
+    watchlistLowMcap: "\u91cd\u70b9\u4f4e\u5e02\u503c",
+    watchlistMcap: "\u89c2\u5bdf\u5e02\u503c",
     tokenAge: "\u5e01\u9f84",
     bundleControl: "\u63a7\u76d8",
     bundleTagged: "\u6807\u8bb0\u6346\u7ed1",
@@ -390,12 +392,18 @@
             const ca = String(item.ca || "");
             const symbol = item.symbol || item.token_type || "?";
             const narrative = item.narrative || item.abnormal_rule || item.source || "";
-            return `<div class="ca-abnormal-row">
+            const isLowWatchlist = Boolean(item.watchlist_low_mcap_highlight);
+            const rowClass = `ca-abnormal-row${isLowWatchlist ? " ca-abnormal-row-priority" : ""}`;
+            const watchlistBadge = isLowWatchlist
+              ? `<span class="ca-priority-badge">${L.watchlistLowMcap} ${fmtUsd(item.watchlist_current_mcap)}</span>`
+              : "";
+            return `<div class="${rowClass}">
               <div class="ca-abnormal-token">
                 <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
                   <b>${escapeHtml(symbol)}</b>
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
+                ${watchlistBadge}
                 <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
                   ${STATE.copied === ca ? L.copied : L.copyCa}
                 </button>
@@ -405,6 +413,7 @@
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
                 <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
+                ${isLowWatchlist ? `<span><em>${L.watchlistMcap}</em><b class="ca-priority-text">${fmtUsd(item.watchlist_current_mcap)}</b></span>` : ""}
                 <span><em>${L.firstAbnormalMcap}</em><b>${fmtUsd(item.first_abnormal_mcap)}</b></span>
                 <span><em>${L.firstAbnormalTime}</em><b>${escapeHtml(fmtTime(item.first_abnormal_ts))}</b></span>
                 <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
@@ -652,6 +661,10 @@
       abnormal_signal_count: toNumber(extra.abnormal_signal_count),
       age_sec: toNumber(extra.age_sec),
       pool_mcap_ratio: toNumber(extra.pool_mcap_ratio),
+      in_bottom_watchlist: Boolean(extra.in_bottom_watchlist),
+      watchlist_current_mcap: toNumber(extra.watchlist_current_mcap),
+      watchlist_low_mcap_threshold: toNumber(extra.watchlist_low_mcap_threshold),
+      watchlist_low_mcap_highlight: Boolean(extra.watchlist_low_mcap_highlight),
     };
   }
 

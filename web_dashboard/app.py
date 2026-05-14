@@ -38,6 +38,7 @@ from ca_analyzer.cluster_api import analyze_ca_clusters
 BASE_DIR = Path(__file__).resolve().parent
 SSE_BLOCK_MS = int(os.getenv("TG_DASHBOARD_SSE_BLOCK_MS", "30000"))
 PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC = float(os.getenv("PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC", "3"))
+PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD = float(os.getenv("PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD", "300000"))
 _PLUGIN_BOTTOM_ABNORMAL_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
@@ -155,6 +156,56 @@ def enrich_bottom_abnormal_history(items: list[dict[str, Any]]) -> list[dict[str
     return items
 
 
+def enrich_bottom_watchlist_highlights(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark plugin abnormal rows that are in bottom_watchlist_tokens below the highlight MCap."""
+    addresses = sorted({_bottom_abnormal_ca(item) for item in items if _bottom_abnormal_ca(item)})
+    if not addresses:
+        return items
+
+    watchlist_by_ca: dict[str, dict[str, Any]] = {}
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ca, COALESCE(current_mcap, last_mcap, 0), source, symbol
+            FROM bottom_watchlist_tokens
+            WHERE ca = ANY(%s)
+            """,
+            (addresses,),
+        )
+        for ca, current_mcap, source, symbol in cur.fetchall():
+            watchlist_by_ca[str(ca)] = {
+                "current_mcap": _safe_float(current_mcap),
+                "source": source or "",
+                "symbol": symbol or "",
+            }
+
+    try:
+        db_op(_op)
+    except Exception as exc:
+        print(f"bottom watchlist highlight enrich failed: {exc}")
+        return items
+
+    for item in items:
+        ca = _bottom_abnormal_ca(item)
+        watch = watchlist_by_ca.get(ca)
+        if not watch:
+            continue
+        extra = item.setdefault("extra", {})
+        if not isinstance(extra, dict):
+            extra = {}
+            item["extra"] = extra
+        watch_mcap = _safe_float(watch.get("current_mcap"))
+        extra["in_bottom_watchlist"] = True
+        extra["watchlist_current_mcap"] = watch_mcap
+        extra["watchlist_source"] = watch.get("source") or ""
+        extra["watchlist_symbol"] = watch.get("symbol") or ""
+        extra["watchlist_low_mcap_threshold"] = PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD
+        extra["watchlist_low_mcap_highlight"] = 0 < watch_mcap < PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD
+    return items
+
+
 def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
     extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
     return {
@@ -185,6 +236,11 @@ def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
             "abnormal_mcap_change_history": extra.get("abnormal_mcap_change_history") or [],
             "abnormal_mcap_change_text": extra.get("abnormal_mcap_change_text") or "",
             "abnormal_signal_count": extra.get("abnormal_signal_count") or 0,
+            "in_bottom_watchlist": bool(extra.get("in_bottom_watchlist")),
+            "watchlist_current_mcap": extra.get("watchlist_current_mcap") or 0,
+            "watchlist_source": extra.get("watchlist_source") or "",
+            "watchlist_low_mcap_threshold": extra.get("watchlist_low_mcap_threshold") or PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD,
+            "watchlist_low_mcap_highlight": bool(extra.get("watchlist_low_mcap_highlight")),
         },
     }
 
@@ -394,7 +450,8 @@ def plugin_bottom_abnormal(request: Request, limit: int = 100):
         if str(extra.get("signal_type") or "") == "watch":
             continue
         items.append(normalized)
-    items = [compact_bottom_abnormal_item(item) for item in enrich_bottom_abnormal_history(items)][-limit:]
+    items = enrich_bottom_watchlist_highlights(enrich_bottom_abnormal_history(items))
+    items = [compact_bottom_abnormal_item(item) for item in items][-limit:]
     _PLUGIN_BOTTOM_ABNORMAL_CACHE.update({"ts": now, "limit": limit, "items": items})
     return {"items": items, "cached": False}
 
