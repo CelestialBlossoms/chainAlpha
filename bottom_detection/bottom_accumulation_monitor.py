@@ -684,6 +684,32 @@ def normalize_pool(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def dedupe_pools(pools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for pool in pools:
+        address = str(pool.get("address") or "").strip().lower()
+        key = address
+        if not key:
+            key = "|".join(
+                [
+                    str(pool.get("exchange") or "").strip().lower(),
+                    str(pool.get("quote_address") or "").strip().lower(),
+                    str(pool.get("quote_symbol") or "").strip().lower(),
+                    str(pool.get("created_ts") or ""),
+                ]
+            )
+        if key and key in seen:
+            existing = deduped[seen[key]]
+            if to_float(pool.get("liquidity")) > to_float(existing.get("liquidity")):
+                deduped[seen[key]] = pool
+            continue
+        if key:
+            seen[key] = len(deduped)
+        deduped.append(pool)
+    return deduped
+
+
 def first_pool_liquidity(row: dict[str, Any]) -> float:
     for key in ("liquidity", "liquidity_usd", "usd_liquidity", "reserve_usd", "pool_liquidity", "total_liquidity"):
         if row.get(key) not in (None, ""):
@@ -732,6 +758,7 @@ def summarize_pools(token: dict[str, Any]) -> dict[str, Any]:
 
     pools = [normalize_pool(row) for row in rows]
     pools = [pool for pool in pools if pool["liquidity"] > 0 or pool["address"] or pool["exchange"]]
+    pools = dedupe_pools(pools)
     pools.sort(key=lambda item: item["liquidity"], reverse=True)
     total_liquidity = sum(pool["liquidity"] for pool in pools)
     main_pool = pools[0] if pools else {}
