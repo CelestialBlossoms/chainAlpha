@@ -43,6 +43,7 @@
     maxMcap: "\u6700\u9ad8\u5e02\u503c",
     liquidity: "\u6d41\u52a8\u6027",
     priceChange: "\u6da8\u5e45",
+    abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
     tokenAge: "\u5e01\u9f84",
     bundleControl: "\u63a7\u76d8",
     bundleTagged: "\u6807\u8bb0\u6346\u7ed1",
@@ -151,6 +152,35 @@
   function normalizePercent(value) {
     const n = toNumber(value);
     return Math.abs(n) > 0 && Math.abs(n) <= 1 ? n * 100 : n;
+  }
+
+  function normalizeChangeHistory(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((point) => {
+        const pct = Number(point?.change_pct);
+        if (!Number.isFinite(pct)) return null;
+        return {
+          change_pct: pct,
+          mcap: toNumber(point?.mcap),
+          from_mcap: toNumber(point?.from_mcap),
+          ts: toNumber(point?.ts),
+          signal_type: String(point?.signal_type || ""),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function renderChangeHistory(history, fallbackText) {
+    const items = Array.isArray(history) ? history.slice(-8) : [];
+    if (!items.length) return escapeHtml(fallbackText || "-");
+    return items
+      .map((point) => {
+        const pct = toNumber(point.change_pct);
+        const cls = pct >= 0 ? "ca-positive" : "ca-negative";
+        return `<span class="${cls}">${escapeHtml(fmtSignedPct(pct))}</span>`;
+      })
+      .join("<i>,</i>");
   }
 
   function shortCa(ca) {
@@ -388,6 +418,7 @@
               <div class="ca-abnormal-metrics">
                 <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
                 <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
+                <span class="ca-history-metric"><em>${L.abnormalHistory}</em><b class="ca-history-changes">${renderChangeHistory(item.abnormal_mcap_change_history, item.abnormal_mcap_change_text)}</b></span>
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
                 <span><em>${L.maxMcap}</em><b>${fmtUsd(item.max_mcap || item.ath_mcap || item.peak_mcap)}</b></span>
                 <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
@@ -686,6 +717,7 @@
     if (!ca) return null;
     const currentMcap = toNumber(extra.current_mcap);
     const athMcap = toNumber(extra.ath_mcap);
+    const changeHistory = normalizeChangeHistory(extra.abnormal_mcap_change_history);
     const maxMcap = Math.max(
       currentMcap,
       athMcap,
@@ -707,6 +739,9 @@
       ath_mcap: athMcap,
       liquidity: toNumber(extra.pool_total_liquidity || extra.pool_liquidity),
       price_change_pct: toNumber(extra.price_change_pct),
+      abnormal_mcap_change_history: changeHistory,
+      abnormal_mcap_change_text: extra.abnormal_mcap_change_text || "",
+      abnormal_signal_count: toNumber(extra.abnormal_signal_count),
       age_sec: toNumber(extra.age_sec),
       pool_mcap_ratio: toNumber(extra.pool_mcap_ratio),
     };

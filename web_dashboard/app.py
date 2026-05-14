@@ -60,6 +60,95 @@ def normalize_alert(stream_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        if value is None or value == "":
+            return 0
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bottom_abnormal_ca(item: dict[str, Any]) -> str:
+    extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+    return str(extra.get("address") or item.get("ca") or "").strip()
+
+
+def _bottom_signal_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    stream_id = str(item.get("id") or "")
+    stream_ms = _safe_int(stream_id.split("-", 1)[0]) if "-" in stream_id else 0
+    return (_safe_int(item.get("ts")), stream_ms, stream_id)
+
+
+def _format_change_history(history: list[dict[str, Any]]) -> str:
+    parts = []
+    for point in history:
+        pct = _safe_float(point.get("change_pct"))
+        precision = 1 if abs(pct) >= 10 else 2
+        parts.append(f"{pct:+.{precision}f}%")
+    return ",".join(parts)
+
+
+def enrich_bottom_abnormal_history(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach per-CA abnormal mcap change history to bottom abnormal plugin rows."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        if item.get("source") != "bottom_abnormal":
+            continue
+        extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+        if str(extra.get("signal_type") or "") == "watch":
+            continue
+        ca = _bottom_abnormal_ca(item)
+        if ca:
+            grouped.setdefault(ca, []).append(item)
+
+    for rows in grouped.values():
+        rows.sort(key=_bottom_signal_sort_key)
+        history: list[dict[str, Any]] = []
+        previous_mcap = 0.0
+        for row_item in rows:
+            extra = row_item.setdefault("extra", {})
+            if not isinstance(extra, dict):
+                extra = {}
+                row_item["extra"] = extra
+            current_mcap = _safe_float(extra.get("current_mcap"))
+            if current_mcap <= 0:
+                continue
+            if previous_mcap > 0:
+                change_pct = (current_mcap - previous_mcap) / previous_mcap * 100
+                basis = "previous_abnormal_mcap"
+            else:
+                change_pct = _safe_float(extra.get("price_change_pct"))
+                basis = "signal_price_change_pct"
+            history.append(
+                {
+                    "ts": _safe_int(row_item.get("ts")),
+                    "mcap": current_mcap,
+                    "from_mcap": previous_mcap,
+                    "change_pct": round(change_pct, 4),
+                    "basis": basis,
+                    "signal_type": extra.get("signal_type") or "",
+                }
+            )
+            visible_history = history[-12:]
+            extra["previous_abnormal_mcap"] = previous_mcap
+            extra["abnormal_mcap_change_pct"] = round(change_pct, 4)
+            extra["abnormal_mcap_change_history"] = visible_history
+            extra["abnormal_mcap_change_text"] = _format_change_history(visible_history)
+            extra["abnormal_signal_count"] = len(history)
+            previous_mcap = current_mcap
+    return items
+
+
 def sse_message(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -261,12 +350,13 @@ def plugin_new_1m(request: Request, limit: int = 100):
 @app.get("/api/plugin/bottom-abnormal")
 def plugin_bottom_abnormal(request: Request, limit: int = 100):
     limit = max(1, min(limit, 500))
+    history_limit = min(500, max(limit, limit * 5))
     items = [
         normalize_alert(item.get("id", ""), item)
-        for item in read_recent_plugin_signals(limit)
+        for item in read_recent_plugin_signals(history_limit)
         if item.get("source") == "bottom_abnormal"
     ]
-    return {"items": items}
+    return {"items": enrich_bottom_abnormal_history(items)[-limit:]}
 
 
 @app.get("/api/plugin/health")

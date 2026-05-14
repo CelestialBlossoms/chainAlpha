@@ -338,6 +338,32 @@
   color: #fca5a5;
 }
 
+.ca-abnormal-metrics .ca-history-metric {
+  grid-column: span 2;
+}
+
+.ca-abnormal-metrics b.ca-history-changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 3px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.ca-history-changes i {
+  color: #64748b;
+  font-style: normal;
+}
+
+.ca-history-changes .ca-positive {
+  color: #86efac;
+}
+
+.ca-history-changes .ca-negative {
+  color: #fca5a5;
+}
+
 .ca-summary-grid {
   display: grid;
   gap: 7px;
