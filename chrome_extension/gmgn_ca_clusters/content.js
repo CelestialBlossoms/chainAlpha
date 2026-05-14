@@ -40,6 +40,8 @@
     new1mHint: "\u4ec5\u8c37\u6b4c\u63d2\u4ef6\u63a5\u6536\uff0c\u4e0d\u63a8\u9001 TG \u548c\u524d\u7aef",
     new1mEmpty: "\u6682\u65e0 1m \u65b0\u5e01\u6570\u636e",
     currentMcap: "\u5f53\u524d\u5e02\u503c",
+    firstAbnormalMcap: "\u9996\u6b21\u5f02\u52a8\u5e02\u503c",
+    firstAbnormalTime: "\u9996\u6b21\u5f02\u52a8\u65f6\u95f4",
     maxMcap: "\u6700\u9ad8\u5e02\u503c",
     liquidity: "\u6d41\u52a8\u6027",
     priceChange: "\u6da8\u5e45",
@@ -417,6 +419,8 @@
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
                 <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
+                <span><em>${L.firstAbnormalMcap}</em><b>${fmtUsd(item.first_abnormal_mcap)}</b></span>
+                <span><em>${L.firstAbnormalTime}</em><b>${escapeHtml(fmtTime(item.first_abnormal_ts))}</b></span>
                 <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
                 <span class="ca-history-metric"><em>${L.abnormalHistory}</em><b class="ca-history-changes">${renderChangeHistory(item.abnormal_mcap_change_history, item.abnormal_mcap_change_text)}</b></span>
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
@@ -718,6 +722,9 @@
     const currentMcap = toNumber(extra.current_mcap);
     const athMcap = toNumber(extra.ath_mcap);
     const changeHistory = normalizeChangeHistory(extra.abnormal_mcap_change_history);
+    const firstHistoryPoint = changeHistory[0] || {};
+    const firstAbnormalMcap = toNumber(extra.first_signal_mcap) || toNumber(firstHistoryPoint.mcap);
+    const firstAbnormalTs = toNumber(extra.first_signal_ts) || toNumber(firstHistoryPoint.ts);
     const maxMcap = Math.max(
       currentMcap,
       athMcap,
@@ -735,6 +742,8 @@
       abnormal_rule: extra.abnormal_rule || "",
       narrative: extra.narrative || extra.narrative_desc || item.text || "",
       current_mcap: currentMcap,
+      first_abnormal_mcap: firstAbnormalMcap,
+      first_abnormal_ts: firstAbnormalTs,
       max_mcap: maxMcap,
       ath_mcap: athMcap,
       liquidity: toNumber(extra.pool_total_liquidity || extra.pool_liquidity),
