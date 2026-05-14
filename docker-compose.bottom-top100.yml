@@ -14,7 +14,7 @@ services:
       TZ: Asia/Shanghai
       BOTTOM_SCAN_INTERVAL: "300"
       BOTTOM_TREND_INTERVALS: "5m"
-      BOTTOM_TREND_ORDER_BYS: "default,change1h"
+      BOTTOM_TREND_ORDER_BYS: "default"
       BOTTOM_TREND_LIMIT: "100"
       BOTTOM_MAX_TOKENS: "100"
       BOTTOM_TOP_HOLDER_LIMIT: "100"
