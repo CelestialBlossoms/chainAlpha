@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>链上交易指南</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="page">
+    <div class="wrap">
+      <header class="topbar">
+        <div>
+          <h1>链上交易指南</h1>
+          <p class="desc">读取 onchain_trading_guides，按分类、链和关键词检索交易笔记。</p>
+        </div>
+        <div class="nav-actions">
+          <a class="mini-link" href="/">实时告警</a>
+          <a class="mini-link" href="/bottom-watchlist">重点 CA 异动</a>
+          <button id="refresh-btn" class="mini-btn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="controls guide-controls">
+        <input id="guide-query" class="search" type="search" placeholder="搜索标题 / 笔记 / 标签 / 分类 / 链">
+        <select id="guide-category" class="sort-select">
+          <option value="">全部分类</option>
+        </select>
+        <select id="guide-chain" class="sort-select">
+          <option value="">全部链</option>
+        </select>
+        <label class="guide-check">
+          <input id="include-archived" type="checkbox">
+          <span>显示归档</span>
+        </label>
+        <div id="guide-summary" class="watch-summary">加载中</div>
+      </section>
+
+      <section id="guide-grid" class="guide-grid"></section>
+      <div id="guide-empty" class="empty" hidden>没有链上交易指南笔记</div>
+    </div>
+  </div>
+
+  <script>
+    const gridEl = document.querySelector("#guide-grid");
+    const emptyEl = document.querySelector("#guide-empty");
+    const queryEl = document.querySelector("#guide-query");
+    const categoryEl = document.querySelector("#guide-category");
+    const chainEl = document.querySelector("#guide-chain");
+    const archivedEl = document.querySelector("#include-archived");
+    const summaryEl = document.querySelector("#guide-summary");
+    const refreshBtn = document.querySelector("#refresh-btn");
+    const state = { items: [], categories: [], chains: [] };
+
+    function htmlEscape(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formatTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "-";
+      return date.toLocaleString("zh-CN", { hour12: false });
+    }
+
+    function normalizeArray(value) {
+      return Array.isArray(value) ? value.filter(Boolean) : [];
+    }
+
+    function uniqueSorted(values) {
+      return Array.from(new Set(values.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+    }
+
+    function syncFilters() {
+      const currentCategory = categoryEl.value;
+      const currentChain = chainEl.value;
+      state.categories = uniqueSorted(state.items.map((item) => item.category));
+      state.chains = uniqueSorted(state.items.map((item) => item.chain));
+      categoryEl.innerHTML = `<option value="">全部分类</option>${state.categories
+        .map((item) => `<option value="${htmlEscape(item)}">${htmlEscape(item)}</option>`)
+        .join("")}`;
+      chainEl.innerHTML = `<option value="">全部链</option>${state.chains
+        .map((item) => `<option value="${htmlEscape(item)}">${htmlEscape(item)}</option>`)
+        .join("")}`;
+      categoryEl.value = state.categories.includes(currentCategory) ? currentCategory : "";
+      chainEl.value = state.chains.includes(currentChain) ? currentChain : "";
+    }
+
+    function visibleItems() {
+      const q = queryEl.value.trim().toLowerCase();
+      const category = categoryEl.value;
+      const chain = chainEl.value;
+      return state.items.filter((item) => {
+        if (category && item.category !== category) return false;
+        if (chain && item.chain !== chain) return false;
+        if (!q) return true;
+        const haystack = [
+          item.title,
+          item.note,
+          item.category,
+          item.chain,
+          item.token_address,
+          item.source_url,
+          ...normalizeArray(item.tags),
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+
+    function render() {
+      const rows = visibleItems();
+      emptyEl.hidden = rows.length > 0;
+      summaryEl.textContent = `${rows.length} 条 / 共 ${state.items.length} 条`;
+      gridEl.innerHTML = rows.map((item) => {
+        const tags = normalizeArray(item.tags);
+        return `<article class="guide-card card${item.is_archived ? " is-archived" : ""}">
+          <div class="guide-head">
+            <div>
+              <h2>${htmlEscape(item.title || "未命名笔记")}</h2>
+              <div class="guide-meta">
+                <span>${htmlEscape(item.category || "未分类")}</span>
+                <span>${htmlEscape(item.chain || "未标链")}</span>
+                <span>${htmlEscape(formatTime(item.created_at))}</span>
+              </div>
+            </div>
+            <span class="badge${item.is_archived ? "" : " badge-green"}">${item.is_archived ? "归档" : "启用"}</span>
+          </div>
+          <p class="guide-note">${htmlEscape(item.note || "")}</p>
+          ${tags.length ? `<div class="guide-tags">${tags.map((tag) => `<span>${htmlEscape(tag)}</span>`).join("")}</div>` : ""}
+          ${(item.token_address || item.source_url) ? `<div class="guide-links">
+            ${item.token_address ? `<code class="ca-short">${htmlEscape(item.token_address)}</code>` : ""}
+            ${item.source_url ? `<a class="mini-link" href="${htmlEscape(item.source_url)}" target="_blank" rel="noreferrer">来源</a>` : ""}
+          </div>` : ""}
+        </article>`;
+      }).join("");
+    }
+
+    async function loadGuides() {
+      summaryEl.textContent = "加载中";
+      const params = new URLSearchParams({
+        limit: "500",
+        include_archived: archivedEl.checked ? "true" : "false",
+      });
+      const resp = await fetch(`/api/onchain-guides?${params.toString()}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      state.items = data.items || [];
+      syncFilters();
+      render();
+    }
+
+    queryEl.addEventListener("input", render);
+    categoryEl.addEventListener("change", render);
+    chainEl.addEventListener("change", render);
+    archivedEl.addEventListener("change", () => loadGuides().catch((err) => {
+      summaryEl.textContent = `加载失败: ${err.message}`;
+    }));
+    refreshBtn.addEventListener("click", () => loadGuides().catch((err) => {
+      summaryEl.textContent = `加载失败: ${err.message}`;
+    }));
+
+    loadGuides().catch((err) => {
+      summaryEl.textContent = `加载失败: ${err.message}`;
+    });
+  </script>
+</body>
+</html>

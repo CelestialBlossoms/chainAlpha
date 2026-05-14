@@ -68,7 +68,41 @@ def init_tables(conn):
         CREATE INDEX IF NOT EXISTS idx_alpha_candidates_chain_interval
             ON alpha_token_candidates(chain, trend_interval);
     """)
-    print("Initialized alpha_signals and alpha_token_candidates")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS onchain_trading_guides (
+            id BIGSERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            note TEXT NOT NULL,
+            category TEXT,
+            chain TEXT,
+            token_address TEXT,
+            source_url TEXT,
+            tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+            metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+            is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_onchain_trading_guides_created_at
+            ON onchain_trading_guides(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_onchain_trading_guides_category
+            ON onchain_trading_guides(category);
+        CREATE INDEX IF NOT EXISTS idx_onchain_trading_guides_chain
+            ON onchain_trading_guides(chain);
+        CREATE INDEX IF NOT EXISTS idx_onchain_trading_guides_tags
+            ON onchain_trading_guides USING GIN(tags);
+        COMMENT ON TABLE onchain_trading_guides IS '链上交易指南表：记录链上交易相关笔记、经验和规则';
+        COMMENT ON COLUMN onchain_trading_guides.title IS '笔记标题';
+        COMMENT ON COLUMN onchain_trading_guides.note IS '笔记正文';
+        COMMENT ON COLUMN onchain_trading_guides.category IS '笔记分类，例如 risk、entry、exit、wallet、tool';
+        COMMENT ON COLUMN onchain_trading_guides.chain IS '相关链，例如 sol、eth、bsc、base';
+        COMMENT ON COLUMN onchain_trading_guides.token_address IS '相关代币或合约地址，可为空';
+        COMMENT ON COLUMN onchain_trading_guides.source_url IS '来源链接，可为空';
+        COMMENT ON COLUMN onchain_trading_guides.tags IS '标签列表';
+        COMMENT ON COLUMN onchain_trading_guides.metadata IS '扩展结构化信息';
+        COMMENT ON COLUMN onchain_trading_guides.is_archived IS '是否归档';
+    """)
+    print("Initialized alpha_signals, alpha_token_candidates, and onchain_trading_guides")
 
 
 if __name__ == "__main__":

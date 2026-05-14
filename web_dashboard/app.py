@@ -141,6 +141,74 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
     return db_op(_op)
 
 
+def fetch_onchain_trading_guides(
+    limit: int = 200,
+    query: str = "",
+    category: str = "",
+    chain: str = "",
+    include_archived: bool = False,
+) -> list[dict[str, Any]]:
+    def _op(conn):
+        cur = conn.cursor()
+        where = []
+        params: list[Any] = []
+        if not include_archived:
+            where.append("is_archived = false")
+        if query:
+            params.append(f"%{query}%")
+            where.append(
+                """
+                (
+                    title ILIKE %s OR note ILIKE %s OR category ILIKE %s OR chain ILIKE %s
+                    OR token_address ILIKE %s OR source_url ILIKE %s
+                    OR EXISTS (
+                        SELECT 1 FROM unnest(tags) AS tag
+                        WHERE tag ILIKE %s
+                    )
+                )
+                """
+            )
+            params.extend([params[-1]] * 6)
+        if category:
+            where.append("category = %s")
+            params.append(category)
+        if chain:
+            where.append("chain = %s")
+            params.append(chain)
+
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT
+                id,
+                title,
+                note,
+                category,
+                chain,
+                token_address,
+                source_url,
+                tags,
+                metadata,
+                is_archived,
+                created_at,
+                updated_at
+            FROM onchain_trading_guides
+            {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        columns = [desc[0] for desc in cur.description]
+        return [
+            {key: json_safe(value) for key, value in zip(columns, row)}
+            for row in cur.fetchall()
+        ]
+
+    return db_op(_op)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(
@@ -166,6 +234,11 @@ def health_api(request: Request):
 @app.get("/bottom-watchlist", response_class=HTMLResponse)
 def bottom_watchlist(request: Request):
     return templates.TemplateResponse(request, "bottom_watchlist.html", {})
+
+
+@app.get("/onchain-guides", response_class=HTMLResponse)
+def onchain_guides(request: Request):
+    return templates.TemplateResponse(request, "onchain_guides.html", {})
 
 
 @app.get("/api/recent")
@@ -218,6 +291,27 @@ def plugin_health(request: Request, limit: int = 20):
 def bottom_watchlist_api(request: Request, limit: int = 500):
     limit = max(1, min(limit, 2000))
     return {"items": fetch_bottom_watchlist(limit)}
+
+
+@app.get("/api/onchain-guides")
+def onchain_guides_api(
+    request: Request,
+    limit: int = 200,
+    q: str = "",
+    category: str = "",
+    chain: str = "",
+    include_archived: bool = False,
+):
+    limit = max(1, min(limit, 500))
+    return {
+        "items": fetch_onchain_trading_guides(
+            limit=limit,
+            query=q.strip(),
+            category=category.strip(),
+            chain=chain.strip(),
+            include_archived=include_archived,
+        )
+    }
 
 
 @app.get("/api/ca-clusters")
