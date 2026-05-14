@@ -8,7 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -372,9 +375,98 @@ def plugin_health(request: Request, limit: int = 20):
     }
 
 
+# ---------------------------------------------------------------------------
+# gmgn-cli live refresh helpers
+# ---------------------------------------------------------------------------
+
+def _gmgn_exe() -> list:
+    exe = shutil.which("gmgn-cli") or shutil.which("gmgn-cli.cmd") or "gmgn-cli"
+    return [exe]
+
+
+def _run_gmgn_sync(args_list: list, timeout: int = 45) -> dict:
+    cmd = _gmgn_exe() + args_list + ["--raw"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {}
+    if r.returncode != 0:
+        return {}
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _fetch_live_mcap(address: str) -> tuple[str, float, float, str]:
+    """Query gmgn-cli for a single token. Returns (address, mcap, liquidity, symbol)."""
+    info = _run_gmgn_sync(["token", "info", "--chain", "sol", "--address", address])
+    if not info:
+        return (address, 0.0, 0.0, "")
+    try:
+        price = float(info.get("price") or 0)
+        supply = float(info.get("circulating_supply") or 0)
+        liq = float(info.get("liquidity") or 0)
+        symbol = str(info.get("symbol") or "")
+        mcap = price * supply
+        return (address, mcap, liq, symbol)
+    except (ValueError, TypeError):
+        return (address, 0.0, 0.0, "")
+
+
+def _refresh_watchlist_mcaps(addresses: list[str], max_workers: int = 5) -> dict[str, tuple[float, float, str]]:
+    """Fetch live market cap for multiple addresses via gmgn-cli in parallel.
+    Returns dict[address, (mcap, liquidity, symbol)].
+    Updates DB for each token as results come in.
+    """
+    results: dict[str, tuple[float, float, str]] = {}
+
+    def _update_db(address: str, mcap: float, liq: float, symbol: str):
+        if mcap <= 0:
+            return
+        def _op(conn):
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE bottom_watchlist_tokens
+                SET current_mcap = %s,
+                    last_mcap = %s,
+                    peak_mcap = GREATEST(COALESCE(peak_mcap, 0), %s),
+                    highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
+                    last_pool_liquidity = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_pool_liquidity, 0) END,
+                    symbol = CASE WHEN %s != '' THEN %s ELSE COALESCE(symbol, '') END,
+                    last_seen_at = now()
+                WHERE ca = %s
+                """,
+                (mcap, mcap, mcap, mcap, liq, liq, symbol, symbol, address),
+            )
+        db_op(_op)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_fetch_live_mcap, addr): addr for addr in addresses}
+        for future in as_completed(future_map):
+            try:
+                addr, mcap, liq, symbol = future.result()
+                results[addr] = (mcap, liq, symbol)
+                _update_db(addr, mcap, liq, symbol)
+            except Exception:
+                pass
+
+    return results
+
+
 @app.get("/api/bottom-watchlist")
-def bottom_watchlist_api(request: Request, limit: int = 500):
+def bottom_watchlist_api(request: Request, limit: int = 500, refresh: bool = False):
     limit = max(1, min(limit, 2000))
+    if refresh:
+        # Get all CA addresses from watchlist, then refresh via gmgn-cli
+        items = fetch_bottom_watchlist(limit)
+        addresses = [item["ca"] for item in items if item.get("ca")]
+        if addresses:
+            _refresh_watchlist_mcaps(addresses)
+        # Re-fetch from DB after update
+        return {"items": fetch_bottom_watchlist(limit), "refreshed": True}
     return {"items": fetch_bottom_watchlist(limit)}
 
 

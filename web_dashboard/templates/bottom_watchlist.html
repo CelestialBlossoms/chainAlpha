@@ -168,9 +168,12 @@
       }).join("");
     }
 
-    async function loadWatchlist() {
-      summaryEl.textContent = "加载中";
-      const resp = await fetch("/api/bottom-watchlist?limit=1000");
+    async function loadWatchlist(refresh = false) {
+      summaryEl.textContent = refresh ? "刷新中(从链上获取最新市值)..." : "加载中";
+      const url = refresh
+        ? "/api/bottom-watchlist?limit=1000&refresh=true"
+        : "/api/bottom-watchlist?limit=1000";
+      const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       state.items = data.items || [];
@@ -184,7 +187,7 @@
     });
     queryEl.addEventListener("input", render);
     sortEl.addEventListener("change", render);
-    refreshBtn.addEventListener("click", () => loadWatchlist().catch((err) => {
+    refreshBtn.addEventListener("click", () => loadWatchlist(true).catch((err) => {
       summaryEl.textContent = `加载失败: ${err.message}`;
     }));
 
