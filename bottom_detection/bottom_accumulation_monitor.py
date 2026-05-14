@@ -3046,6 +3046,13 @@ def cleanup_stale_watchlist_tokens() -> None:
         if not ca: continue
         last_mcap = to_float(row.get("last_mcap"))
         peak_mcap = to_float(row.get("peak_mcap"))
+        pool_liquidity = to_float(row.get("last_pool_liquidity"))
+        # Skip if last_mcap is missing (never scanned) — not a death signal
+        if last_mcap <= 0:
+            continue
+        # Skip if pool still has meaningful liquidity — token is alive
+        if pool_liquidity >= 10_000:
+            continue
         # Delete truly dead tokens (absolute fall below $10K, or >99.9% drop = fake MCap)
         is_dead_absolute = peak_mcap >= 500_000 and last_mcap < 10_000
         is_dead_fake_mcap = peak_mcap >= 500_000 and last_mcap > 0 and (last_mcap / peak_mcap) < 0.001
