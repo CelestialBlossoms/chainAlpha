@@ -241,7 +241,10 @@ def is_pool_holder(holder: dict[str, Any]) -> bool:
 
 
 def calc_mcap(row: dict[str, Any]) -> float:
-    price = to_float(row.get("price"))
+    price_raw = row.get("price")
+    if isinstance(price_raw, dict):
+        price_raw = price_raw.get("price") or price_raw.get("price_1m") or 0
+    price = to_float(price_raw)
     circulating_supply = to_float(row.get("circulating_supply"))
     if price > 0 and circulating_supply > 0:
         return price * circulating_supply
@@ -1072,6 +1075,10 @@ def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: 
         for key, value in source.items():
             if key not in merged or merged.get(key) in (None, "", 0):
                 merged[key] = value
+    # Flatten nested price object from gmgn token-info (e.g. {"price": "0.0068", "price_1m": "..."})
+    price_val = merged.get("price")
+    if isinstance(price_val, dict):
+        merged["price"] = price_val.get("price") or price_val.get("price_1m") or 0
     merged["_gmgn_info"] = info
     merged["_gmgn_security"] = security
     return merged
