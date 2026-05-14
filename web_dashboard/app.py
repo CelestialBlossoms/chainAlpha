@@ -168,7 +168,7 @@ def enrich_bottom_watchlist_highlights(items: list[dict[str, Any]]) -> list[dict
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT ca, COALESCE(current_mcap, last_mcap, 0), source, symbol
+            SELECT ca, COALESCE(NULLIF(current_mcap, 0), NULLIF(last_mcap, 0), 0), source, symbol
             FROM bottom_watchlist_tokens
             WHERE ca = ANY(%s)
             """,
