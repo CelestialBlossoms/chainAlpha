@@ -304,10 +304,7 @@
       ${row("Top30", `${fmtUsd(chip.top30_profit)} (${L.realized} ${fmtUsd(chip.top30_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top30_unrealized_profit)})`)}
       ${row("Top50", `${fmtUsd(chip.top50_profit)} (${L.realized} ${fmtUsd(chip.top50_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top50_unrealized_profit)})`)}
       ${row(L.unsold, `${behavior.zero_sell || 0} ${L.wallet} / ${fmtPct(behavior.zero_sell_pct)}`)}
-      <div class="ca-cluster-section">
-        <h3>${L.bottomChipTitle}</h3>
-        ${renderBottomChip(bottomChip)}
-      </div>
+      ${renderDetails(L.bottomChipTitle, renderBottomChip(bottomChip))}
       <div class="ca-cluster-section">
         <h3>${L.summaryTitle}</h3>
         ${renderSummaryCards(summaries)}
