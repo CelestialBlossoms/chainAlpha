@@ -239,7 +239,7 @@
   function renderSummaryCards(items) {
     if (!items || !items.length) return `<div class="ca-cluster-empty">${L.noSummary}</div>`;
     return `<div class="ca-summary-grid">${items
-      .slice(0, 8)
+      .slice(0, 10)
       .map(
         (item) => `<details class="ca-summary-card">
           <summary>
@@ -249,8 +249,13 @@
           <div class="ca-summary-metrics">
             ${row(L.walletCount, `${item.count || 0}`)}
             ${row(L.holdPct, fmtPct(item.hold_pct))}
-            ${row(L.buyVolume, fmtUsd(item.buy_volume))}
+            ${item.sell_volume === undefined ? row(L.buyVolume, fmtUsd(item.buy_volume)) : ""}
             ${row(L.profitable, fmtPct(item.profitable_pct))}
+            ${item.bottom_seller_count !== undefined ? row(L.highSell, `${item.bottom_seller_count || 0}`) : ""}
+            ${item.sell_progress_pct !== undefined ? row(L.sellProgress, fmtPct(item.sell_progress_pct)) : ""}
+            ${item.remaining_usd !== undefined ? row(L.remainingHolding, fmtUsd(item.remaining_usd)) : ""}
+            ${item.profit !== undefined ? row(L.profit, `${fmtUsd(item.profit)} / ${fmtSignedPct(item.avg_profit_pct)}`) : ""}
+            ${item.sell_volume !== undefined ? row("\u4e70/\u5356/\u51c0", `${fmtUsd(item.buy_volume)} / ${fmtUsd(item.sell_volume)} / ${fmtUsd(item.net_volume)}`) : ""}
             ${row(L.realized, fmtUsd(item.realized_profit))}
             ${row(L.unrealized, fmtUsd(item.unrealized_profit))}
           </div>
@@ -260,23 +265,28 @@
       .join("")}</div>`;
   }
 
-  function renderBottomChip(data) {
-    if (!data || !data.bottom_wallet_count) {
-      return `<div class="ca-cluster-empty">${L.noBottomChips}</div>`;
-    }
-    return `<div>
-      <div class="ca-summary-metrics">
-        ${row(L.walletCount, `${data.bottom_wallet_count || 0} (${L.highSell} ${data.bottom_seller_count || 0})`)}
-        ${row(L.holdPct, fmtPct(data.hold_pct))}
-        ${row(L.sellProgress, fmtPct(data.sell_progress_pct))}
-        ${row(L.remainingHolding, fmtUsd(data.remaining_usd))}
-        ${row(L.profit, `${fmtUsd(data.profit)} / ${fmtSignedPct(data.profit_pct)}`)}
-        ${row(L.realized, fmtUsd(data.realized_profit))}
-        ${row(L.unrealized, fmtUsd(data.unrealized_profit))}
-        ${row(L.buyVolume, `${fmtUsd(data.buy_volume)} / \u5356${fmtUsd(data.sell_volume)} / \u51c0${fmtUsd(data.net_volume)}`)}
-      </div>
-      ${renderWalletCards(data.wallets || [])}
-    </div>`;
+  function bottomChipSummaryItem(data, totalWallets) {
+    if (!data || !data.bottom_wallet_count) return null;
+    const wallets = data.wallets || [];
+    const profitValues = wallets.map((wallet) => toNumber(wallet.profit_pct)).filter((value) => Number.isFinite(value));
+    return {
+      name: L.bottomChipTitle,
+      count: data.bottom_wallet_count || 0,
+      wallet_pct: (toNumber(data.bottom_wallet_count) / Math.max(toNumber(totalWallets), 1)) * 100,
+      hold_pct: data.hold_pct,
+      buy_volume: data.buy_volume,
+      profitable_pct: profitValues.length ? (profitValues.filter((value) => value > 0).length / profitValues.length) * 100 : 0,
+      avg_profit_pct: data.profit_pct,
+      profit: data.profit,
+      realized_profit: data.realized_profit,
+      unrealized_profit: data.unrealized_profit,
+      bottom_seller_count: data.bottom_seller_count,
+      sell_progress_pct: data.sell_progress_pct,
+      remaining_usd: data.remaining_usd,
+      sell_volume: data.sell_volume,
+      net_volume: data.net_volume,
+      wallets,
+    };
   }
 
   function renderDetails(title, content, open = false) {
@@ -293,9 +303,11 @@
     const bundleTime = result.bundle_time_clusters || {};
     const purchaseTime = result.purchase_time_clusters || {};
     const risks = result.risk_factors || [];
-    const summaries = result.bundle_category_summary || [];
+    const baseSummaries = result.bundle_category_summary || [];
     const behavior = ((result.holder_trader_structure || {}).behavior || {});
     const bottomChip = result.bottom_chip_sell || {};
+    const bottomSummary = bottomChipSummaryItem(bottomChip, chip.wallet_rows);
+    const summaries = bottomSummary ? [bottomSummary, ...baseSummaries] : baseSummaries;
 
     return `
       ${row(L.token, `${escapeHtml(token.symbol || token.name || "?")} ${escapeHtml(shortCa(result.address))}`)}
@@ -304,7 +316,6 @@
       ${row("Top30", `${fmtUsd(chip.top30_profit)} (${L.realized} ${fmtUsd(chip.top30_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top30_unrealized_profit)})`)}
       ${row("Top50", `${fmtUsd(chip.top50_profit)} (${L.realized} ${fmtUsd(chip.top50_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top50_unrealized_profit)})`)}
       ${row(L.unsold, `${behavior.zero_sell || 0} ${L.wallet} / ${fmtPct(behavior.zero_sell_pct)}`)}
-      ${renderDetails(L.bottomChipTitle, renderBottomChip(bottomChip))}
       <div class="ca-cluster-section">
         <h3>${L.summaryTitle}</h3>
         ${renderSummaryCards(summaries)}
