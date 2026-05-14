@@ -53,6 +53,10 @@ TREND_INTERVALS = tuple(
     if item.strip()
 )
 TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "5m"
+TREND_INTERVAL_SCHEDULES_RAW = os.getenv("BOTTOM_TREND_INTERVAL_SCHEDULES", "1m:60,5m:120,1h:300")
+TREND_PRIMARY_INTERVAL = os.getenv("BOTTOM_TREND_PRIMARY_INTERVAL", "1m")
+TREND_CROSS_WINDOW_DEDUP_SEC = int(os.getenv("BOTTOM_TREND_CROSS_WINDOW_DEDUP_SEC", "180"))
+TREND_SCHEDULER_IDLE_SLEEP_SEC = float(os.getenv("BOTTOM_TREND_SCHEDULER_IDLE_SLEEP_SEC", "2"))
 TREND_ORDER_BYS = tuple(
     item.strip()
     for item in os.getenv("BOTTOM_TREND_ORDER_BYS", "default,change5m").split(",")
@@ -463,11 +467,16 @@ def fetch_trending_tokens_for_interval(interval: str, order_by: str = "default")
     return tokens
 
 
-def fetch_trending_tokens() -> list[dict[str, Any]]:
+def fetch_trending_tokens(
+    intervals: tuple[str, ...] | list[str] | None = None,
+    order_bys: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen = set()
-    for interval in TREND_INTERVALS:
-        for order_by in TREND_ORDER_BYS:
+    active_intervals = tuple(intervals or TREND_INTERVALS)
+    active_order_bys = tuple(order_bys or TREND_ORDER_BYS)
+    for interval in active_intervals:
+        for order_by in active_order_bys:
             rows = fetch_trending_tokens_for_interval(interval, order_by)
             print(f"trending {interval}/{order_by}: {len(rows)}")
             for row in rows:
@@ -2765,10 +2774,29 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     return True
 
 
-def scan_once(args: argparse.Namespace) -> None:
+def prune_recent_seen(recent_seen: dict[str, float], ttl_sec: int) -> None:
+    if ttl_sec <= 0:
+        recent_seen.clear()
+        return
+    cutoff = time.monotonic() - ttl_sec
+    stale = [address for address, seen_at in recent_seen.items() if seen_at < cutoff]
+    for address in stale:
+        recent_seen.pop(address, None)
+
+
+def scan_once(
+    args: argparse.Namespace,
+    intervals: tuple[str, ...] | list[str] | None = None,
+    include_watchlist: bool = True,
+    mode_name: str = "trending+watchlist",
+    recent_seen: dict[str, float] | None = None,
+    skip_recent_seen: bool = False,
+    recent_seen_ttl_sec: int = TREND_CROSS_WINDOW_DEDUP_SEC,
+) -> None:
     scan_id = str(uuid.uuid4())
-    trending_tokens = fetch_trending_tokens()
-    watchlist_tokens = fetch_watchlist_tokens()
+    active_intervals = tuple(intervals or TREND_INTERVALS)
+    trending_tokens = fetch_trending_tokens(active_intervals)
+    watchlist_tokens = fetch_watchlist_tokens() if include_watchlist else []
     prefiltered_trending = []
     prefiltered_skipped = 0
     for token in trending_tokens:
@@ -2778,12 +2806,30 @@ def scan_once(args: argparse.Namespace) -> None:
             continue
         prefiltered_trending.append(token)
     tokens = merge_token_sources(prefiltered_trending, watchlist_tokens)
+    dedupe_skipped = 0
+    if recent_seen is not None:
+        prune_recent_seen(recent_seen, recent_seen_ttl_sec)
+        if skip_recent_seen:
+            filtered_tokens = []
+            for token in tokens:
+                address = token_address(token)
+                if address and address in recent_seen:
+                    dedupe_skipped += 1
+                    continue
+                filtered_tokens.append(token)
+            tokens = filtered_tokens
+        seen_at = time.monotonic()
+        for token in tokens[: args.max_tokens]:
+            address = token_address(token)
+            if address:
+                recent_seen[address] = seen_at
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
-        f"mode=trending+watchlist "
-        f"intervals={','.join(TREND_INTERVALS)} "
+        f"mode={mode_name} "
+        f"intervals={','.join(active_intervals)} "
         f"trending={len(trending_tokens)} prefiltered={len(prefiltered_trending)} "
-        f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} merged={len(tokens)}"
+        f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} "
+        f"dedupe_skip={dedupe_skipped} merged={len(tokens)}"
     )
     processed = 0
     skipped = 0
@@ -3036,6 +3082,75 @@ def fast_scan_once(args: argparse.Namespace) -> None:
         print(f"  scan_id={scan_id} fast_scan processed={processed}/{len(candidates)} skipped={skipped}")
 
 
+def parse_trend_interval_schedules() -> list[tuple[str, int]]:
+    schedules: list[tuple[str, int]] = []
+    seen = set()
+    for raw in TREND_INTERVAL_SCHEDULES_RAW.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if ":" in item:
+            interval, seconds = item.split(":", 1)
+        else:
+            interval, seconds = item, str(DEFAULT_INTERVAL_SEC)
+        interval = interval.strip()
+        if not interval or interval in seen:
+            continue
+        try:
+            every_sec = max(1, int(float(seconds.strip())))
+        except (TypeError, ValueError):
+            every_sec = DEFAULT_INTERVAL_SEC
+        schedules.append((interval, every_sec))
+        seen.add(interval)
+
+    for interval in TREND_INTERVALS:
+        if interval and interval not in seen:
+            schedules.append((interval, DEFAULT_INTERVAL_SEC))
+            seen.add(interval)
+    return schedules or [(TREND_INTERVAL or "5m", DEFAULT_INTERVAL_SEC)]
+
+
+def run_scheduled_scans(args: argparse.Namespace) -> None:
+    schedules = parse_trend_interval_schedules()
+    primary_interval = TREND_PRIMARY_INTERVAL or schedules[0][0]
+    next_due = {interval: 0.0 for interval, _every_sec in schedules}
+    recent_seen: dict[str, float] = {}
+    print(
+        "trend scheduler enabled: "
+        + ", ".join(f"{interval}:{every_sec}s" for interval, every_sec in schedules)
+        + f" primary={primary_interval} dedup={TREND_CROSS_WINDOW_DEDUP_SEC}s"
+    )
+
+    while True:
+        now = time.monotonic()
+        due = [(interval, every_sec) for interval, every_sec in schedules if now >= next_due.get(interval, 0.0)]
+        if not due:
+            sleep_left = min(
+                TREND_SCHEDULER_IDLE_SLEEP_SEC,
+                max(0.5, min(next_due.values()) - now),
+            )
+            time.sleep(sleep_left)
+            continue
+
+        for interval, every_sec in due:
+            started_at = time.monotonic()
+            include_watchlist = interval == primary_interval
+            skip_recent_seen = interval != primary_interval
+            mode_name = f"scheduled_{interval}{'+watchlist' if include_watchlist else ''}"
+            scan_once(
+                args,
+                intervals=(interval,),
+                include_watchlist=include_watchlist,
+                mode_name=mode_name,
+                recent_seen=recent_seen,
+                skip_recent_seen=skip_recent_seen,
+                recent_seen_ttl_sec=TREND_CROSS_WINDOW_DEDUP_SEC,
+            )
+            next_due[interval] = started_at + every_sec
+            if args.once:
+                return
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Monitor multi-interval trending tokens with one JSON snapshot table.")
     parser.add_argument("--once", action="store_true", help="Run once and exit.")
@@ -3131,28 +3246,10 @@ def main() -> None:
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()
-    while True:
+    if args.once or not args.watch:
         scan_once(args)
-        if args.once or not args.watch:
-            break
-        if not FAST_SCAN_ENABLED or FAST_SCAN_INTERVAL_SEC <= 0:
-            print(f"sleep {args.interval:.0f}s")
-            time.sleep(args.interval)
-            continue
-
-        next_full_scan_at = time.time() + args.interval
-        while True:
-            sleep_left = min(FAST_SCAN_INTERVAL_SEC, max(0, next_full_scan_at - time.time()))
-            if sleep_left <= 0:
-                break
-            print(f"sleep {sleep_left:.0f}s")
-            time.sleep(sleep_left)
-            if time.time() >= next_full_scan_at:
-                break
-            try:
-                fast_scan_once(args)
-            except Exception as exc:
-                print(f"fast_scan failed: {exc}")
+        return
+    run_scheduled_scans(args)
 
 
 if __name__ == "__main__":
