@@ -182,7 +182,7 @@
 
 .ca-watch-grid {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   height: 100%;
   min-width: 0;
@@ -204,8 +204,7 @@
   border-bottom: 0;
 }
 
-.ca-abnormal-content,
-.ca-new1m-content {
+.ca-abnormal-content {
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
@@ -237,10 +236,6 @@
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 6px;
   background: #111821;
-}
-
-.ca-new1m-row {
-  border-color: rgba(248, 113, 113, 0.34);
 }
 
 .ca-abnormal-token {

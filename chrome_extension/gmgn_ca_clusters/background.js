@@ -67,12 +67,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "GET_PLUGIN_NEW_1M") {
-    const limit = Math.max(1, Math.min(Number(message.limit || 200), 500));
-    fetchServiceJson(`/api/plugin/new-1m?limit=${encodeURIComponent(limit)}`, { serverOnly: true }).then(sendResponse);
-    return true;
-  }
-
   if (message.type !== "ANALYZE_CA") {
     return false;
   }

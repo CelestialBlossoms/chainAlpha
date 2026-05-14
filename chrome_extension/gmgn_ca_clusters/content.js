@@ -35,10 +35,6 @@
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
     abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA\uff0cGMGN \u6253\u5f00\u8be6\u60c5",
     abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
-    new1mView: "1m\u65b0\u5e01",
-    new1mTitle: "1m\u65b0\u5e01\u68c0\u6d4b",
-    new1mHint: "\u4ec5\u8c37\u6b4c\u63d2\u4ef6\u63a5\u6536\uff0c\u4e0d\u63a8\u9001 TG \u548c\u524d\u7aef",
-    new1mEmpty: "\u6682\u65e0 1m \u65b0\u5e01\u6570\u636e",
     currentMcap: "\u5f53\u524d\u5e02\u503c",
     firstAbnormalMcap: "\u9996\u6b21\u5f02\u52a8\u5e02\u503c",
     firstAbnormalTime: "\u9996\u6b21\u5f02\u52a8\u65f6\u95f4",
@@ -62,7 +58,6 @@
     analyzing: "\u6b63\u5728\u5206\u6790",
     noValidCa: "\u6ca1\u6709\u8bc6\u522b\u5230\u6709\u6548 CA\u3002",
     apiError: "\u672c\u5730\u63a5\u53e3\u4e0d\u53ef\u7528\u6216\u5206\u6790\u5931\u8d25",
-    new1mApiError: "1m\u65b0\u5e01\u63a5\u53e3\u6216 Redis \u6d41\u4e0d\u53ef\u7528",
     walletCount: "\u94b1\u5305\u6570",
     holdPct: "\u6301\u4ed3\u5360\u6bd4",
     buyVolume: "\u4e70\u5165\u989d",
@@ -100,10 +95,6 @@
     abnormalLastCount: 0,
     abnormalRequestId: 0,
     dismissedSignals: {},
-    new1mLoading: false,
-    new1mItems: [],
-    new1mError: "",
-    new1mTimer: 0,
     serviceMode: "local",
     serviceBaseUrl: "",
   };
@@ -149,11 +140,6 @@
   function toNumber(value) {
     const n = Number(value || 0);
     return Number.isFinite(n) ? n : 0;
-  }
-
-  function normalizePercent(value) {
-    const n = toNumber(value);
-    return Math.abs(n) > 0 && Math.abs(n) <= 1 ? n * 100 : n;
   }
 
   function normalizeChangeHistory(value) {
@@ -434,76 +420,11 @@
       </div>`;
   }
 
-  function renderNew1mHead() {
-    return `<div class="ca-abnormal-head">
-      <div>
-        <h3>${L.new1mTitle}</h3>
-        <p>${L.new1mHint}</p>
-      </div>
-      <button class="ca-cluster-button ca-new1m-refresh" title="${L.refresh}">R</button>
-    </div>`;
-  }
-
-  function renderNew1mContent() {
-    if (STATE.new1mLoading) {
-      return `<div class="ca-cluster-loading">${L.analyzing} ${L.new1mView}</div>`;
-    }
-    if (STATE.new1mError) {
-      return `<div class="ca-cluster-error">${escapeHtml(STATE.new1mError)}</div>`;
-    }
-    const items = STATE.new1mItems || [];
-    if (!items.length) {
-      return `<div class="ca-cluster-empty">${L.new1mEmpty}</div>`;
-    }
-    return `<div class="ca-abnormal-list">
-        ${items
-          .slice(0, 60)
-          .map((item) => {
-            const ca = String(item.ca || "");
-            const symbol = item.symbol || "?";
-            const narrative = item.abnormal_rule || "plugin_new_1m";
-            return `<div class="ca-abnormal-row ca-new1m-row">
-              <div class="ca-abnormal-token">
-                <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
-                  <b>${escapeHtml(symbol)}</b>
-                  <span>${escapeHtml(shortCa(ca))}</span>
-                </button>
-                <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
-                  ${STATE.copied === ca ? L.copied : L.copyCa}
-                </button>
-                <a class="ca-gmgn-link" href="${escapeAttr(gmgnUrl(ca, item.chain || "sol"))}" target="_blank" rel="noreferrer">GMGN</a>
-                <button class="ca-dismiss-button" data-source="plugin_new_1m" data-ca="${escapeAttr(ca)}" data-id="${escapeAttr(item.id)}" title="${L.dismiss}">X</button>
-              </div>
-              <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
-              <div class="ca-abnormal-metrics">
-                <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
-                <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
-                <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
-                <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
-                <span><em>1m\u91cf</em><b>${fmtUsd(item.volume_usd)}</b></span>
-                <span><em>${L.bundleControl}</em><b>${fmtPct(item.control_ratio)}</b></span>
-                <span><em>${L.bundleTagged}</em><b>${fmtPct(item.associated_supply)}</b></span>
-                <span><em>${L.bundleSource}</em><b>${fmtPct(item.source_cluster_supply)}</b></span>
-                <span><em>${L.bundleGmgn}</em><b>${fmtPct(item.trend_bundler_rate)}</b></span>
-                <span><em>${L.ratTrader}</em><b>${fmtPct(item.trend_rat_trader_amount_rate)}</b></span>
-                <span><em>${L.top10}</em><b>${fmtPct(item.trend_top10_holder_rate)}</b></span>
-                <span><em>${L.updated}</em><b>${escapeHtml(fmtTime(item.ts))}</b></span>
-              </div>
-            </div>`;
-          })
-          .join("")}
-      </div>`;
-  }
-
   function renderWatchView() {
     return `<div class="ca-watch-grid">
       <section class="ca-watch-section">
         ${renderAbnormalHead()}
         <div class="ca-abnormal-content">${renderAbnormalContent()}</div>
-      </section>
-      <section class="ca-watch-section">
-        ${renderNew1mHead()}
-        <div class="ca-new1m-content">${renderNew1mContent()}</div>
       </section>
     </div>`;
   }
@@ -513,18 +434,6 @@
     if (STATE.view !== "abnormal" || !container) return false;
     const scrollTop = container.scrollTop;
     container.innerHTML = renderAbnormalContent();
-    attachAbnormalRowHandlers();
-    attachCopyHandlers();
-    attachDismissHandlers();
-    container.scrollTop = scrollTop;
-    return true;
-  }
-
-  function updateNew1mContent() {
-    const container = panel.querySelector(".ca-new1m-content");
-    if (STATE.view !== "abnormal" || !container) return false;
-    const scrollTop = container.scrollTop;
-    container.innerHTML = renderNew1mContent();
     attachAbnormalRowHandlers();
     attachCopyHandlers();
     attachDismissHandlers();
@@ -578,7 +487,6 @@
     panel.querySelector(".ca-service-toggle")?.addEventListener("click", () => toggleServiceMode());
     panel.querySelector(".ca-cluster-refresh")?.addEventListener("click", () => analyze(STATE.ca, true));
     panel.querySelector(".ca-abnormal-refresh")?.addEventListener("click", () => loadBottomWatchlist(true));
-    panel.querySelector(".ca-new1m-refresh")?.addEventListener("click", () => loadPluginNew1m(true));
     panel.querySelector(".ca-cluster-clear")?.addEventListener("click", () => clearPanel());
     panel.querySelector(".ca-cluster-run")?.addEventListener("click", () => {
       const value = panel.querySelector(".ca-cluster-input")?.value?.trim() || "";
@@ -593,16 +501,11 @@
         render();
         if (view === "abnormal") {
           startAbnormalAutoRefresh();
-          startNew1mAutoRefresh();
           if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
             loadBottomWatchlist(false);
           }
-          if (!STATE.new1mItems.length && !STATE.new1mLoading) {
-            loadPluginNew1m(false);
-          }
         } else {
           stopAbnormalAutoRefresh();
-          stopNew1mAutoRefresh();
         }
       });
     });
@@ -675,10 +578,6 @@
       STATE.abnormalItems = STATE.abnormalItems.filter((item) => !(item.ca === ca && item.id === id));
       updateAbnormalContent();
       return;
-    }
-    if (source === "plugin_new_1m") {
-      STATE.new1mItems = STATE.new1mItems.filter((item) => !(item.ca === ca && item.id === id));
-      updateNew1mContent();
     }
   }
 
@@ -756,37 +655,6 @@
     };
   }
 
-  function normalizePluginNew1m(item) {
-    if (!item || item.source !== "plugin_new_1m") return null;
-    const extra = item.extra || {};
-    const ca = String(extra.address || item.ca || "").trim();
-    if (!ca) return null;
-    return {
-      id: item.id || `${ca}:${item.ts || ""}`,
-      ca,
-      ts: toNumber(item.ts),
-      symbol: extra.symbol || item.title || "UNKNOWN",
-      source: item.source || "",
-      status: item.status || "",
-      signal_type: extra.signal_type || "new_1m",
-      abnormal_rule: extra.abnormal_rule || "",
-      chain: extra.chain || "sol",
-      current_mcap: toNumber(extra.current_mcap),
-      liquidity: toNumber(extra.pool_total_liquidity || extra.pool_liquidity),
-      price_change_pct: toNumber(extra.price_change_pct),
-      bottom_to_current_pct: toNumber(extra.bottom_to_current_pct),
-      volume_usd: toNumber(extra.volume_usd),
-      age_sec: toNumber(extra.age_sec),
-      control_ratio: toNumber(extra.control_ratio),
-      associated_supply: toNumber(extra.associated_supply),
-      source_cluster_size: toNumber(extra.source_cluster_size),
-      source_cluster_supply: toNumber(extra.source_cluster_supply),
-      trend_bundler_rate: normalizePercent(extra.trend_bundler_rate),
-      trend_rat_trader_amount_rate: normalizePercent(extra.trend_rat_trader_amount_rate),
-      trend_top10_holder_rate: normalizePercent(extra.trend_top10_holder_rate),
-    };
-  }
-
   async function loadBottomWatchlist(force) {
     if (!force && (STATE.abnormalLoading || STATE.abnormalItems.length)) return;
     const hasRows = STATE.abnormalItems.length > 0;
@@ -842,58 +710,6 @@
     STATE.abnormalTimer = 0;
   }
 
-  async function loadPluginNew1m(force) {
-    if (!force && (STATE.new1mLoading || STATE.new1mItems.length)) return;
-    const hasRows = STATE.new1mItems.length > 0;
-    STATE.new1mLoading = true;
-    STATE.new1mError = "";
-    if (!hasRows) {
-      if (!updateNew1mContent()) render();
-    }
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "GET_PLUGIN_NEW_1M", limit: 200 });
-      if (!response || !response.ok) {
-        const where = response && (response.baseUrl || response.mode || response.status)
-          ? ` [${response.mode || "?"} ${response.baseUrl || ""} HTTP ${response.status || 0}]`
-          : "";
-        throw new Error(`${(response && response.error) || "No response from extension background worker."}${where}`);
-      }
-      STATE.serviceMode = response.mode || STATE.serviceMode;
-      STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
-      const seen = new Set();
-      STATE.new1mItems = (Array.isArray(response.data?.items) ? response.data.items : [])
-        .map(normalizePluginNew1m)
-        .sort(compareSignalsDesc)
-        .filter((item) => {
-          if (!item || seen.has(item.ca)) return false;
-          seen.add(item.ca);
-          if (isSignalDismissed(item, "plugin_new_1m")) return false;
-          return true;
-        });
-    } catch (err) {
-      if (!hasRows) STATE.new1mItems = [];
-      STATE.new1mError = `${L.new1mApiError}: ${err.message || err}`;
-    } finally {
-      STATE.new1mLoading = false;
-      if (!updateNew1mContent()) render();
-    }
-  }
-
-  function startNew1mAutoRefresh() {
-    if (STATE.new1mTimer) return;
-    STATE.new1mTimer = window.setInterval(() => {
-      if (STATE.view === "abnormal" && !STATE.new1mLoading) {
-        loadPluginNew1m(true);
-      }
-    }, 10000);
-  }
-
-  function stopNew1mAutoRefresh() {
-    if (!STATE.new1mTimer) return;
-    window.clearInterval(STATE.new1mTimer);
-    STATE.new1mTimer = 0;
-  }
-
   async function copyText(text, rerender = true) {
     if (!text) return;
     try {
@@ -922,7 +738,6 @@
       return;
     }
     updateAbnormalContent();
-    updateNew1mContent();
   }
 
   function clearPanel() {

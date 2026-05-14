@@ -9,7 +9,6 @@ services:
     working_dir: /app
     environment:
       TZ: Asia/Shanghai
-      DEEP_ALPHA_PLUGIN_NEW_1M_ENABLED: "1"
       PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
     volumes:
       - .:/app

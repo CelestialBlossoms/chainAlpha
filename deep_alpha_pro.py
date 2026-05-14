@@ -11,7 +11,6 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 from redis_client import get_redis_client, redis_key
 from binance_narrative import compact_narrative, get_binance_narrative
 from tg_alert_stream import publish_tg_alert
-from plugin_signal_stream import publish_plugin_signal
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -80,7 +79,6 @@ ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:
 ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
 ALERT_MISS_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_TTL_SEC", "300"))
-PLUGIN_NEW_1M_ENABLED = os.getenv("DEEP_ALPHA_PLUGIN_NEW_1M_ENABLED", "1") != "0"
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -327,52 +325,6 @@ def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSH
     if existing_candidate and not allow_repeat:
         return None
     return send_tg_alert(msg, ca=address, extra={"stats": stats or {}, "address": address})
-
-def publish_plugin_new_1m_candidate(address, stats, interval="1m"):
-    if not PLUGIN_NEW_1M_ENABLED or interval != "1m" or not address:
-        return None
-    extra = {
-        "source_type": "plugin_new_1m",
-        "plugin_only": True,
-        "signal_type": "deep_alpha_candidate",
-        "abnormal_rule": "deep_alpha_buy_score",
-        "chain": stats.get("chain") or "sol",
-        "address": address,
-        "symbol": stats.get("symbol") or "UNKNOWN",
-        "current_mcap": safe_float(stats.get("mcap")),
-        "pool_total_liquidity": safe_float(stats.get("pool_liquidity")),
-        "pool_mcap_ratio": (
-            safe_float(stats.get("pool_liquidity")) / safe_float(stats.get("mcap"))
-            if safe_float(stats.get("mcap")) > 0
-            else 0
-        ),
-        "price_change_pct": safe_float(stats.get("price_observation_change_pct")),
-        "bottom_to_current_pct": safe_float(stats.get("rebound_from_low_pct")),
-        "volume_usd": safe_float(stats.get("trade_volume_usd")),
-        "last_volume_usd": safe_float(stats.get("trade_volume_usd")),
-        "holder_count": int(safe_float(stats.get("holder_count"))),
-        "created_ts": int(safe_float(stats.get("created_at"))) if stats.get("created_at") else 0,
-        "age_sec": token_age_seconds(stats.get("created_at")) or 0,
-        "buy_score": safe_float(stats.get("buy_score")),
-        "control_ratio": safe_float(stats.get("control_ratio")),
-        "associated_supply": safe_float(stats.get("associated_supply")),
-        "source_cluster_size": int(safe_float(stats.get("source_cluster_size"))),
-        "source_cluster_supply": safe_float(stats.get("source_cluster_supply")),
-        "trend_bundler_rate": safe_float(stats.get("trend_bundler_rate")) * 100,
-        "trend_rat_trader_amount_rate": safe_float(stats.get("trend_rat_trader_amount_rate")) * 100,
-        "trend_top10_holder_rate": safe_float(stats.get("trend_top10_holder_rate")) * 100,
-        "front_holder_netflow": safe_float(stats.get("front_holder_netflow")),
-        "holder_flow_netflow": safe_float(stats.get("holder_flow_netflow")),
-        "repeat_alert": bool(stats.get("repeat_alert")),
-        "repeat_alert_type": stats.get("repeat_alert_type") or "",
-        "resolution": interval,
-    }
-    title = (
-        f"1m new token ${extra['symbol']} {address[:8]} "
-        f"score={extra['buy_score']:.0f} mcap=${extra['current_mcap']:,.0f} "
-        f"change={extra['price_change_pct']:.1f}%"
-    )
-    return publish_plugin_signal(title, "plugin_new_1m", ca=address, extra=extra)
 
 def format_mcap_short(value):
     value = safe_float(value)
@@ -2616,7 +2568,6 @@ def scan_pro():
                             stats=s,
                         )
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
-                        publish_plugin_new_1m_candidate(addr, s, interval=interval)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
                     
