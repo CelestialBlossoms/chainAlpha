@@ -12,6 +12,23 @@
 
 ## 前置要求
 
+### 方式一：使用本机 SSH 配置（推荐）
+
+如果本机已经配置好 `~/.ssh/config`：
+
+```sshconfig
+Host chainalpha-server
+    HostName 43.163.225.175
+    User root
+    IdentityFile ~/.ssh/dongj2.pem
+    PubkeyAuthentication yes
+    PreferredAuthentications publickey
+```
+
+可以直接通过 `chainalpha-server` 登录 Linux 服务器执行更新，不需要在命令里写服务器密码。
+
+### 方式二：使用 Python Paramiko
+
 本地 Python 环境需要安装 `paramiko`：
 
 ```powershell
@@ -19,6 +36,40 @@ D:\software\anaconda\envs\py312\python.exe -m pip install paramiko
 ```
 
 ## 执行更新
+
+### 推荐命令：SSH 拉代码并更新底部异动服务
+
+在 Windows 本地项目根目录 `D:\github\chainAlpha` 执行：
+
+```powershell
+ssh chainalpha-server "cd /opt/chainAlpha && git pull --ff-only && docker compose -f docker-compose.bottom-top100.yml up -d --build"
+```
+
+执行完成后检查容器状态：
+
+```powershell
+ssh chainalpha-server "docker ps --filter name=chain-alpha-bottom-top100 --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'"
+```
+
+查看最近日志：
+
+```powershell
+ssh chainalpha-server "docker logs --tail 80 chain-alpha-bottom-top100 2>&1"
+```
+
+确认远端代码版本和工作区状态：
+
+```powershell
+ssh chainalpha-server "cd /opt/chainAlpha && git rev-parse --short HEAD && git status --short --branch"
+```
+
+本地仓库也需要同步时，先在 `D:\github\chainAlpha` 执行：
+
+```powershell
+git pull --ff-only
+```
+
+### 备用命令：Paramiko 登录执行
 
 在项目根目录 `D:\github\chainAlpha` 执行：
 

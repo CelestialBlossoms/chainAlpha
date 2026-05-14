@@ -1935,8 +1935,8 @@ def analyze_bottom_chip_sell(raw_holders, holders, summary, kline_summary):
     change_pct = float((kline_summary or {}).get("change_pct") or 0)
 
     holder_by_wallet = {str(item.get("wallet") or ""): item for item in holders or []}
+    candidate_rows = []
     seller_rows = []
-    bottom_seller_rows = []
     for rank_no, row in enumerate(raw_holders or [], start=1):
         if bottom_monitor.is_pool_holder(row):
             continue
@@ -1950,8 +1950,8 @@ def analyze_bottom_chip_sell(raw_holders, holders, summary, kline_summary):
         normalized = holder_by_wallet.get(wallet) or {}
         hold_pct = float(normalized.get("hold_pct") or row.get("amount_percentage") or 0)
         usd_value = float(normalized.get("usd_value") or row.get("usd_value") or 0)
-        if sell_amount_pct < 0.8 and not (buy > 0 and sell / buy >= 0.8):
-            continue
+        if sell_amount_pct <= 0 and buy > 0 and sell > 0:
+            sell_amount_pct = min(sell / buy, 1.0)
         item = {
             "wallet": wallet,
             "rank": rank_no,
@@ -1961,22 +1961,45 @@ def analyze_bottom_chip_sell(raw_holders, holders, summary, kline_summary):
             "sell": sell,
             "net": buy - sell,
             "profit": float(row.get("profit") or 0),
+            "realized_profit": float(row.get("realized_profit") or 0),
+            "unrealized_profit": float(row.get("unrealized_profit") or 0),
             "avg_cost": avg_cost,
-            "sell_amount_pct": sell_amount_pct if sell_amount_pct > 0 else (sell / buy if buy > 0 else 0),
+            "sell_amount_pct": max(0.0, min(sell_amount_pct, 1.0)),
             "tags": raw_tags(row),
         }
-        seller_rows.append(item)
-        is_bottom_cost = avg_cost > 0 and (
-            (low_price > 0 and avg_cost <= low_price * 1.25)
-            or (price > 0 and avg_cost <= price * 0.55)
-        )
-        if is_bottom_cost:
-            bottom_seller_rows.append(item)
+        if avg_cost > 0:
+            candidate_rows.append(item)
+        if item["sell_amount_pct"] >= 0.8:
+            seller_rows.append(item)
 
-    target_rows = bottom_seller_rows or seller_rows
+    candidate_rows.sort(key=lambda item: item["avg_cost"])
+    cost_thresholds = []
+    if low_price > 0:
+        cost_thresholds.append(low_price * 1.25)
+    if price > 0:
+        cost_thresholds.append(price * 0.55)
+    if candidate_rows:
+        percentile_index = max(0, min(len(candidate_rows) - 1, int(len(candidate_rows) * 0.25) - 1))
+        cost_thresholds.append(candidate_rows[percentile_index]["avg_cost"])
+    bottom_cost_threshold = max(cost_thresholds) if cost_thresholds else 0.0
+    bottom_rows = [
+        item for item in candidate_rows
+        if bottom_cost_threshold > 0 and item["avg_cost"] <= bottom_cost_threshold
+    ]
+    threshold_source = "cost_threshold"
+    if not bottom_rows and candidate_rows:
+        fallback_count = max(3, min(15, max(1, len(candidate_rows) // 5)))
+        bottom_rows = candidate_rows[:fallback_count]
+        bottom_cost_threshold = bottom_rows[-1]["avg_cost"]
+        threshold_source = "lowest_cost_fallback"
+
+    bottom_seller_rows = [item for item in bottom_rows if item["sell_amount_pct"] >= 0.8]
+    target_rows = bottom_rows
     total_buy = sum(item["buy"] for item in target_rows)
     total_sell = sum(item["sell"] for item in target_rows)
     total_profit = sum(item["profit"] for item in target_rows)
+    total_realized_profit = sum(item["realized_profit"] for item in target_rows)
+    total_unrealized_profit = sum(item["unrealized_profit"] for item in target_rows)
     total_hold_pct = sum(item["hold_pct"] for item in target_rows)
     total_usd_value = sum(item["usd_value"] for item in target_rows)
     avg_cost = weighted_avg_cost([
@@ -1994,23 +2017,30 @@ def analyze_bottom_chip_sell(raw_holders, holders, summary, kline_summary):
     price_not_down = close_price >= open_price if open_price > 0 and close_price > 0 else change_pct >= 0
     takeover = sell_progress >= 0.8 and (price_not_down or price_near_high)
     if not target_rows:
-        conclusion = "暂无明显已卖出80%以上的内盘/底部筹码。"
+        conclusion = "暂无可识别的底部成本筹码钱包。"
     elif takeover:
-        conclusion = "底部/早期筹码已卖出80%附近，但价格未明显下跌或接近区间高位，说明卖压被承接，叙事有接盘认可。"
+        conclusion = "底部筹码整体卖出进度接近80%，且价格未明显下跌或接近区间高位，显示卖压有承接。"
+    elif sell_progress >= 0.5:
+        conclusion = "底部筹码已有较高卖出进度，需观察剩余持仓与后续承接。"
     else:
-        conclusion = "存在高卖出进度筹码，但价格承接不强，仍按出货压力观察。"
+        conclusion = "底部筹码卖出进度不高，主要观察剩余持仓和盈利兑现压力。"
 
     target_rows.sort(key=lambda item: (item["sell_amount_pct"], item["sell"], item["profit"]), reverse=True)
     return {
+        "bottom_wallet_count": len(bottom_rows),
         "seller_count": len(seller_rows),
         "bottom_seller_count": len(bottom_seller_rows),
-        "used_bottom_cost_filter": bool(bottom_seller_rows),
+        "used_bottom_cost_filter": bool(bottom_rows),
+        "threshold_source": threshold_source,
+        "bottom_cost_threshold": bottom_cost_threshold,
         "hold_pct": total_hold_pct,
         "usd_value": total_usd_value,
         "buy": total_buy,
         "sell": total_sell,
         "net": total_buy - total_sell,
         "profit": total_profit,
+        "realized_profit": total_realized_profit,
+        "unrealized_profit": total_unrealized_profit,
         "profit_pct": (total_profit / total_buy * 100) if total_buy > 0 else 0.0,
         "avg_cost": avg_cost,
         "sell_progress": sell_progress,
@@ -2032,11 +2062,13 @@ def bottom_chip_sell_text(data):
         return "- 暂无底部筹码卖出分析"
     lines = [
         f"- 结论: {data.get('conclusion')}",
-        f"- 高卖出钱包: {int(data.get('seller_count') or 0)}个 | 底部成本命中{int(data.get('bottom_seller_count') or 0)}个 | "
-        f"剩余持仓{float(data.get('hold_pct') or 0):.2%}/{compact_money(data.get('usd_value'))} | "
-        f"卖出进度{float(data.get('sell_progress') or 0):.1%}",
-        f"- 买/卖: {compact_money(data.get('buy'))}/{compact_money(data.get('sell'))} | 净{compact_money(data.get('net'))} | "
-        f"盈利{float(data.get('profit_pct') or 0):+.1f}% | 成本{cost_text(data.get('avg_cost'))}",
+        f"- 底部筹码钱包: {int(data.get('bottom_wallet_count') or 0)}个 | 高卖出{int(data.get('bottom_seller_count') or 0)}个 | "
+        f"持仓百分比{float(data.get('hold_pct') or 0):.2%}",
+        f"- 卖出进度: {float(data.get('sell_progress') or 0):.1%} | "
+        f"剩余持仓{compact_money(data.get('usd_value'))} | 成本{cost_text(data.get('avg_cost'))}",
+        f"- 盈利情况: 总盈利{compact_money(data.get('profit'))} ({float(data.get('profit_pct') or 0):+.1f}%) | "
+        f"已实现{compact_money(data.get('realized_profit'))} | 未实现{compact_money(data.get('unrealized_profit'))}",
+        f"- 买/卖: {compact_money(data.get('buy'))}/{compact_money(data.get('sell'))} | 净{compact_money(data.get('net'))}",
         f"- 价格承接: 涨跌{float(data.get('price_change_pct') or 0):+.2f}% | "
         f"开{format_chain_price(data.get('open'))} 收{format_chain_price(data.get('close'))} "
         f"高{format_chain_price(data.get('high'))} 低{format_chain_price(data.get('low'))}",
@@ -2093,6 +2125,7 @@ def build_light_ca_analysis(address, chain="sol", limit=100):
             "tag_stats": aggregate_tag_stats(raw_holders),
             "bundle_similarity_clusters": similar_hold_bundle_clusters(holders),
             "wallet_creation_clusters": wallet_creation_clusters(holders),
+            "bottom_chip_sell": analyze_bottom_chip_sell(raw_holders, holders, summary, summary.get("kline")),
         }
     )
     try:
@@ -2152,6 +2185,8 @@ def build_light_ca_message(chain, address, analysis):
         f"{similar_hold_bundle_text(analysis.get('bundle_similarity_clusters'))}\n\n"
         f"同批创建钱包簇\n"
         f"{wallet_creation_cluster_text(analysis.get('wallet_creation_clusters'))}\n\n"
+        f"底部筹码卖出观察\n"
+        f"{bottom_chip_sell_text(analysis.get('bottom_chip_sell'))}\n\n"
         f"Top持仓钱包\n"
         f"GMGN: https://gmgn.ai/{chain}/token/{address}"
     )
