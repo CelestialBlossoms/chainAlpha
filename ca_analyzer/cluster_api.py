@@ -210,6 +210,92 @@ def _wallet_summary(name: str, wallets: list[dict[str, Any]], total_wallets: int
     }
 
 
+def _weighted_avg_cost(wallets: list[dict[str, Any]]) -> float:
+    weighted = 0.0
+    weight = 0.0
+    for wallet in wallets:
+        cost = to_f(wallet.get("avg_cost"))
+        wallet_weight = max(to_f(wallet.get("usd_value")), to_f(wallet.get("buy_volume")), to_f(wallet.get("hold_pct")))
+        if cost > 0 and wallet_weight > 0:
+            weighted += cost * wallet_weight
+            weight += wallet_weight
+    return weighted / weight if weight > 0 else 0.0
+
+
+def _wallet_profit(wallet: dict[str, Any]) -> float:
+    profit = to_f(wallet.get("profit"))
+    if profit:
+        return profit
+    return to_f(wallet.get("realized_profit")) + to_f(wallet.get("unrealized_profit"))
+
+
+def _bottom_chip_sell_analysis(wallets: list[dict[str, Any]], current_price: float) -> dict[str, Any]:
+    candidates = [wallet for wallet in wallets if to_f(wallet.get("avg_cost")) > 0]
+    candidates.sort(key=lambda wallet: to_f(wallet.get("avg_cost")))
+    if not candidates:
+        return {
+            "bottom_wallet_count": 0,
+            "bottom_seller_count": 0,
+            "hold_pct": 0.0,
+            "sell_progress_pct": 0.0,
+            "remaining_usd": 0.0,
+            "profit": 0.0,
+            "profit_pct": 0.0,
+            "realized_profit": 0.0,
+            "unrealized_profit": 0.0,
+            "buy_volume": 0.0,
+            "sell_volume": 0.0,
+            "net_volume": 0.0,
+            "avg_cost": 0.0,
+            "cost_threshold": 0.0,
+            "wallets": [],
+        }
+
+    threshold_candidates = []
+    if current_price > 0:
+        threshold_candidates.append(current_price * 0.55)
+    percentile_index = max(0, min(len(candidates) - 1, int(len(candidates) * 0.25) - 1))
+    threshold_candidates.append(to_f(candidates[percentile_index].get("avg_cost")))
+    cost_threshold = max(threshold_candidates)
+    bottom_wallets = [wallet for wallet in candidates if to_f(wallet.get("avg_cost")) <= cost_threshold]
+    if not bottom_wallets:
+        fallback_count = max(3, min(15, max(1, len(candidates) // 5)))
+        bottom_wallets = candidates[:fallback_count]
+        cost_threshold = to_f(bottom_wallets[-1].get("avg_cost")) if bottom_wallets else 0.0
+
+    total_buy = sum(to_f(wallet.get("buy_volume")) for wallet in bottom_wallets)
+    total_sell = sum(to_f(wallet.get("sell_volume")) for wallet in bottom_wallets)
+    total_profit = sum(_wallet_profit(wallet) for wallet in bottom_wallets)
+    total_realized = sum(to_f(wallet.get("realized_profit")) for wallet in bottom_wallets)
+    total_unrealized = sum(to_f(wallet.get("unrealized_profit")) for wallet in bottom_wallets)
+    sell_weight = 0.0
+    sell_progress = 0.0
+    for wallet in bottom_wallets:
+        weight = max(to_f(wallet.get("buy_volume")), to_f(wallet.get("usd_value")), to_f(wallet.get("hold_pct")))
+        progress = max(0.0, min(to_f(wallet.get("sold_pct")), 100.0))
+        sell_progress += progress * weight
+        sell_weight += weight
+
+    bottom_wallets.sort(key=lambda wallet: (to_f(wallet.get("sold_pct")), to_f(wallet.get("sell_volume")), _wallet_profit(wallet)), reverse=True)
+    return {
+        "bottom_wallet_count": len(bottom_wallets),
+        "bottom_seller_count": sum(1 for wallet in bottom_wallets if to_f(wallet.get("sold_pct")) >= 80),
+        "hold_pct": sum(to_f(wallet.get("hold_pct")) for wallet in bottom_wallets),
+        "sell_progress_pct": sell_progress / sell_weight if sell_weight > 0 else 0.0,
+        "remaining_usd": sum(to_f(wallet.get("usd_value")) for wallet in bottom_wallets),
+        "profit": total_profit,
+        "profit_pct": (total_profit / total_buy * 100) if total_buy > 0 else 0.0,
+        "realized_profit": total_realized,
+        "unrealized_profit": total_unrealized,
+        "buy_volume": total_buy,
+        "sell_volume": total_sell,
+        "net_volume": total_buy - total_sell,
+        "avg_cost": _weighted_avg_cost(bottom_wallets),
+        "cost_threshold": cost_threshold,
+        "wallets": bottom_wallets[:8],
+    }
+
+
 def _cluster_addresses(clusters: list[dict[str, Any]]) -> set[str]:
     return {
         str(wallet.get("address") or "")
@@ -356,6 +442,7 @@ def analyze_ca_clusters(address: str, chain: str = "sol", limit: int = 100) -> d
         "token": token,
         "bundle": {"score": score, "label": verdict_label, "description": verdict_desc, "signals": signals},
         "chip_distribution": _chip_distribution(holders),
+        "bottom_chip_sell": _bottom_chip_sell_analysis(wallets, token["price"]),
         "holder_trader_structure": {
             "behavior": behavior_result,
             "bot": bot_result,

@@ -17,7 +17,9 @@
     bundleTimeDetails: "\u6346\u7ed1\u65f6\u95f4\u7c07\u8be6\u60c5",
     buyTimeDetails: "\u8d2d\u4e70\u65f6\u95f4\u7c07\u8be6\u60c5",
     riskTitle: "\u53ef\u89c2\u5bdf\u98ce\u9669\u56e0\u7d20",
+    bottomChipTitle: "\u5e95\u90e8\u7b79\u7801\u5356\u51fa\u89c2\u5bdf",
     noSummary: "\u6682\u65e0\u5206\u7c7b\u6458\u8981",
+    noBottomChips: "\u6682\u65e0\u53ef\u8bc6\u522b\u7684\u5e95\u90e8\u6210\u672c\u7b79\u7801",
     noBundlers: "\u672a\u547d\u4e2d\u672c\u5730\u6346\u7ed1\u6807\u7b7e\u6216 GMGN bundler \u6807\u7b7e",
     noCreateSecond: "\u6ca1\u6709\u540c\u79d2\u521b\u5efa\u7c07",
     noCreateHour: "\u6ca1\u6709\u660e\u663e\u5c0f\u65f6\u7ea7\u521b\u5efa\u7c07",
@@ -67,6 +69,10 @@
     buy: "\u4e70\u5165",
     holding: "\u6301\u4ed3",
     profit: "\u76c8\u5229",
+    highSell: "\u9ad8\u5356\u51fa",
+    sellProgress: "\u5356\u51fa\u8fdb\u5ea6",
+    remainingHolding: "\u5269\u4f59\u6301\u4ed3",
+    sold: "\u5df2\u5356",
   };
   const POS_KEY = "ca_cluster_panel_position_v1";
   const LAYOUT_KEY = "ca_cluster_panel_layout_v2";
@@ -221,7 +227,7 @@
             <button class="ca-copy-button" data-copy="${escapeAttr(wallet.address || "")}">${STATE.copied === wallet.address ? L.copied : L.copy}</button>
           </div>
           <div class="ca-cluster-meta">
-            ${L.buy} ${fmtUsd(wallet.buy_volume)} / ${L.holding} ${fmtUsd(wallet.usd_value)} / ${L.profit} ${fmtSignedPct(wallet.profit_pct)}
+            ${L.buy} ${fmtUsd(wallet.buy_volume)} / ${L.holding} ${fmtUsd(wallet.usd_value)} / ${L.sold} ${fmtPct(wallet.sold_pct)} / ${L.profit} ${fmtSignedPct(wallet.profit_pct)}
             <br>${L.realized} ${fmtUsd(wallet.realized_profit)} / ${L.unrealized} ${fmtUsd(wallet.unrealized_profit)}
           </div>
           <div>${groups}${tags}</div>
@@ -254,6 +260,25 @@
       .join("")}</div>`;
   }
 
+  function renderBottomChip(data) {
+    if (!data || !data.bottom_wallet_count) {
+      return `<div class="ca-cluster-empty">${L.noBottomChips}</div>`;
+    }
+    return `<div>
+      <div class="ca-summary-metrics">
+        ${row(L.walletCount, `${data.bottom_wallet_count || 0} (${L.highSell} ${data.bottom_seller_count || 0})`)}
+        ${row(L.holdPct, fmtPct(data.hold_pct))}
+        ${row(L.sellProgress, fmtPct(data.sell_progress_pct))}
+        ${row(L.remainingHolding, fmtUsd(data.remaining_usd))}
+        ${row(L.profit, `${fmtUsd(data.profit)} / ${fmtSignedPct(data.profit_pct)}`)}
+        ${row(L.realized, fmtUsd(data.realized_profit))}
+        ${row(L.unrealized, fmtUsd(data.unrealized_profit))}
+        ${row(L.buyVolume, `${fmtUsd(data.buy_volume)} / \u5356${fmtUsd(data.sell_volume)} / \u51c0${fmtUsd(data.net_volume)}`)}
+      </div>
+      ${renderWalletCards(data.wallets || [])}
+    </div>`;
+  }
+
   function renderDetails(title, content, open = false) {
     return `<details class="ca-detail-block"${open ? " open" : ""}>
       <summary>${escapeHtml(title)}</summary>
@@ -270,6 +295,7 @@
     const risks = result.risk_factors || [];
     const summaries = result.bundle_category_summary || [];
     const behavior = ((result.holder_trader_structure || {}).behavior || {});
+    const bottomChip = result.bottom_chip_sell || {};
 
     return `
       ${row(L.token, `${escapeHtml(token.symbol || token.name || "?")} ${escapeHtml(shortCa(result.address))}`)}
@@ -278,6 +304,10 @@
       ${row("Top30", `${fmtUsd(chip.top30_profit)} (${L.realized} ${fmtUsd(chip.top30_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top30_unrealized_profit)})`)}
       ${row("Top50", `${fmtUsd(chip.top50_profit)} (${L.realized} ${fmtUsd(chip.top50_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top50_unrealized_profit)})`)}
       ${row(L.unsold, `${behavior.zero_sell || 0} ${L.wallet} / ${fmtPct(behavior.zero_sell_pct)}`)}
+      <div class="ca-cluster-section">
+        <h3>${L.bottomChipTitle}</h3>
+        ${renderBottomChip(bottomChip)}
+      </div>
       <div class="ca-cluster-section">
         <h3>${L.summaryTitle}</h3>
         ${renderSummaryCards(summaries)}
