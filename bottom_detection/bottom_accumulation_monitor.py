@@ -49,13 +49,13 @@ from bottom_detection.bottom_watchlist_store import (
 CHAIN = "sol"
 TREND_INTERVALS = tuple(
     item.strip()
-    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1h")).split(",")
+    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "5m")).split(",")
     if item.strip()
 )
-TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "1h"
+TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "5m"
 TREND_ORDER_BYS = tuple(
     item.strip()
-    for item in os.getenv("BOTTOM_TREND_ORDER_BYS", "default,change1h").split(",")
+    for item in os.getenv("BOTTOM_TREND_ORDER_BYS", "default,change5m").split(",")
     if item.strip()
 )
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
