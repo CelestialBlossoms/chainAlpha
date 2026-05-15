@@ -266,6 +266,7 @@ def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = No
         if not isinstance(source, dict):
             continue
         for key in (
+            "_gmgn_ath_mcap",
             "ath_market_cap",
             "ath_mcap",
             "highest_market_cap",
@@ -2628,43 +2629,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             send_tg(signal_text, extra=web_extra)
             publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id)
     elif notify and should_notify(analysis) and already_notified:
-        web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
-        latest_baseline = latest_frontend_signal_baseline(address, analysis.get("signal_type", ""))
-        repeat_allowed, repeat_reason = frontend_repeat_update_allowed(web_extra, analysis, latest_baseline)
-        if not repeat_allowed:
-            print(
-                f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                f"skip frontend update: {repeat_reason}"
-            )
-        elif frontend_update_allowed or should_notify(analysis):
-            if USE_AGENT_DECISION:
-                analysis = {**analysis, **web_extra, "repeat_update_reason": repeat_reason}
-                agent_context = run_agent_execution(
-                    token=token,
-                    summary=summary,
-                    raw_holders=raw_holders,
-                    holders=holders,
-                    candles=candles,
-                    history=history,
-                    analysis=analysis,
-                    execute=notify,
-                    already_notified=already_notified,
-                    has_previous_bottom_signal=has_previous_bottom_signal,
-                    snapshot_id=snapshot_id,
-                )
-                action_execution = agent_context.decision.get("action_executor") if agent_context else {}
-                print(
-                    f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                    f"agent action={action_execution.get('action')} repeat={repeat_reason} results={action_execution.get('results')}"
-                )
-            else:
-                publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra, snapshot_id=snapshot_id)
-                print(
-                    f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
-                    f"frontend updated: {repeat_reason}"
-                )
-        else:
-            print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified")
+        print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified, skip repeat push")
     elif notify and has_previous_bottom_signal:
         if USE_AGENT_DECISION:
             agent_context = run_agent_execution(
@@ -2727,17 +2692,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )
         else:
-            runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
-            latest_baseline = latest_frontend_signal_baseline(address, runup_type)
-            repeat_allowed, repeat_reason = frontend_repeat_update_allowed(runup_extra, quiet_runup, latest_baseline)
-            if repeat_allowed:
-                runup_snapshot_id = save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
-                quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
-                runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
-                publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
-                print(f"{token_label(token)} quiet_runup frontend updated: {repeat_reason}")
-            else:
-                print(f"{token_label(token)} quiet_runup already notified, skip frontend update: {repeat_reason}")
+            print(f"{token_label(token)} quiet_runup already notified, skip repeat push")
 
     # Old token surge detection (independent of abnormal/EMA signal)
     if notify and OLD_TOKEN_SURGE_ENABLED:
@@ -2839,18 +2794,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
                 print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)} crossover_ts={crossover_ts}")
             else:
-                ema_snapshot_id = save_snapshot(
-                    scan_id + "_ema",
-                    token,
-                    summary,
-                    holders,
-                    {"signal_type": crossover_signal_type, "score": 80, "crossover": crossover},
-                )
-                ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
-                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
                 print(
-                    f"{token_label(token)} EMA golden cross already notified, frontend updated "
-                    f"mcap ${first_mcap:,.0f}->${current_mcap:,.0f} ({first_change_pct:+.1f}%)"
+                    f"{token_label(token)} EMA golden cross already notified, skip repeat push"
                 )
 
     return True
