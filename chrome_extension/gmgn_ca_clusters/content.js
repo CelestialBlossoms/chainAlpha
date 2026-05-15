@@ -129,7 +129,7 @@
   function renderPoolMcapRatio(value) {
     const status = poolMcapRatioStatus(value);
     if (status.pct <= 0) return `<span class="ca-pool-ratio ca-pool-unknown">${L.none}</span>`;
-    return `<span class="ca-pool-ratio ${status.cls}">${status.pct.toFixed(status.pct >= 10 ? 1 : 2)}% · ${status.label}</span>`;
+    return `<span class="ca-pool-ratio ${status.cls}"><strong>${status.pct.toFixed(status.pct >= 10 ? 1 : 2)}%</strong><small>${status.label}</small></span>`;
   }
 
   function fmtSignedPct(value) {
@@ -449,7 +449,7 @@
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
                 <span><em>${L.maxMcap}</em><b>${fmtUsd(item.max_mcap || item.ath_mcap || item.peak_mcap)}</b></span>
                 <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
-                <span><em>${L.poolMcapRatio}</em><b>${renderPoolMcapRatio(item.pool_mcap_ratio)}</b></span>
+                <span class="ca-pool-metric"><em>${L.poolMcapRatio}</em><b>${renderPoolMcapRatio(item.pool_mcap_ratio)}</b></span>
                 <span><em>${L.updated}</em><b>${escapeHtml(fmtTime(item.ts || item.last_seen_at || item.added_at))}</b></span>
               </div>
             </div>`;

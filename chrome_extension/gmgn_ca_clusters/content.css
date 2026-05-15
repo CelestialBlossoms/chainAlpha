@@ -314,13 +314,28 @@
 }
 
 .ca-pool-ratio {
-  display: inline-flex;
-  align-items: center;
+  display: grid;
+  gap: 1px;
   min-width: 0;
   max-width: 100%;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.ca-pool-ratio strong,
+.ca-pool-ratio small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ca-pool-ratio strong {
+  font-size: 11px;
+}
+
+.ca-pool-ratio small {
+  font-size: 9px;
   font-weight: 700;
 }
 
@@ -393,6 +408,10 @@
 
 .ca-abnormal-metrics .ca-history-metric {
   grid-column: span 2;
+}
+
+.ca-abnormal-metrics .ca-pool-metric {
+  min-width: 92px;
 }
 
 .ca-abnormal-metrics b.ca-history-changes {
