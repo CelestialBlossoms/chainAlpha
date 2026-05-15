@@ -44,6 +44,7 @@ from bottom_detection.bottom_watchlist_store import (
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
 )
+from bottom_detection.top100_push_record_store import record_top100_push
 
 
 CHAIN = "sol"
@@ -1695,6 +1696,10 @@ def publish_frontend_signal_update(text: str, extra: dict[str, Any], status: str
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
+    try:
+        record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
+    except Exception as exc:
+        print(f"{address[:8]} top100 push record failed: {exc}")
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
 

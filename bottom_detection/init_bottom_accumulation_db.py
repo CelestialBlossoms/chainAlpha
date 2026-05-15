@@ -44,6 +44,38 @@ def init_bottom_accumulation_tables(conn):
         CREATE INDEX idx_bottom_top100_signal
             ON bottom_top100_snapshots(signal_type, signal_score DESC, created_at DESC);
 
+        CREATE TABLE IF NOT EXISTS bottom_top100_push_records (
+            id BIGSERIAL PRIMARY KEY,
+            pushed_at TIMESTAMPTZ DEFAULT now(),
+            event_ts BIGINT NOT NULL,
+            chain TEXT NOT NULL DEFAULT 'sol',
+            source TEXT NOT NULL DEFAULT 'bottom_abnormal',
+            status TEXT NOT NULL DEFAULT 'frontend_update',
+            address TEXT NOT NULL,
+            symbol TEXT,
+            signal_type TEXT,
+            abnormal_rule TEXT,
+            trend_interval TEXT,
+            current_mcap NUMERIC DEFAULT 0,
+            first_signal_mcap NUMERIC DEFAULT 0,
+            first_signal_ts BIGINT DEFAULT 0,
+            first_signal_change_pct NUMERIC DEFAULT 0,
+            price_change_pct NUMERIC DEFAULT 0,
+            max_abnormal_mcap NUMERIC DEFAULT 0,
+            ath_mcap NUMERIC DEFAULT 0,
+            pool_total_liquidity NUMERIC DEFAULT 0,
+            pool_mcap_ratio NUMERIC DEFAULT 0,
+            age_sec BIGINT DEFAULT 0,
+            text TEXT,
+            extra JSONB DEFAULT '{}'::jsonb
+        );
+        CREATE INDEX idx_bottom_top100_push_records_addr_ts
+            ON bottom_top100_push_records(address, event_ts DESC);
+        CREATE INDEX idx_bottom_top100_push_records_signal_ts
+            ON bottom_top100_push_records(signal_type, event_ts DESC);
+        CREATE INDEX idx_bottom_top100_push_records_pushed_at
+            ON bottom_top100_push_records(pushed_at DESC);
+
         CREATE TABLE bottom_kline_cache (
             chain TEXT NOT NULL DEFAULT 'sol',
             address TEXT NOT NULL,
