@@ -90,6 +90,9 @@ def record_top100_push(
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
+    signal_type = str((extra or {}).get("signal_type") or "").strip()
+    if not signal_type or signal_type == "watch":
+        return
     event_ts = int(time.time())
 
     def _op(conn):
@@ -115,7 +118,7 @@ def record_top100_push(
                 status,
                 address,
                 extra.get("symbol") or "",
-                extra.get("signal_type") or "",
+                signal_type,
                 extra.get("abnormal_rule") or "",
                 extra.get("trend_interval") or "",
                 _num(extra, "current_mcap"),
