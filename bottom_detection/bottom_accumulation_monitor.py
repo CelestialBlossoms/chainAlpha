@@ -48,6 +48,7 @@ from bottom_detection.top100_push_record_store import record_top100_push
 
 
 CHAIN = "sol"
+_BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = False
 TREND_INTERVALS = tuple(
     item.strip()
     for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "5m")).split(",")
@@ -581,6 +582,8 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             token["watchlist_added_at"] = int(added_at.timestamp()) if isinstance(added_at, datetime) else parse_timestamp(added_at)
         if row.get("daily_mcap_date"):
             token["watchlist_daily_mcap_date"] = str(row.get("daily_mcap_date"))
+        if row.get("updated_at"):
+            token["watchlist_updated_at"] = int(row["updated_at"].timestamp()) if isinstance(row["updated_at"], datetime) else parse_timestamp(row["updated_at"])
         tokens.append(token)
     return tokens
 
@@ -1243,6 +1246,38 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def ensure_bottom_top100_snapshot_comments() -> None:
+    global _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY
+    if _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY:
+        return
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            COMMENT ON TABLE bottom_top100_snapshots IS 'Top100持仓快照表。每次进入异动检测流程都会记录当时GMGN Top100持仓、摘要和分析结果';
+            COMMENT ON COLUMN bottom_top100_snapshots.id IS '快照自增ID，可被bottom_top100_push_records.snapshot_id引用';
+            COMMENT ON COLUMN bottom_top100_snapshots.scan_id IS '一次扫描批次ID';
+            COMMENT ON COLUMN bottom_top100_snapshots.chain IS '链名称，当前主要为sol';
+            COMMENT ON COLUMN bottom_top100_snapshots.trend_interval IS '扫描来源时间窗口，例如1m、5m、1h，watchlist来源可能沿用当前窗口';
+            COMMENT ON COLUMN bottom_top100_snapshots.address IS '代币CA';
+            COMMENT ON COLUMN bottom_top100_snapshots.symbol IS '快照时识别到的代币符号';
+            COMMENT ON COLUMN bottom_top100_snapshots.snapshot_ts IS '快照采集时间，Unix秒';
+            COMMENT ON COLUMN bottom_top100_snapshots.signal_type IS '本次快照分析出的信号类型，watch表示仅观察未推送';
+            COMMENT ON COLUMN bottom_top100_snapshots.signal_score IS '本次信号评分';
+            COMMENT ON COLUMN bottom_top100_snapshots.notified IS '历史兼容字段，当前推送状态以bottom_top100_push_records为准';
+            COMMENT ON COLUMN bottom_top100_snapshots.summary IS '本次快照的市值、池子、Top10/20/50/100占比、买卖额等摘要JSON';
+            COMMENT ON COLUMN bottom_top100_snapshots.holders IS '本次快照归一化后的GMGN Top100持仓明细JSON';
+            COMMENT ON COLUMN bottom_top100_snapshots.analysis IS '本次异动检测分析结果JSON';
+            COMMENT ON COLUMN bottom_top100_snapshots.raw_token IS '合并trending、watchlist、metadata后的原始代币数据JSON';
+            COMMENT ON COLUMN bottom_top100_snapshots.created_at IS '数据库写入时间';
+            """
+        )
+
+    db_op(_op)
+    _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = True
+
+
 def latest_snapshot_ts(address: str) -> int | None:
     def _op(conn):
         cur = conn.cursor()
@@ -1637,6 +1672,7 @@ def analyze_abnormal_snapshot(
 
 def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
     address = token_address(token)
+    ensure_bottom_top100_snapshot_comments()
 
     def _op(conn):
         cur = conn.cursor()
@@ -1692,7 +1728,14 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
 
 
-def publish_frontend_signal_update(text: str, extra: dict[str, Any], status: str = "frontend_update") -> None:
+def publish_frontend_signal_update(
+    text: str,
+    extra: dict[str, Any],
+    status: str = "frontend_update",
+    snapshot_id: int = 0,
+) -> None:
+    if snapshot_id and not (extra or {}).get("snapshot_id"):
+        extra = {**(extra or {}), "snapshot_id": snapshot_id}
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
@@ -2032,12 +2075,16 @@ def build_bottom_signal_extra(
     first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
     first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
     pool_summary = summary.get("pool") or {}
+    pool_liquidity = to_float(analysis.get("pool_total_liquidity")) or to_float(pool_summary.get("total_liquidity"))
     return {
+        "snapshot_id": analysis.get("snapshot_id", 0),
         "signal_type": analysis.get("signal_type"),
         "abnormal_rule": analysis.get("abnormal_rule"),
+        "trend_interval": token.get("_trend_interval") or TREND_INTERVAL,
         "ath_mcap": analysis.get("ath_mcap", 0),
         "min_ath_mcap": analysis.get("min_ath_mcap", 0),
         "current_mcap": current_mcap,
+        "liquidity": pool_liquidity,
         "holder_count": summary.get("holder_count", 0),
         "created_ts": summary.get("created_ts", 0),
         "age_sec": summary.get("age_sec", 0),
@@ -2065,7 +2112,7 @@ def build_bottom_signal_extra(
         "quiet_breakout_trigger_mode": analysis.get("trigger_mode", ""),
         "bottom_low_mcap": analysis.get("bottom_low_mcap", 0),
         "required_bottom_low_mcap": analysis.get("required_bottom_low_mcap", 0),
-        "pool_total_liquidity": analysis.get("pool_total_liquidity", 0),
+        "pool_total_liquidity": pool_liquidity,
         "required_pool_liquidity": analysis.get("required_pool_liquidity", 0),
         "pool_main_exchange": pool_summary.get("main_exchange", ""),
         "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
@@ -2123,6 +2170,7 @@ def run_agent_execution(
     execute: bool,
     already_notified: bool = False,
     has_previous_bottom_signal: bool = False,
+    snapshot_id: int = 0,
 ):
     """Run the Agent decision/execution layer from already-collected monitor data."""
     from agents.action_executor_agent import ActionExecutorAgent
@@ -2132,6 +2180,8 @@ def run_agent_execution(
     from agents.signal_decision_agent import SignalDecisionAgent
 
     address = token_address(token)
+    if snapshot_id:
+        analysis = {**analysis, "snapshot_id": snapshot_id}
     context = AgentContext(
         ca=address,
         chain=CHAIN,
@@ -2146,6 +2196,7 @@ def run_agent_execution(
         history=history,
         stats={
             "source_agent": "bottom_monitor_bridge",
+            "snapshot_id": snapshot_id,
             "signal_type": analysis.get("signal_type"),
             "abnormal_rule": analysis.get("abnormal_rule"),
             "mcap": analysis.get("current_mcap", 0),
@@ -2546,6 +2597,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     has_previous_bottom_signal = previous_bottom_signal_exists(address)
     baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
+    analysis = {**analysis, "snapshot_id": snapshot_id}
     print(
         f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
         f"type={analysis.get('signal_type')} score={analysis.get('score')} "
@@ -2568,12 +2620,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 execute=notify,
                 already_notified=already_notified,
                 has_previous_bottom_signal=has_previous_bottom_signal,
+                snapshot_id=snapshot_id,
             )
         else:
             web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
             signal_text = abnormal_signal_text(token, analysis)
             send_tg(signal_text, extra=web_extra)
-            publish_frontend_signal_update(signal_text, web_extra)
+            publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id)
     elif notify and should_notify(analysis) and already_notified:
         web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
         latest_baseline = latest_frontend_signal_baseline(address, analysis.get("signal_type", ""))
@@ -2597,6 +2650,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     execute=notify,
                     already_notified=already_notified,
                     has_previous_bottom_signal=has_previous_bottom_signal,
+                    snapshot_id=snapshot_id,
                 )
                 action_execution = agent_context.decision.get("action_executor") if agent_context else {}
                 print(
@@ -2604,7 +2658,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     f"agent action={action_execution.get('action')} repeat={repeat_reason} results={action_execution.get('results')}"
                 )
             else:
-                publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+                publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra, snapshot_id=snapshot_id)
                 print(
                     f"{token_label(token)} signal {analysis.get('signal_type')} already notified, "
                     f"frontend updated: {repeat_reason}"
@@ -2624,6 +2678,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 execute=notify,
                 already_notified=already_notified,
                 has_previous_bottom_signal=has_previous_bottom_signal,
+                snapshot_id=snapshot_id,
             )
             action_execution = agent_context.decision.get("action_executor") if agent_context else {}
             print(
@@ -2632,7 +2687,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             )
         else:
             web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
-            publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra)
+            publish_frontend_signal_update(abnormal_signal_text(token, analysis), web_extra, snapshot_id=snapshot_id)
             print(
                 f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
                 f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
@@ -2644,9 +2699,10 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         quiet_already = previous_signal_exists(address, quiet_type)
         quiet_baseline = first_signal_baseline(address, quiet_type)
         if not quiet_already:
-            save_snapshot(scan_id + "_quiet", token, summary, holders, quiet_breakout)
+            quiet_snapshot_id = save_snapshot(scan_id + "_quiet", token, summary, holders, quiet_breakout)
+            quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
-            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_breakout), quiet_extra, status="frontend_update")
+            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_breakout), quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id)
             print(
                 f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
                 f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "
@@ -2660,20 +2716,25 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         runup_type = quiet_runup["signal_type"]
         runup_already = previous_signal_exists(address, runup_type)
         runup_baseline = first_signal_baseline(address, runup_type)
-        runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
         if not runup_already:
-            save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
-            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update")
+            runup_snapshot_id = save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
+            quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
+            runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
+            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )
         else:
+            runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             latest_baseline = latest_frontend_signal_baseline(address, runup_type)
             repeat_allowed, repeat_reason = frontend_repeat_update_allowed(runup_extra, quiet_runup, latest_baseline)
             if repeat_allowed:
-                publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update")
+                runup_snapshot_id = save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
+                quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
+                runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
+                publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
                 print(f"{token_label(token)} quiet_runup frontend updated: {repeat_reason}")
             else:
                 print(f"{token_label(token)} quiet_runup already notified, skip frontend update: {repeat_reason}")
@@ -2736,6 +2797,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             crossover_ts = int(candles[crossover_bar_idx]["ts"]) if 0 <= crossover_bar_idx < len(candles) else 0
             ema_extra = {
                 "signal_type": crossover_signal_type,
+                "trend_interval": token.get("_trend_interval") or TREND_INTERVAL,
                 "crossover_type": crossover["type"],
                 "crossover_ts": crossover_ts,
                 "ema9": crossover["ema9"],
@@ -2745,6 +2807,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "symbol": token.get("symbol"),
                 "address": address,
                 "current_mcap": current_mcap,
+                "liquidity": pool_liq,
                 "holder_count": summary.get("holder_count", 0),
                 "created_ts": summary.get("created_ts", 0),
                 "age_sec": summary.get("age_sec", 0),
@@ -2753,6 +2816,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "first_signal_delta_mcap": first_delta,
                 "first_signal_change_pct": first_change_pct,
                 "pool_liquidity": pool_liq,
+                "pool_total_liquidity": pool_liq,
                 "pool_mcap_ratio": pool_rat,
                 "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
                 "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
@@ -2763,14 +2827,27 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             signal_text = ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat, crossover_ts)
             if not ema_already:
                 send_tg(signal_text, extra=ema_extra)
-                save_snapshot(scan_id + "_ema", token, summary, holders,
-                              {"signal_type": crossover_signal_type, "score": 80,
-                               "crossover": crossover})
+                ema_snapshot_id = save_snapshot(
+                    scan_id + "_ema",
+                    token,
+                    summary,
+                    holders,
+                    {"signal_type": crossover_signal_type, "score": 80, "crossover": crossover},
+                )
+                ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
                 # Push to frontend on first detection
-                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update")
+                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
                 print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)} crossover_ts={crossover_ts}")
             else:
-                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update")
+                ema_snapshot_id = save_snapshot(
+                    scan_id + "_ema",
+                    token,
+                    summary,
+                    holders,
+                    {"signal_type": crossover_signal_type, "score": 80, "crossover": crossover},
+                )
+                ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
+                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
                 print(
                     f"{token_label(token)} EMA golden cross already notified, frontend updated "
                     f"mcap ${first_mcap:,.0f}->${current_mcap:,.0f} ({first_change_pct:+.1f}%)"

@@ -278,7 +278,8 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
                 ADD COLUMN IF NOT EXISTS note TEXT,
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false,
                 ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT now(),
-                ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+                ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
             """
         )
         cur.execute(
@@ -303,6 +304,7 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
                 COALESCE(blacklisted, false) AS blacklisted,
                 added_at,
                 last_seen_at,
+                updated_at,
                 source
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
@@ -312,7 +314,7 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
                 COALESCE(peak_mcap, 0),
                 COALESCE(current_mcap, 0),
                 COALESCE(last_mcap, 0)
-            ) DESC, last_seen_at DESC NULLS LAST
+            ) DESC, updated_at DESC NULLS LAST, last_seen_at DESC NULLS LAST
             LIMIT %s
             """,
             (limit,),
@@ -533,7 +535,8 @@ def _refresh_watchlist_mcaps(addresses: list[str], max_workers: int = 5) -> dict
                     highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
                     last_pool_liquidity = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_pool_liquidity, 0) END,
                     symbol = CASE WHEN %s != '' THEN %s ELSE COALESCE(symbol, '') END,
-                    last_seen_at = now()
+                    last_seen_at = now(),
+                    updated_at = now()
                 WHERE ca = %s
                 """,
                 (mcap, mcap, mcap, mcap, liq, liq, symbol, symbol, address),

@@ -60,7 +60,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                    daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false),
                    last_pool_liquidity, last_pool_mcap_ratio, fee_sol, symbol,
                    narrative_desc, narrative_type, highest_mcap, current_mcap, gmgn_created_at,
-                   remark
+                   remark, updated_at
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -87,6 +87,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "current_mcap": row[17] if len(row) > 17 else None,
                 "gmgn_created_at": row[18] if len(row) > 18 else None,
                 "remark": row[19] if len(row) > 19 else None,
+                "updated_at": row[20] if len(row) > 20 else None,
             }
             for row in cur.fetchall()
         ]
@@ -106,15 +107,16 @@ def upsert_watchlist_token(
         cur.execute(
             """
             INSERT INTO bottom_watchlist_tokens (
-                ca, create_at, added_at, last_seen_at, source, peak_mcap, last_mcap,
+                ca, create_at, added_at, last_seen_at, updated_at, source, peak_mcap, last_mcap,
                 highest_mcap, current_mcap, token_created_at, gmgn_created_at, note
             ) VALUES (
                 %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END,
-                now(), now(), %s, %s, %s, %s, %s, %s, %s, %s
+                now(), now(), now(), %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 create_at = COALESCE(bottom_watchlist_tokens.create_at, EXCLUDED.create_at),
                 last_seen_at = now(),
+                updated_at = now(),
                 source = COALESCE(bottom_watchlist_tokens.source, EXCLUDED.source),
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
                 last_mcap = EXCLUDED.last_mcap,
@@ -153,7 +155,8 @@ def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: flo
             SET token_created_at = %s,
                 gmgn_created_at = %s,
                 ath_mcap = GREATEST(COALESCE(ath_mcap, 0), %s),
-                highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s)
+                highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
+                updated_at = now()
             WHERE ca = %s
             """,
             (
@@ -197,6 +200,8 @@ def ensure_watchlist_daily_mcap_columns() -> None:
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS current_mcap NUMERIC DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+            ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS gmgn_created_at BIGINT DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
@@ -210,6 +215,34 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS narrative_type TEXT;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS remark TEXT;
+
+            COMMENT ON TABLE bottom_watchlist_tokens IS '底部异动重点观察池。每个CA一行，保存当前观察状态，不保存每次异动历史';
+            COMMENT ON COLUMN bottom_watchlist_tokens.ca IS '代币CA，主键';
+            COMMENT ON COLUMN bottom_watchlist_tokens.create_at IS '代币创建时间，优先来自GMGN创建时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.added_at IS '加入观察池时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.last_seen_at IS '监控最近一次扫描到该CA的时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.updated_at IS '观察池记录最近一次被业务流程更新的时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.source IS '加入观察池来源，例如auto_mcap_over_1m、binance_web3、manual_blacklist';
+            COMMENT ON COLUMN bottom_watchlist_tokens.peak_mcap IS '加入观察池或更新过程记录到的峰值市值，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.last_mcap IS '最近一次扫描写入的市值，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.highest_mcap IS '观察池生命周期内记录到的最高市值，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.current_mcap IS '当前用于前端展示和判断的最新市值，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.gmgn_created_at IS 'GMGN返回的代币创建时间，Unix秒';
+            COMMENT ON COLUMN bottom_watchlist_tokens.note IS '系统写入的备注，例如自动加入原因';
+            COMMENT ON COLUMN bottom_watchlist_tokens.remark IS '人工备注或补充说明';
+            COMMENT ON COLUMN bottom_watchlist_tokens.symbol IS '代币符号';
+            COMMENT ON COLUMN bottom_watchlist_tokens.fee_sol IS '创建或相关交易手续费SOL，用于1M标筛选';
+            COMMENT ON COLUMN bottom_watchlist_tokens.token_created_at IS '代币创建时间，Unix秒';
+            COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_date IS '首次或最近记录达到每日1M市值条件的日期';
+            COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_threshold IS '每日市值里程碑阈值，默认1000000美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_notified_date IS '每日1M市值通知日期';
+            COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_notified_at IS '每日1M市值通知发送时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.ath_mcap IS 'GMGN或监控识别到的历史最高市值，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.blacklisted IS '是否被黑名单过滤，true时扫描跳过';
+            COMMENT ON COLUMN bottom_watchlist_tokens.last_pool_liquidity IS '最近一次可靠池子流动性，美元';
+            COMMENT ON COLUMN bottom_watchlist_tokens.last_pool_mcap_ratio IS '最近一次可靠池子流动性与市值比值';
+            COMMENT ON COLUMN bottom_watchlist_tokens.narrative_desc IS 'Binance Web3或其他来源识别到的叙事描述';
+            COMMENT ON COLUMN bottom_watchlist_tokens.narrative_type IS '叙事分类或标签类型';
             """
         )
 
@@ -233,17 +266,18 @@ def upsert_daily_mcap_watchlist_token(
         cur.execute(
             """
             INSERT INTO bottom_watchlist_tokens (
-                ca, create_at, added_at, last_seen_at, source, symbol,
+                ca, create_at, added_at, last_seen_at, updated_at, source, symbol,
                 peak_mcap, last_mcap, fee_sol, daily_mcap_date,
                 daily_mcap_threshold, highest_mcap, current_mcap,
                 token_created_at, gmgn_created_at, note
             ) VALUES (
                 %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END,
-                now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s
+                now(), now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 create_at = COALESCE(bottom_watchlist_tokens.create_at, EXCLUDED.create_at),
                 last_seen_at = now(),
+                updated_at = now(),
                 source = COALESCE(bottom_watchlist_tokens.source, EXCLUDED.source),
                 symbol = COALESCE(EXCLUDED.symbol, bottom_watchlist_tokens.symbol),
                 peak_mcap = GREATEST(COALESCE(bottom_watchlist_tokens.peak_mcap, 0), EXCLUDED.peak_mcap),
@@ -309,7 +343,8 @@ def mark_daily_mcap_watchlist_notified(address: str) -> None:
             """
             UPDATE bottom_watchlist_tokens
             SET daily_mcap_notified_date = CURRENT_DATE,
-                daily_mcap_notified_at = now()
+                daily_mcap_notified_at = now(),
+                updated_at = now()
             WHERE ca = %s
             """,
             (address,),
@@ -381,12 +416,13 @@ def set_watchlist_blacklisted(address: str, blacklisted: bool = True) -> None:
         cur.execute(
             """
             INSERT INTO bottom_watchlist_tokens (
-                ca, added_at, last_seen_at, source, blacklisted, note
+                ca, added_at, last_seen_at, updated_at, source, blacklisted, note
             ) VALUES (
-                %s, now(), now(), 'manual_blacklist', %s, %s
+                %s, now(), now(), now(), 'manual_blacklist', %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 last_seen_at = now(),
+                updated_at = now(),
                 blacklisted = EXCLUDED.blacklisted,
                 note = CASE
                     WHEN EXCLUDED.blacklisted THEN 'manual blacklist'
@@ -473,6 +509,7 @@ def update_watchlist_seen(
             """
             UPDATE bottom_watchlist_tokens
             SET last_seen_at = now(),
+                updated_at = now(),
                 peak_mcap = GREATEST(COALESCE(peak_mcap, 0), %s),
                 last_mcap = %s,
                 highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
@@ -501,6 +538,7 @@ def save_watchlist_narrative(
     holders: int = 0,
     launchpad: str = "",
     created_ts: int = 0,
+    ath_mcap: float = 0,
 ) -> None:
     """Save narrative + token metadata to bottom_watchlist_tokens. Fills missing fields."""
     def _op(conn):
@@ -511,9 +549,11 @@ def save_watchlist_narrative(
             SET narrative_desc = CASE WHEN %s != '' THEN %s ELSE COALESCE(narrative_desc, '') END,
                 narrative_type = CASE WHEN %s != '' THEN %s ELSE COALESCE(narrative_type, '') END,
                 last_seen_at = now(),
+                updated_at = now(),
                 last_mcap = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_mcap, 0) END,
                 current_mcap = CASE WHEN %s > 0 THEN %s ELSE COALESCE(current_mcap, 0) END,
                 peak_mcap = CASE WHEN %s > 0 AND COALESCE(peak_mcap, 0) = 0 THEN %s ELSE COALESCE(peak_mcap, 0) END,
+                ath_mcap = CASE WHEN %s > 0 AND (COALESCE(ath_mcap, 0) = 0 OR %s > COALESCE(ath_mcap, 0)) THEN %s ELSE COALESCE(ath_mcap, 0) END,
                 last_pool_liquidity = CASE WHEN %s > 0 THEN %s ELSE COALESCE(last_pool_liquidity, 0) END,
                 symbol = CASE WHEN %s != '' THEN %s ELSE COALESCE(symbol, '') END,
                 source = CASE WHEN COALESCE(source, '') = '' AND %s != '' THEN %s ELSE COALESCE(source, '') END,
@@ -526,6 +566,7 @@ def save_watchlist_narrative(
                 mcap, mcap,
                 mcap, mcap,
                 mcap, mcap,
+                ath_mcap, ath_mcap, ath_mcap,
                 liquidity, liquidity,
                 symbol, symbol,
                 source, source,
@@ -537,14 +578,14 @@ def save_watchlist_narrative(
             cur.execute(
                 """
                 INSERT INTO bottom_watchlist_tokens (
-                    ca, create_at, added_at, last_seen_at, source,
+                    ca, create_at, added_at, last_seen_at, updated_at, source,
                     narrative_desc, narrative_type, symbol, note,
-                    peak_mcap, last_mcap, current_mcap,
+                    peak_mcap, last_mcap, current_mcap, ath_mcap,
                     last_pool_liquidity, token_created_at, gmgn_created_at
                 ) VALUES (
-                    %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END, now(), now(), %s,
+                    %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END, now(), now(), now(), %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s, %s
                 )
                 """,
@@ -554,7 +595,7 @@ def save_watchlist_narrative(
                     source or "narrative_fetch",
                     narrative_desc or "", narrative_type or "",
                     symbol or "", name or "",
-                    mcap, mcap, mcap,
+                    mcap, mcap, mcap, ath_mcap,
                     liquidity,
                     created_ts if created_ts > 0 else None,
                     created_ts if created_ts > 0 else None,
@@ -569,7 +610,8 @@ def fill_watchlist_create_at(address: str, created_ts: int) -> None:
         cur.execute(
             """
             UPDATE bottom_watchlist_tokens
-            SET create_at = to_timestamp(%s)
+            SET create_at = to_timestamp(%s),
+                updated_at = now()
             WHERE ca = %s AND create_at IS NULL
             """,
             (created_ts, address),
