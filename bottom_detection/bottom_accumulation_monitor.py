@@ -1566,7 +1566,7 @@ def analyze_abnormal_snapshot(
             f"反弹涨幅{new_revival_price_change_pct:.1f}%"
         )
     elif old_abnormal_ready:
-        rule_name = "OLD_MCAP_4W_UP30"
+        rule_name = "OLD_MCAP_4W_UP15"
         min_ath_mcap = 0
         min_mcap = BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
         max_mcap = 0
