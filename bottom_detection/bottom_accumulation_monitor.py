@@ -2599,15 +2599,16 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
     snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
     analysis = {**analysis, "snapshot_id": snapshot_id}
-    print(
-        f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
-        f"type={analysis.get('signal_type')} score={analysis.get('score')} "
-        f"ath=${analysis.get('ath_mcap', 0):,.0f} "
-        f"mcap=${analysis.get('current_mcap', 0):,.0f} "
-        f"price={analysis.get('price_change_pct', 0):.1f}%/{analysis.get('required_price_change_pct', 0):.1f}% "
-        f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
-        f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
-    )
+    if analysis.get("signal_type") != "watch":
+        print(
+            f"{token_label(token)} snapshot={snapshot_id} history={len(history)} "
+            f"type={analysis.get('signal_type')} score={analysis.get('score')} "
+            f"ath=${analysis.get('ath_mcap', 0):,.0f} "
+            f"mcap=${analysis.get('current_mcap', 0):,.0f} "
+            f"price={analysis.get('price_change_pct', 0):.1f}%/{analysis.get('required_price_change_pct', 0):.1f}% "
+            f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
+            f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
+        )
     if notify and should_notify(analysis) and not already_notified:
         if USE_AGENT_DECISION:
             run_agent_execution(
