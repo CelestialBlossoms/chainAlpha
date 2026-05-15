@@ -313,6 +313,37 @@
   color: #fecaca;
 }
 
+.ca-pool-ratio {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.ca-pool-bad {
+  color: #fca5a5;
+}
+
+.ca-pool-normal {
+  color: #fde68a;
+}
+
+.ca-pool-good {
+  color: #93c5fd;
+}
+
+.ca-pool-great {
+  color: #86efac;
+}
+
+.ca-pool-unknown {
+  color: #94a3b8;
+}
+
 .ca-watch-note {
   min-width: 0;
   max-height: 28px;

@@ -40,6 +40,11 @@
     firstAbnormalTime: "\u9996\u6b21\u5f02\u52a8\u65f6\u95f4",
     maxMcap: "\u6700\u9ad8\u5e02\u503c",
     liquidity: "\u6d41\u52a8\u6027",
+    poolMcapRatio: "\u6c60\u5b50/\u5e02\u503c",
+    poolVeryBad: "\u975e\u5e38\u5dee",
+    poolNormal: "\u6b63\u5e38",
+    poolGood: "\u826f\u597d",
+    poolGreat: "\u975e\u5e38\u597d",
     priceChange: "\u6da8\u5e45",
     abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
     watchlistLowMcap: "\u91cd\u70b9\u4f4e\u5e02\u503c",
@@ -104,6 +109,27 @@
   function fmtPct(value) {
     const n = Number(value || 0);
     return `${n.toFixed(n >= 10 ? 1 : 2)}%`;
+  }
+
+  function poolMcapRatioPct(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return n > 1 ? n : n * 100;
+  }
+
+  function poolMcapRatioStatus(value) {
+    const pct = poolMcapRatioPct(value);
+    if (pct <= 0) return { pct, label: L.none, cls: "ca-pool-unknown" };
+    if (pct < 5) return { pct, label: L.poolVeryBad, cls: "ca-pool-bad" };
+    if (pct < 10) return { pct, label: L.poolNormal, cls: "ca-pool-normal" };
+    if (pct <= 15) return { pct, label: L.poolGood, cls: "ca-pool-good" };
+    return { pct, label: L.poolGreat, cls: "ca-pool-great" };
+  }
+
+  function renderPoolMcapRatio(value) {
+    const status = poolMcapRatioStatus(value);
+    if (status.pct <= 0) return `<span class="ca-pool-ratio ca-pool-unknown">${L.none}</span>`;
+    return `<span class="ca-pool-ratio ${status.cls}">${status.pct.toFixed(status.pct >= 10 ? 1 : 2)}% · ${status.label}</span>`;
   }
 
   function fmtSignedPct(value) {
@@ -328,10 +354,12 @@
     const bottomChip = result.bottom_chip_sell || {};
     const bottomSummary = bottomChipSummaryItem(bottomChip, chip.wallet_rows);
     const summaries = bottomSummary ? [bottomSummary, ...baseSummaries] : baseSummaries;
+    const poolRatio = token.pool_mcap_ratio || (Number(token.market_cap || 0) > 0 ? Number(token.liquidity || 0) / Number(token.market_cap || 0) : 0);
 
     return `
       ${row(L.token, `${escapeHtml(token.symbol || token.name || "?")} ${escapeHtml(shortCa(result.address))}`)}
       ${row(L.mcapLp, `${fmtUsd(token.market_cap)} / ${fmtUsd(token.liquidity)}`)}
+      ${row(L.poolMcapRatio, renderPoolMcapRatio(poolRatio))}
       ${row(L.chips, `Top10 ${fmtPct(chip.top10_pct)} / Top30 ${fmtPct(chip.top30_pct)} / Top50 ${fmtPct(chip.top50_pct)}`)}
       ${row("Top30", `${fmtUsd(chip.top30_profit)} (${L.realized} ${fmtUsd(chip.top30_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top30_unrealized_profit)})`)}
       ${row("Top50", `${fmtUsd(chip.top50_profit)} (${L.realized} ${fmtUsd(chip.top50_realized_profit)} / ${L.unrealized} ${fmtUsd(chip.top50_unrealized_profit)})`)}
@@ -421,6 +449,7 @@
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
                 <span><em>${L.maxMcap}</em><b>${fmtUsd(item.max_mcap || item.ath_mcap || item.peak_mcap)}</b></span>
                 <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
+                <span><em>${L.poolMcapRatio}</em><b>${renderPoolMcapRatio(item.pool_mcap_ratio)}</b></span>
                 <span><em>${L.updated}</em><b>${escapeHtml(fmtTime(item.ts || item.last_seen_at || item.added_at))}</b></span>
               </div>
             </div>`;
