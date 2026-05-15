@@ -69,10 +69,6 @@
   font: inherit;
 }
 
-.ca-service-toggle {
-  min-width: 44px;
-}
-
 .ca-cluster-button:hover {
   background: #2a3441;
 }
@@ -89,7 +85,6 @@
 }
 
 .ca-collapsed .ca-cluster-body,
-.ca-collapsed .ca-cluster-refresh,
 .ca-collapsed .ca-bottom-tabs,
 .ca-collapsed .ca-resize-handle {
   display: none;
@@ -246,7 +241,7 @@
 
 .ca-abnormal-token {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 6px;
   align-items: start;
   min-width: 0;
@@ -276,19 +271,6 @@
 .ca-watch-ca span,
 .ca-watch-note {
   color: #94a3b8;
-  font-size: 10px;
-}
-
-.ca-gmgn-link {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 6px;
-  border: 1px solid rgba(52, 211, 153, 0.34);
-  border-radius: 5px;
-  background: #123229;
-  color: #d1fae5;
-  text-decoration: none;
   font-size: 10px;
 }
 

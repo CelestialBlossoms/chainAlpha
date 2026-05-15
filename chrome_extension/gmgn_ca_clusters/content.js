@@ -4,7 +4,7 @@
     wallet: "\u94b1\u5305",
     copied: "\u5df2\u590d\u5236",
     copy: "\u590d\u5236",
-    copyCa: "\u590d\u5236CA",
+    copyCa: "\u70b9\u51fb\u590d\u5236CA",
     dismiss: "\u79fb\u9664",
     title: "CA \u6346\u7ed1\u5206\u6790",
     token: "\u4ee3\u5e01",
@@ -33,7 +33,7 @@
     abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
     watchView: "\u5f02\u52a8\u76d1\u63a7",
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
-    abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA\uff0cGMGN \u6253\u5f00\u8be6\u60c5",
+    abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA",
     abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
     currentMcap: "\u5f53\u524d\u5e02\u503c",
     firstAbnormalMcap: "\u9996\u6b21\u5f02\u52a8\u5e02\u503c",
@@ -57,8 +57,6 @@
     ratTrader: "\u8001\u9f20\u4ed3",
     top10: "Top10",
     updated: "\u66f4\u65b0",
-    serviceLocal: "\u672c\u5730",
-    serviceServer: "\u670d\u52a1\u5668",
     collapse: "\u6536\u8d77",
     analyze: "\u5206\u6790",
     run: "\u67e5",
@@ -398,7 +396,6 @@
         <h3>${L.abnormalTitle}</h3>
         <p>${L.abnormalHint}</p>
       </div>
-      <button class="ca-cluster-button ca-abnormal-refresh" title="${L.refresh}">R</button>
     </div>`;
   }
 
@@ -435,7 +432,6 @@
                 <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
                   ${STATE.copied === ca ? L.copied : L.copyCa}
                 </button>
-                <a class="ca-gmgn-link" href="${escapeAttr(gmgnUrl(ca, item.chain || "sol"))}" target="_blank" rel="noreferrer">GMGN</a>
                 <button class="ca-dismiss-button" data-source="bottom_abnormal" data-ca="${escapeAttr(ca)}" data-id="${escapeAttr(item.id)}" title="${L.dismiss}">X</button>
               </div>
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
@@ -501,9 +497,6 @@
       <div class="ca-cluster-header">
         <div class="ca-cluster-title">${L.title}</div>
         <div class="ca-cluster-actions">
-          <button class="ca-cluster-button ca-service-toggle" title="${STATE.serviceBaseUrl || ""}">${STATE.serviceMode === "server" ? L.serviceServer : L.serviceLocal}</button>
-          <button class="ca-cluster-button ca-cluster-refresh" title="${L.refresh}">R</button>
-          <button class="ca-cluster-button ca-cluster-clear" title="${L.clear}">C</button>
           <button class="ca-cluster-button ca-cluster-toggle" title="${L.collapse}">${STATE.collapsed ? "+" : "-"}</button>
         </div>
       </div>
@@ -522,10 +515,6 @@
       STATE.collapsed = !STATE.collapsed;
       render();
     });
-    panel.querySelector(".ca-service-toggle")?.addEventListener("click", () => toggleServiceMode());
-    panel.querySelector(".ca-cluster-refresh")?.addEventListener("click", () => analyze(STATE.ca, true));
-    panel.querySelector(".ca-abnormal-refresh")?.addEventListener("click", () => loadBottomWatchlist(true));
-    panel.querySelector(".ca-cluster-clear")?.addEventListener("click", () => clearPanel());
     panel.querySelector(".ca-cluster-run")?.addEventListener("click", () => {
       const value = panel.querySelector(".ca-cluster-input")?.value?.trim() || "";
       analyze(value, true);
