@@ -38,6 +38,7 @@
     currentMcap: "\u5f53\u524d\u5e02\u503c",
     firstAbnormalMcap: "\u9996\u6b21\u5f02\u52a8\u5e02\u503c",
     firstAbnormalTime: "\u9996\u6b21\u5f02\u52a8\u65f6\u95f4",
+    firstGain: "\u76f8\u5bf9\u9996\u6b21\u6da8\u5e45",
     maxMcap: "\u6700\u9ad8\u5e02\u503c",
     liquidity: "\u6d41\u52a8\u6027",
     poolMcapRatio: "\u6c60\u5b50/\u5e02\u503c",
@@ -195,6 +196,13 @@
         return `<span class="${cls}">${escapeHtml(fmtSignedPct(pct))}</span>`;
       })
       .join("<i>,</i>");
+  }
+
+  function calcFirstGainPct(currentMcap, firstMcap) {
+    const current = toNumber(currentMcap);
+    const first = toNumber(firstMcap);
+    if (current <= 0 || first <= 0) return null;
+    return ((current - first) / first) * 100;
   }
 
   function shortCa(ca) {
@@ -418,6 +426,7 @@
             const symbol = item.symbol || item.token_type || "?";
             const narrative = item.narrative || item.abnormal_rule || item.source || "";
             const isLowWatchlist = Boolean(item.watchlist_low_mcap_highlight);
+            const firstGainPct = calcFirstGainPct(item.current_mcap, item.first_abnormal_mcap);
             const rowClass = `ca-abnormal-row${isLowWatchlist ? " ca-abnormal-row-priority" : ""}`;
             const watchlistBadge = isLowWatchlist
               ? `<span class="ca-priority-badge">${L.watchlistLowMcap} ${fmtUsd(item.watchlist_current_mcap)}</span>`
@@ -440,6 +449,7 @@
                 ${isLowWatchlist ? `<span><em>${L.watchlistMcap}</em><b class="ca-priority-text">${fmtUsd(item.watchlist_current_mcap)}</b></span>` : ""}
                 <span><em>${L.firstAbnormalMcap}</em><b>${fmtUsd(item.first_abnormal_mcap)}</b></span>
                 <span><em>${L.firstAbnormalTime}</em><b>${escapeHtml(fmtTime(item.first_abnormal_ts))}</b></span>
+                <span><em>${L.firstGain}</em><b class="${firstGainPct === null || firstGainPct >= 0 ? "ca-positive" : "ca-negative"}">${firstGainPct === null ? "-" : fmtSignedPct(firstGainPct)}</b></span>
                 <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
                 <span class="ca-history-metric"><em>${L.abnormalHistory}</em><b class="ca-history-changes">${renderChangeHistory(item.abnormal_mcap_change_history, item.abnormal_mcap_change_text)}</b></span>
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
