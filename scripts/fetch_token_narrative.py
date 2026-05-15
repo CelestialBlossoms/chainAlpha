@@ -51,6 +51,13 @@ def gmgn_api(endpoint: str, address: str, chain: str = "sol", api_key: str = "")
     return r.json()
 
 
+def _to_number(v: any) -> float:
+    """Convert a value that might be a nested dict (new GMGN format) to float."""
+    if isinstance(v, dict):
+        return float(v.get("price", 0) or 0)
+    return float(v or 0)
+
+
 def fetch_token_meta(address: str, chain: str = "sol") -> dict:
     """Try gmgn-cli first, fall back to direct API. Returns full token metadata + pool."""
     info = gmgn_cli(["token", "info", "--chain", chain, "--address", address])
@@ -63,12 +70,22 @@ def fetch_token_meta(address: str, chain: str = "sol") -> dict:
     d = info.get("data", info) if isinstance(info, dict) else {}
     pool = d.get("pool", {}) or {}
     ts = int(d.get("creation_timestamp") or d.get("open_timestamp") or 0)
+
+    price_raw = d.get("price", 0)
+    price = _to_number(price_raw)
+    supply = float(d.get("circulating_supply") or 0)
+
+    ath_price = float(d.get("ath_price") or 0)
+    ath_mcap = ath_price * supply if ath_price and supply else 0.0
+
     return {
         "symbol": str(d.get("symbol") or "").strip(),
         "name": str(d.get("name") or "").strip(),
-        "price": float(d.get("price") or 0),
-        "supply": float(d.get("circulating_supply") or 0),
-        "mcap": float(d.get("price") or 0) * float(d.get("circulating_supply") or 0),
+        "price": price,
+        "supply": supply,
+        "mcap": price * supply,
+        "ath_price": ath_price,
+        "ath_mcap": ath_mcap,
         "liquidity": float(d.get("liquidity") or 0),
         "launchpad": str(d.get("launchpad_platform") or "").strip(),
         "twitter": str((d.get("link") or {}).get("twitter_username") or "").strip(),
@@ -98,6 +115,10 @@ def main():
         print(f"  Token: {symbol}" + (f" ({name})" if name else ""))
     if meta.get("mcap"):
         print(f"  MCap: ${meta['mcap']:,.0f}")
+    if meta.get("ath_price"):
+        print(f"  ATH Price: ${meta['ath_price']:.8f}")
+    if meta.get("ath_mcap"):
+        print(f"  ATH MCap: ${meta['ath_mcap']:,.0f}")
     if meta.get("launchpad"):
         print(f"  Launchpad: {meta['launchpad']}")
     if meta.get("twitter"):
@@ -144,8 +165,9 @@ def main():
         holders=meta.get("holders", 0),
         launchpad=meta.get("launchpad", ""),
         created_ts=meta.get("created_ts", 0),
+        ath_mcap=meta.get("ath_mcap", 0),
     )
-    print(f"  Done! narrative + metadata saved to bottom_watchlist_tokens for {address[:12]}..")
+    print(f"  Done! narrative + metadata + ATH mcap saved to bottom_watchlist_tokens for {address[:12]}..")
 
 
 if __name__ == "__main__":
