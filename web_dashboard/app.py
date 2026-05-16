@@ -241,6 +241,7 @@ def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
             "watchlist_source": extra.get("watchlist_source") or "",
             "watchlist_low_mcap_threshold": extra.get("watchlist_low_mcap_threshold") or PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD,
             "watchlist_low_mcap_highlight": bool(extra.get("watchlist_low_mcap_highlight")),
+            "risk_tags": extra.get("risk_tags") or [],
         },
     }
 

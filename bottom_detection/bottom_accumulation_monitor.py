@@ -1729,6 +1729,34 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
 
 
+def compute_risk_tags(extra: dict[str, Any]) -> list[str]:
+    """Classify a push signal with risk tags based on known failure patterns."""
+    tags = []
+    mcap = to_float(extra.get("current_mcap", 0))
+    ath = to_float(extra.get("ath_mcap", 0))
+    price_change = to_float(extra.get("price_change_pct", 0))
+    volume = to_float(extra.get("breakout_volume_usd", 0) or extra.get("volume_usd", 0))
+
+    # Transient: signal change_pct > 50% == likely already peaked
+    if price_change > 50:
+        tags.append("瞬爆")
+
+    # Ceiling: ATH < 1.5x current mcap == no room to grow
+    ath_ratio = ath / max(1, mcap) if ath and mcap else 0
+    if 0 < ath_ratio < 1.5:
+        tags.append("天花板")
+
+    # Large mcap: > $500K = too expensive to pump
+    if mcap > 500_000:
+        tags.append("大市值")
+
+    # Dead volume: no meaningful trading behind the signal
+    if 0 < volume < 10_000:
+        tags.append("无量")
+
+    return tags
+
+
 def publish_frontend_signal_update(
     text: str,
     extra: dict[str, Any],
@@ -1740,6 +1768,9 @@ def publish_frontend_signal_update(
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
+    risk_tags = compute_risk_tags(extra or {})
+    if risk_tags:
+        extra = {**(extra or {}), "risk_tags": risk_tags}
     try:
         record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
     except Exception as exc:

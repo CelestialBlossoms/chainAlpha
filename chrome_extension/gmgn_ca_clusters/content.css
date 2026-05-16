@@ -290,6 +290,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ca-risk-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  margin-left: 3px;
+  vertical-align: middle;
+}
 
 .ca-priority-text {
   color: #fecaca;

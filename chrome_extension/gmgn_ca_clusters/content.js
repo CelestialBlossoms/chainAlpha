@@ -431,6 +431,17 @@
             const watchlistBadge = isLowWatchlist
               ? `<span class="ca-priority-badge">${L.watchlistLowMcap} ${fmtUsd(item.watchlist_current_mcap)}</span>`
               : "";
+            const riskTags = Array.isArray(item.risk_tags) ? item.risk_tags : [];
+            const TAG_STYLES = {
+              "瞬爆": "background:#92400e;color:#fbbf24;border:1px solid #b45309",
+              "天花板": "background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b",
+              "大市值": "background:#4c1d95;color:#c4b5fd;border:1px solid #6d28d9",
+              "无量": "background:#334155;color:#94a3b8;border:1px solid #475569",
+            };
+            const riskTagsHtml = riskTags.map(t => {
+              const style = TAG_STYLES[t] || "background:#1e293b;color:#94a3b8";
+              return `<span class="ca-risk-tag" style="${style}">${t}</span>`;
+            }).join("");
             return `<div class="${rowClass}">
               <div class="ca-abnormal-token">
                 <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
@@ -438,6 +449,7 @@
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
                 ${watchlistBadge}
+                ${riskTagsHtml}
                 <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
                   ${STATE.copied === ca ? L.copied : L.copyCa}
                 </button>
@@ -693,6 +705,7 @@
       watchlist_current_mcap: toNumber(extra.watchlist_current_mcap),
       watchlist_low_mcap_threshold: toNumber(extra.watchlist_low_mcap_threshold),
       watchlist_low_mcap_highlight: Boolean(extra.watchlist_low_mcap_highlight),
+      risk_tags: Array.isArray(extra.risk_tags) ? extra.risk_tags : [],
     };
   }
 
