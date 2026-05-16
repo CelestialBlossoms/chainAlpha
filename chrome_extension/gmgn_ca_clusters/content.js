@@ -437,6 +437,7 @@
               "天花板": "background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b",
               "大市值": "background:#4c1d95;color:#c4b5fd;border:1px solid #6d28d9",
               "无量": "background:#334155;color:#94a3b8;border:1px solid #475569",
+              "黄金区间": "background:#064e3b;color:#34d399;border:1px solid #065f46",
             };
             const riskTagsHtml = riskTags.map(t => {
               const style = TAG_STYLES[t] || "background:#1e293b;color:#94a3b8";

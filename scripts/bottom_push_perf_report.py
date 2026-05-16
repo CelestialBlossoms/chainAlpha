@@ -382,7 +382,7 @@ tr:hover td{{background:#162032}}
     html += '</div>\n'
 
     # Risk tag summary
-    TAG_COLORS = {"瞬爆": "#f59e0b", "天花板": "#ef4444", "大市值": "#8b5cf6", "无量": "#64748b"}
+    TAG_COLORS = {"瞬爆": "#f59e0b", "天花板": "#ef4444", "大市值": "#8b5cf6", "无量": "#64748b", "黄金区间": "#10b981"}
     tag_order = ["瞬爆", "天花板", "大市值", "无量"]
     html += '<h2>风险标签分析</h2>\n<div class="nar-cards">\n'
     for tag in tag_order:

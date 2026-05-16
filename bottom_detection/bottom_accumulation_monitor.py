@@ -262,6 +262,9 @@ def calc_mcap(row: dict[str, Any]) -> float:
 
 
 def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = None) -> float:
+    current_mcap = calc_mcap(row)
+    best_ath = 0.0
+
     for source in (row, row.get("_gmgn_info") or {}, row.get("_gmgn_security") or {}):
         if not isinstance(source, dict):
             continue
@@ -278,15 +281,25 @@ def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = No
         ):
             value = to_float(source.get(key))
             if value > 0:
-                return value
+                # Sanity check: ATH should not be >500x current mcap (likely data error)
+                if current_mcap > 0 and value > current_mcap * 500:
+                    continue
+                best_ath = max(best_ath, value)
+
+    if best_ath > 0:
+        return best_ath
+
     supply = to_float(row.get("circulating_supply"))
     if supply <= 0:
         supply = to_float((row.get("_gmgn_info") or {}).get("circulating_supply"))
     if supply > 0 and candles:
         high_price = max((to_float(candle.get("high")) for candle in candles), default=0.0)
         if high_price > 0:
-            return high_price * supply
-    return calc_mcap(row)
+            candle_ath = high_price * supply
+            # Same sanity check for candle-derived ATH
+            if current_mcap <= 0 or candle_ath <= current_mcap * 500:
+                return candle_ath
+    return current_mcap
 
 
 def match_abnormal_rule(ath_mcap: float, current_mcap: float) -> dict[str, Any] | None:
@@ -1753,6 +1766,10 @@ def compute_risk_tags(extra: dict[str, Any]) -> list[str]:
     # Dead volume: no meaningful trading behind the signal
     if 0 < volume < 10_000:
         tags.append("无量")
+
+    # Positive tags
+    if 30_000 <= mcap < 120_000:
+        tags.append("黄金区间")
 
     return tags
 
