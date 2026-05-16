@@ -84,7 +84,7 @@ FAST_SCAN_MAX_TOKENS = int(os.getenv("BOTTOM_FAST_SCAN_MAX_TOKENS", "0"))
 SIGNAL_DEDUP_MAX_AGE_SEC = int(os.getenv("BOTTOM_SIGNAL_DEDUP_MAX_AGE_SEC", str(24 * 3600)))
 FIRST_SIGNAL_BASELINE_MAX_AGE_SEC = int(os.getenv("BOTTOM_FIRST_SIGNAL_BASELINE_MAX_AGE_SEC", str(24 * 3600)))
 FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT = float(os.getenv("BOTTOM_FRONTEND_REPEAT_MIN_KLINE_CHANGE_PCT", "0"))
-QUIET_BREAKOUT_ENABLED = os.getenv("BOTTOM_QUIET_BREAKOUT_ENABLED", "1") != "0"
+QUIET_BREAKOUT_ENABLED = os.getenv("BOTTOM_QUIET_BREAKOUT_ENABLED", "1") != "0"  # 22% success rate, filtered by risk tags
 QUIET_BREAKOUT_MIN_QUIET_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_QUIET_BARS", "24"))
 QUIET_BREAKOUT_RECENT_BARS = int(os.getenv("BOTTOM_QUIET_BREAKOUT_RECENT_BARS", "3"))
 QUIET_BREAKOUT_MAX_RANGE_PCT = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MAX_RANGE_PCT", "7"))
@@ -1769,6 +1769,15 @@ def publish_frontend_signal_update(
     if not address:
         return
     risk_tags = compute_risk_tags(extra or {})
+    # Filter 1: ceiling + dead_vol = ~0% success (21 failures, 8 successes killed)
+    if "天花板" in risk_tags and "无量" in risk_tags:
+        print(f"{address[:8]} skip push: ceiling+dead_vol combo")
+        return
+    # Filter 2: extreme dead volume (<$5K) = 78% failure rate, kills only 5/131 successes
+    vol = to_float(extra.get("breakout_volume_usd", 0) or extra.get("volume_usd", 0))
+    if 0 < vol < 5_000:
+        print(f"{address[:8]} skip push: extreme dead vol ${vol:,.0f} < $5K")
+        return
     if risk_tags:
         extra = {**(extra or {}), "risk_tags": risk_tags}
     try:
@@ -2640,6 +2649,29 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             f"pool=${analysis.get('pool_total_liquidity', 0):,.0f} "
             f"pool/mcap={analysis.get('pool_mcap_ratio', 0):.1%}"
         )
+    # K-line quality filter: weak candle body + weak pre-trend = fake breakout
+    if notify and should_notify(analysis) and candles:
+        last_candle = candles[-1] if candles else {}
+        last_open = to_float(last_candle.get("open"))
+        last_close = to_float(last_candle.get("close"))
+        last_body_pct = abs(last_close - last_open) / last_open * 100 if last_open > 0 else 0
+        # Pre-signal trend: last 5 bars before the signal window
+        pre_bars = candles[-KLINE_SIGNAL_BARS - 6:-KLINE_SIGNAL_BARS] if len(candles) > KLINE_SIGNAL_BARS + 5 else candles[:-KLINE_SIGNAL_BARS] if len(candles) > KLINE_SIGNAL_BARS else []
+        pre_return = 0.0
+        if len(pre_bars) >= 3:
+            pre_first = to_float(pre_bars[0].get("close"))
+            pre_last = to_float(pre_bars[-1].get("close"))
+            pre_return = (pre_last - pre_first) / pre_first * 100 if pre_first > 0 else 0
+        if last_body_pct < 2.0 and pre_return < 3.0:
+            print(f"{token_label(token)} skip push: weak kline body={last_body_pct:.1f}% pre_trend={pre_return:.1f}%")
+            notify = False
+
+    # Large mcap quiet_breakout filter: 5/7 failures are >$500K
+    current_mcap = calc_mcap(token) or to_float(token.get("watchlist_last_mcap"))
+    if notify and analysis.get("signal_type") == "quiet_breakout" and current_mcap > 500_000:
+        print(f"{token_label(token)} skip push: quiet_breakout large mcap ${current_mcap:,.0f} > $500K")
+        notify = False
+
     if notify and should_notify(analysis) and not already_notified:
         if USE_AGENT_DECISION:
             run_agent_execution(
