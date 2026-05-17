@@ -27,6 +27,15 @@ Host chainalpha-server
 
 可以直接通过 `chainalpha-server` 登录 Linux 服务器执行更新，不需要在命令里写服务器密码。
 
+### 服务器连接记录
+
+| 名称 | IP | 用户 | 认证方式 | 备注 |
+| --- | --- | --- | --- | --- |
+| chainalpha-server | `43.163.225.175` | `root` | SSH key: `~/.ssh/dongj2.pem` | 当前 Chain Alpha 线上服务所在服务器，项目目录 `/opt/chainAlpha` |
+| external-root-server | `117.72.215.77` | `root` | 密码登录，密码不要写入仓库 | 本轮新增记录；从 `43.163.225.175` 测试到该机 `22/tcp` 可达 |
+
+> 密码属于敏感凭据，不提交到 Git 文档。需要临时使用时放在本机私密凭据或运维密码管理器中。
+
 ### 方式二：使用 Python Paramiko
 
 本地 Python 环境需要安装 `paramiko`：
