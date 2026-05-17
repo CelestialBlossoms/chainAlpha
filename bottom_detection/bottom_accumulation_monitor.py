@@ -1813,7 +1813,12 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     first_ts = to_int(extra.get("first_signal_ts")) or to_int(extra.get("event_ts")) or now_ts()
     event_ts = to_int(extra.get("event_ts") or extra.get("signal_ts")) or now_ts()
     ath_mcap = to_float(extra.get("ath_mcap") or extra.get("peak_mcap"))
-    history_gain_pct = ((ath_mcap - first_mcap) / first_mcap * 100) if first_mcap > 0 and ath_mcap > 0 else 0.0
+    post_peak_mcap = max(first_mcap, current_mcap, to_float(extra.get("post_signal_peak_mcap")))
+    history_gain_pct = (
+        to_float(extra.get("history_gain_pct"))
+        if extra.get("history_gain_pct") is not None
+        else ((post_peak_mcap - first_mcap) / first_mcap * 100) if first_mcap > 0 and post_peak_mcap > 0 else 0.0
+    )
     liquidity = to_float(extra.get("pool_total_liquidity") or extra.get("liquidity") or extra.get("pool_liquidity"))
     pool_ratio = to_float(extra.get("pool_mcap_ratio"))
     pool_exchange = str(extra.get("pool_main_exchange") or "").strip()
@@ -2220,6 +2225,27 @@ def first_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
     return db_op(_op) or {}
 
 
+def post_signal_peak_mcap(address: str, signal_type: str, first_signal_ts: int) -> float:
+    if not address or not signal_type or signal_type == "watch" or first_signal_ts <= 0:
+        return 0.0
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT MAX(NULLIF(summary->>'mcap', '')::numeric)
+            FROM bottom_top100_snapshots
+            WHERE chain=%s AND address=%s AND signal_type=%s
+              AND snapshot_ts >= %s
+            """,
+            (CHAIN, address, signal_type, max(0, first_signal_ts - 60)),
+        )
+        row = cur.fetchone()
+        return to_float(row[0]) if row and row[0] is not None else 0.0
+
+    return to_float(db_op(_op))
+
+
 def latest_frontend_signal_baseline(address: str, signal_type: str) -> dict[str, Any]:
     if not address or not signal_type or signal_type == "watch":
         return {}
@@ -2278,6 +2304,13 @@ def build_bottom_signal_extra(
     first_ts = to_int((baseline or {}).get("first_signal_ts")) or now_ts()
     first_delta = current_mcap - first_mcap if first_mcap > 0 else 0.0
     first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
+    signal_type = str(analysis.get("signal_type") or "")
+    post_peak = max(
+        first_mcap,
+        current_mcap,
+        post_signal_peak_mcap(address, signal_type, first_ts),
+    )
+    history_gain_pct = (post_peak - first_mcap) / first_mcap * 100 if first_mcap > 0 and post_peak > 0 else 0.0
     pool_summary = summary.get("pool") or {}
     pool_liquidity = to_float(analysis.get("pool_total_liquidity")) or to_float(pool_summary.get("total_liquidity"))
     signal_ts = now_ts()
@@ -2285,10 +2318,12 @@ def build_bottom_signal_extra(
         "snapshot_id": analysis.get("snapshot_id", 0),
         "event_ts": signal_ts,
         "signal_ts": signal_ts,
-        "signal_type": analysis.get("signal_type"),
+        "signal_type": signal_type,
         "abnormal_rule": analysis.get("abnormal_rule"),
         "trend_interval": token.get("_trend_interval") or TREND_INTERVAL,
         "ath_mcap": analysis.get("ath_mcap", 0),
+        "post_signal_peak_mcap": post_peak,
+        "history_gain_pct": history_gain_pct,
         "min_ath_mcap": analysis.get("min_ath_mcap", 0),
         "current_mcap": current_mcap,
         "liquidity": pool_liquidity,
