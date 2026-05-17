@@ -1951,8 +1951,10 @@ def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_f
     pool_summary = summarize_pools(token)
     pool_liquidity = to_float(pool_summary.get("total_liquidity"))
     pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+    trend = token.get("_trend_interval") or "N/A"
     return (
         f"每日过1M市值 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"来源: {trend} 扫描\n"
         f"CA: {address}\n"
         f"市值: ${current_mcap:,.0f} | 要求: >=${DAILY_MCAP_MILESTONE_USD:,.0f}\n"
         f"手续费: {current_fee_sol:.2f} SOL | 要求: >={DAILY_MCAP_MIN_FEE_SOL:.2f} SOL\n"
@@ -2127,10 +2129,12 @@ def abnormal_signal_text(token: dict[str, Any], analysis: dict[str, Any]) -> str
         if is_drop_signal
         else f"价格上涨: {analysis.get('price_change_pct', 0):.1f}% | 要求: >={analysis.get('required_price_change_pct', 0):.1f}%\n"
     )
+    trend_interval = token.get("_trend_interval") or TREND_INTERVAL
     return (
         f"底部异动检测 | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"类型: {signal_type_text(analysis.get('signal_type'))}\n"
         f"档位: {analysis.get('abnormal_rule') or '未命中'}\n"
+        f"来源: {trend_interval} 扫描\n"
         f"CA: {address}\n"
         f"历史最高市值: ${analysis.get('ath_mcap', 0):,.0f} | 要求: >${analysis.get('min_ath_mcap', 0):,.0f}\n"
         f"{mcap_line}"
@@ -2802,8 +2806,10 @@ def check_quiet_runup(
 
 def quiet_breakout_signal_text(token: dict[str, Any], signal: dict[str, Any]) -> str:
     address = token_address(token)
+    trend = token.get("_trend_interval") or "N/A"
     return (
         f"{str(signal.get('source_type') or 'watchlist').title()} quiet breakout | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"来源: {trend} 扫描\n"
         f"CA: {address}\n"
         f"MCap: ${signal.get('current_mcap', 0):,.0f}\n"
         f"Mode: {signal.get('trigger_mode') or '-'}\n"
@@ -2816,8 +2822,10 @@ def quiet_breakout_signal_text(token: dict[str, Any], signal: dict[str, Any]) ->
 
 def old_surge_signal_text(token: dict[str, Any], surge: dict[str, Any]) -> str:
     address = token_address(token)
+    trend = token.get("_trend_interval") or "N/A"
     return (
         f"老币异动拉升 | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"来源: {trend} 扫描\n"
         f"CA: {address}\n"
         f"当前市值: ${surge['current_mcap']:,.0f}\n"
         f"拉升幅度: {surge['change_pct']:.1f}% (最佳分辨率: {surge['best_resolution']})\n"

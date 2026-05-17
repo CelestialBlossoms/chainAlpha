@@ -419,7 +419,22 @@ tr:hover td{{background:#162032}}
         if nar_dist.get(cat, 0) > 0:
             c = NAR_COLORS[cat]
             html += f'<button class="fbtn" style="border-color:{c};color:{c}" onclick="fs(\'{cat}\')">{cat} ({nar_dist[cat]})</button>\n'
-    html += '</div>\n<div class="table-wrap"><table id="t"><thead><tr>'
+    html += '</div>\n'
+    # Time filter row
+    html += '<div class="filter" style="margin-bottom:8px">\n'
+    html += '<span style="font-size:.7rem;color:#64748b;margin-right:8px;line-height:28px">时段:</span>\n'
+    html += '<button class="fbtn active" onclick="ft2(\'all\')">全部</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'00-04\')">凌晨 00-04</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'04-08\')">凌晨 04-08</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'08-12\')">上午 08-12</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'12-16\')">下午 12-16</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'16-20\')">傍晚 16-20</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'20-24\')">深夜 20-24</button>\n'
+    html += '<span style="font-size:.7rem;color:#64748b;margin:0 8px;line-height:28px">|</span>\n'
+    html += '<button class="fbtn" onclick="ft2(\'11-24\')">11:00后</button>\n'
+    html += '<button class="fbtn" onclick="ft2(\'12-24\')">12:00后</button>\n'
+    html += '</div>\n'
+    html += '<div class="table-wrap"><table id="t"><thead><tr>'
     html += '<th class="sortable" onclick="sortTable(0,\'num\')"># <span class="sort-arrow">▼</span></th>'
     html += '<th>结果</th><th>风险标签</th><th>叙事</th><th>CA</th><th>Symbol</th><th>信号类型</th>'
     html += '<th class="sortable" onclick="sortTable(7,\'num\')">异动市值 <span class="sort-arrow">▼</span></th>'
@@ -443,7 +458,8 @@ tr:hover td{{background:#162032}}
         b_mcap = r.get("binance_mcap", 0); b_ok = r.get("binance_ok", False)
         nc = NAR_COLORS.get(ncat, '#64748b')
 
-        html += f'<tr data-result="{result}" data-nar="{ncat}">'
+        event_hour = int(r.get("event_time", "00:00").split(" ")[-1].split(":")[0]) if r.get("event_time") else 0
+        html += f'<tr data-result="{result}" data-nar="{ncat}" data-hour="{event_hour}">'
         html += f'<td data-value="{i}">{i}</td>'
         html += f'<td><span class="result-badge {rb}">{result}</span></td>'
         tags = r.get("risk_tags", [])
@@ -492,6 +508,54 @@ function ft(){
   document.querySelectorAll("#t tbody tr").forEach(function(r){
     r.style.display=r.textContent.toLowerCase().includes(q)?"":"none";
   });
+}
+var timeFilter="all",resultFilter="all";
+function ft2(range){
+  timeFilter=range;
+  document.querySelectorAll(".filter .fbtn").forEach(function(b){b.classList.remove("active")});
+  event.target.classList.add("active");
+  applyFilters();
+}
+function applyFilters(){
+  document.querySelectorAll("#t tbody tr").forEach(function(r){
+    var show=true;
+    var h=parseInt(r.dataset.hour)||0;
+    if(timeFilter!=="all"){
+      var parts=timeFilter.split("-");
+      var lo=parseInt(parts[0]),hi=parseInt(parts[1]);
+      if(h<lo||h>=hi)show=false;
+    }
+    r.style.display=show?"":"none";
+  });
+}
+function fs(t){
+  document.querySelectorAll(".filter .fbtn").forEach(function(b){b.classList.remove("active")});
+  event.target.classList.add("active");
+  if(t==="all"||t==="成功"||t==="失败"){
+    resultFilter=t;
+    document.querySelectorAll("#t tbody tr").forEach(function(r){
+      var show2=true;
+      if(t!=="all"){
+        if(t==="成功")show2=r.dataset.result==="成功";
+        else if(t==="失败")show2=r.dataset.result==="失败";
+      }
+      var h2=parseInt(r.dataset.hour)||0;
+      if(timeFilter!=="all"){
+        var p2=timeFilter.split("-");
+        if(h2<parseInt(p2[0])||h2>=parseInt(p2[1]))show2=false;
+      }
+      r.style.display=show2?"":"none";
+    });
+  }else{
+    document.querySelectorAll("#t tbody tr").forEach(function(r){
+      var show3=r.dataset.nar===t;
+      if(timeFilter!=="all"){
+        var p3=timeFilter.split("-");
+        if((parseInt(r.dataset.hour)||0)<parseInt(p3[0])||(parseInt(r.dataset.hour)||0)>=parseInt(p3[1]))show3=false;
+      }
+      r.style.display=show3?"":"none";
+    });
+  }
 }
 function sortTable(col,type){
   var ths=document.querySelectorAll("#t thead th");
