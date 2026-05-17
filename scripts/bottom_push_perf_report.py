@@ -424,22 +424,21 @@ tr:hover td{{background:#162032}}
     html += '<th>结果</th><th>风险标签</th><th>叙事</th><th>CA</th><th>Symbol</th><th>信号类型</th>'
     html += '<th class="sortable" onclick="sortTable(7,\'num\')">异动市值 <span class="sort-arrow">▼</span></th>'
     html += '<th class="sortable" onclick="sortTable(8,\'num\')">ATH市值 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(9,\'num\')">Entry收盘 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(10,\'num\')">Binance市值 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(9,\'num\')">巅峰市值 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(10,\'num\')">当前市值 <span class="sort-arrow">▼</span></th>'
     html += '<th class="sortable" onclick="sortTable(11,\'num\')">最高涨幅 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(12,\'num\')">当前收益 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(13,\'num\')">高点回撤 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(14,\'str\')">异动时间 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(15,\'str\')">峰值时间 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(16,\'num\')">至峰顶 <span class="sort-arrow">▼</span></th>'
-    html += '<th class="sortable" onclick="sortTable(17,\'num\')">K线 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(12,\'num\')">当前/异动 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(13,\'str\')">异动时间 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(14,\'str\')">峰值时间 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(15,\'num\')">至峰顶 <span class="sort-arrow">▼</span></th>'
+    html += '<th class="sortable" onclick="sortTable(16,\'num\')">K线 <span class="sort-arrow">▼</span></th>'
     html += '</tr></thead><tbody>\n'
 
     for i, r in enumerate(sorted_rows, 1):
         sig = r["signal_type"]; bg = SIG_COLORS.get(sig, '#64748b')
-        gain = r["max_gain_pct"]; cr = r["current_return_pct"]; dd = r["high_to_low_drawdown_pct"]
+        gain = r["max_gain_pct"]
         result = r.get("result", ""); ncat = r.get("narrative_cat", "")
-        gc = 'positive' if gain > 0 else 'negative'; cc = 'positive' if cr > 0 else 'negative'
+        gc = 'positive' if gain > 0 else 'negative'
         rb = 'result-success' if result == '成功' else 'result-fail'
         b_mcap = r.get("binance_mcap", 0); b_ok = r.get("binance_ok", False)
         nc = NAR_COLORS.get(ncat, '#64748b')
@@ -459,11 +458,14 @@ tr:hover td{{background:#162032}}
         html += f'<td><span class="badge" style="background:{bg}22;color:{bg};border:1px solid {bg}44">{sig}</span></td>'
         html += f'<td data-value="{r["current_mcap"]}">{fm(r["current_mcap"])}</td>'
         html += f'<td data-value="{r["ath_mcap"]}">{fm(r["ath_mcap"])}</td>'
-        html += f'<td data-value="{r["entry_price"]}">{fm(r["entry_price"])}</td>'
+        peak_mcap = r.get("peak_mcap", 0)
+        current_mcap_ratio = r.get("current_mcap_ratio", 0)
+        html += f'<td data-value="{peak_mcap}" style="color:#f59e0b">{fm(peak_mcap)}</td>'
         html += f'<td data-value="{b_mcap}" style="color:#06b6d4">{"$"+fm(b_mcap).lstrip("$") if b_ok else "-"}</td>'
         html += f'<td class="{gc}" data-value="{gain}"><b>{fp(gain, True)}</b></td>'
-        html += f'<td class="{cc}" data-value="{cr}">{fp(cr, True)}</td>'
-        html += f'<td style="color:#ef4444" data-value="{dd}">{fp(dd)}</td>'
+        ratio_color = '#10b981' if current_mcap_ratio >= 1 else '#ef4444'
+        ratio_text = f"{current_mcap_ratio:.2f}x" if current_mcap_ratio > 0 else "-"
+        html += f'<td style="color:{ratio_color}" data-value="{current_mcap_ratio}">{ratio_text}</td>'
         html += f'<td class="time-col" data-value="{r["event_time"]}">{r["event_time"]}</td>'
         html += f'<td class="time-col" data-value="{r["peak_time_full"]}">{r["peak_time_full"]}</td>'
         html += f'<td data-value="{r["time_to_peak_min"]:.0f}">{r["time_to_peak_min"]:.0f}m</td>'
@@ -528,6 +530,54 @@ function copyCA(el){
     return html
 
 
+def _save_to_db(rows, day_label):
+    """Upsert performance data into bottom_push_performance table."""
+    columns = [
+        "address", "symbol", "signal_type", "event_ts", "event_time",
+        "current_mcap", "ath_mcap", "sig_pct",
+        "max_gain_pct", "current_return_pct",
+        "entry_price", "peak_price", "current_price", "peak_mcap",
+        "time_to_peak_min", "entry_drawdown_pct", "high_to_low_drawdown_pct",
+        "volume_usd", "candles",
+        "binance_mcap", "binance_price", "binance_ok",
+        "narrative_desc", "narrative_type", "narrative_cat",
+        "risk_tags", "result", "analysis_date",
+    ]
+
+    def _op(conn):
+        cur = conn.cursor()
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c != "address")
+        set_clause += ", updated_at = now()"
+        inserted = 0
+        for r in rows:
+            if not r.get("valid"):
+                continue
+            vals = [
+                r.get("address"), r.get("symbol"), r.get("signal_type"),
+                r.get("event_ts"), r.get("event_time"),
+                r.get("current_mcap"), r.get("ath_mcap"), r.get("sig_pct"),
+                r.get("max_gain_pct"), r.get("current_return_pct"),
+                r.get("entry_price"), r.get("peak_price"), r.get("current_price"), r.get("peak_mcap", 0),
+                r.get("time_to_peak_min"), r.get("entry_drawdown_pct"), r.get("high_to_low_drawdown_pct"),
+                r.get("volume_usd"), r.get("candles"),
+                r.get("binance_mcap"), r.get("binance_price"), r.get("binance_ok", False),
+                r.get("narrative_desc"), r.get("narrative_type"), r.get("narrative_cat"),
+                __import__("json").dumps(r.get("risk_tags", [])), r.get("result"), day_label,
+            ]
+            cur.execute(f"""
+                INSERT INTO bottom_push_performance ({", ".join(columns)})
+                VALUES ({", ".join(["%s"] * len(columns))})
+                ON CONFLICT (address) DO UPDATE SET {set_clause}
+            """, vals)
+            inserted += 1
+        print(f"DB: {inserted} records upserted to bottom_push_performance")
+
+    try:
+        db_op(_op)
+    except Exception as e:
+        print(f"DB save failed (table may not exist): {e}")
+
+
 def local_day_bounds(day_str, tz_name):
     tz = ZoneInfo(tz_name)
     if day_str:
@@ -586,11 +636,17 @@ def main():
         gain = row.get("max_gain_pct", 0)
         row["result"] = "成功" if gain >= 10 else "失败"
 
+        # Peak mcap (highest mcap reached after signal)
+        signal_mcap = row.get("current_mcap", 0)
+        gain = row.get("max_gain_pct", 0)
+        row["peak_mcap"] = signal_mcap * (1 + gain / 100) if signal_mcap > 0 else 0
+
         # Binance current mcap
         b_mcap, b_price, b_ok = fetch_binance_mcap(addr)
         row["binance_mcap"] = b_mcap
         row["binance_price"] = b_price
         row["binance_ok"] = b_ok
+        row["current_mcap_ratio"] = b_mcap / signal_mcap if b_ok and signal_mcap > 0 else 0
 
         rows.append(row)
 
@@ -602,6 +658,9 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding='utf-8')
     print(f"\nHTML: {out} ({out.stat().st_size:,} bytes)")
+
+    # Persist to database
+    _save_to_db(rows, day_label)
 
     valid = [r for r in rows if r.get("valid")]
     gains = [r["max_gain_pct"] for r in valid]

@@ -1684,8 +1684,9 @@ def build_token_from_info(address, info=None, pool_data=None):
         "_gmgn_info": info,
         "_gmgn_pool": pool_data if pool_data is not None else {},
     }
-    if isinstance(info.get("dev"), dict):
-        token["ath_mcap"] = ((info.get("dev") or {}).get("ath_token_info") or {}).get("ath_mc")
+    ath_mcap = bottom_monitor.current_token_ath_mcap(info)
+    if ath_mcap > 0:
+        token["ath_mcap"] = ath_mcap
     return token
 
 

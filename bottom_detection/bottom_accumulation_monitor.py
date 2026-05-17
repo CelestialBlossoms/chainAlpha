@@ -261,33 +261,26 @@ def calc_mcap(row: dict[str, Any]) -> float:
     return 0.0
 
 
-def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = None) -> float:
-    current_mcap = calc_mcap(row)
-    best_ath = 0.0
-
-    for source in (row, row.get("_gmgn_info") or {}, row.get("_gmgn_security") or {}):
+def current_token_ath_mcap(row: dict[str, Any]) -> float:
+    """Read the current token ATH market cap from GMGN's token-level fields."""
+    for source in (row, row.get("_gmgn_info") or {}):
         if not isinstance(source, dict):
             continue
-        for key in (
-            "_gmgn_ath_mcap",
-            "ath_market_cap",
-            "ath_mcap",
-            "highest_market_cap",
-            "highest_mcap",
-            "max_market_cap",
-            "max_mcap",
-            "history_high_market_cap",
-            "market_cap_high",
-        ):
-            value = to_float(source.get(key))
-            if value > 0:
-                # Sanity check: ATH should not be >500x current mcap (likely data error)
-                if current_mcap > 0 and value > current_mcap * 500:
-                    continue
-                best_ath = max(best_ath, value)
+        ath = to_float(source.get("history_highest_market_cap"))
+        if ath > 0:
+            return ath
+        ath_price = to_float(source.get("ath_price"))
+        supply = to_float(source.get("circulating_supply") or source.get("total_supply"))
+        if ath_price > 0 and supply > 0:
+            return ath_price * supply
+    return 0.0
 
-    if best_ath > 0:
-        return best_ath
+
+def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = None) -> float:
+    current_mcap = calc_mcap(row)
+    ath_mcap = current_token_ath_mcap(row) or to_float(row.get("_gmgn_ath_mcap"))
+    if ath_mcap > 0:
+        return ath_mcap
 
     supply = to_float(row.get("circulating_supply"))
     if supply <= 0:
@@ -532,7 +525,7 @@ def quick_trending_mcap(row: dict[str, Any]) -> float:
 
 def quick_trending_ath_mcap(row: dict[str, Any]) -> float:
     """Estimate ATH MCap from trending API fields only."""
-    ath = to_float(row.get("history_highest_market_cap") or row.get("ath_market_cap"))
+    ath = current_token_ath_mcap(row)
     if ath > 0:
         return ath
     return quick_trending_mcap(row)
@@ -1850,7 +1843,7 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquid
         "address": address,
         "current_mcap": current_mcap,
         "peak_mcap": peak_mcap,
-        "ath_mcap": max(to_float(token.get("_gmgn_ath_mcap") or token.get("ath_mcap")), peak_mcap),
+        "ath_mcap": max(calc_ath_mcap(token), peak_mcap),
         "milestone_date": milestone_date,
         "zone": zone,
         "zone_label": zone_label,
@@ -2958,11 +2951,12 @@ def scan_once(
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
             gmgn_created_ts = int(to_float(info.get("creation_timestamp") or info.get("open_timestamp") or 0))
-            gmgn_ath_mcap = to_float((info.get("dev") or {}).get("ath_token_info", {}).get("ath_mc"))
+            gmgn_ath_mcap = current_token_ath_mcap(info)
             if gmgn_created_ts > 0 or gmgn_ath_mcap > 0:
                 store_fill_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap)
                 token["_gmgn_created_ts"] = gmgn_created_ts
-                token["_gmgn_ath_mcap"] = gmgn_ath_mcap
+                if gmgn_ath_mcap > 0:
+                    token["_gmgn_ath_mcap"] = gmgn_ath_mcap
             current_mcap = calc_mcap(token)
             pool_data = fetch_token_pool(address)
             token = attach_token_pool(token, pool_data)
