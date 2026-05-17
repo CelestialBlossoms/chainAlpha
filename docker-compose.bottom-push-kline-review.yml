@@ -1,0 +1,28 @@
+services:
+  bottom-push-kline-review:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-bottom-push-kline-review
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+      BOTTOM_PUSH_REVIEW_TZ: ${BOTTOM_PUSH_REVIEW_TZ:-Asia/Shanghai}
+      BOTTOM_PUSH_REVIEW_INTERVAL_SEC: ${BOTTOM_PUSH_REVIEW_INTERVAL_SEC:-3600}
+      BOTTOM_PUSH_REVIEW_RESOLUTION: ${BOTTOM_PUSH_REVIEW_RESOLUTION:-5m}
+      BOTTOM_PUSH_REVIEW_KLINE_LIMIT: ${BOTTOM_PUSH_REVIEW_KLINE_LIMIT:-500}
+      BOTTOM_PUSH_REVIEW_REQUEST_SLEEP: ${BOTTOM_PUSH_REVIEW_REQUEST_SLEEP:-0.25}
+    command:
+      - python
+      - scripts/collect_bottom_top100_push_kline_reviews.py
+      - --watch
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
