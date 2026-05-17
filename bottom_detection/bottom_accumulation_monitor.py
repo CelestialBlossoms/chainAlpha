@@ -3064,6 +3064,18 @@ def scan_once(
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
+            # Open time filter: token must have been trading for >= 4h, else skip
+            open_ts = int(to_float((info or {}).get("open_timestamp") or 0))
+            if open_ts <= 0:
+                skipped += 1
+                token["_trench"] = True
+                print(f"{token_label(token)} skip open_ts missing (在战壕)")
+                continue
+            open_age_sec = now_ts() - open_ts
+            if open_age_sec < 4 * 3600:
+                skipped += 1
+                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (在战壕)")
+                continue
             gmgn_created_ts = int(to_float(info.get("creation_timestamp") or info.get("open_timestamp") or 0))
             gmgn_ath_mcap = current_token_ath_mcap(info)
             if gmgn_created_ts > 0 or gmgn_ath_mcap > 0:
@@ -3243,6 +3255,15 @@ def fast_scan_once(args: argparse.Namespace) -> None:
                 continue
             token = merge_token_metadata(token, info, {})
             fill_watchlist_create_at(token)
+
+            # Open time filter (fast scan)
+            open_ts = int(to_float((info or {}).get("open_timestamp") or 0))
+            if open_ts <= 0:
+                skipped += 1
+                continue
+            if now_ts() - open_ts < 4 * 3600:
+                skipped += 1
+                continue
 
             current_mcap = calc_mcap(token) or to_float(token.get("watchlist_last_mcap"))
             # Re-check MCap after fresh fetch
