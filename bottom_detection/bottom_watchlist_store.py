@@ -60,7 +60,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                    daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false),
                    last_pool_liquidity, last_pool_mcap_ratio, fee_sol, symbol,
                    narrative_desc, narrative_type, highest_mcap, current_mcap, gmgn_created_at,
-                   remark, updated_at
+                   token_launch_at, gmgn_open_at, remark, updated_at
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -86,8 +86,10 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "highest_mcap": row[16] if len(row) > 16 else None,
                 "current_mcap": row[17] if len(row) > 17 else None,
                 "gmgn_created_at": row[18] if len(row) > 18 else None,
-                "remark": row[19] if len(row) > 19 else None,
-                "updated_at": row[20] if len(row) > 20 else None,
+                "token_launch_at": row[19] if len(row) > 19 else None,
+                "gmgn_open_at": row[20] if len(row) > 20 else None,
+                "remark": row[21] if len(row) > 21 else None,
+                "updated_at": row[22] if len(row) > 22 else None,
             }
             for row in cur.fetchall()
         ]
@@ -143,17 +145,25 @@ def upsert_watchlist_token(
     db_op(_op)
 
 
-def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: float = 0) -> None:
-    """Save GMGN's creation_timestamp (always overwrite) and ATH MCap (take max) to the DB."""
-    if gmgn_created_ts <= 0 and gmgn_ath_mcap <= 0:
+def save_token_created_at(
+    address: str,
+    gmgn_created_ts: int,
+    gmgn_ath_mcap: float = 0,
+    gmgn_open_ts: int = 0,
+) -> None:
+    """Save GMGN creation timestamp, launch/open timestamp, and ATH MCap to the DB."""
+    if gmgn_created_ts <= 0 and gmgn_open_ts <= 0 and gmgn_ath_mcap <= 0:
         return
+    ensure_watchlist_daily_mcap_columns()
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
             """
             UPDATE bottom_watchlist_tokens
-            SET token_created_at = %s,
-                gmgn_created_at = %s,
+            SET token_created_at = COALESCE(%s, token_created_at),
+                gmgn_created_at = COALESCE(%s, gmgn_created_at),
+                token_launch_at = COALESCE(%s, token_launch_at),
+                gmgn_open_at = COALESCE(%s, gmgn_open_at),
                 ath_mcap = GREATEST(COALESCE(ath_mcap, 0), %s),
                 highest_mcap = GREATEST(COALESCE(highest_mcap, 0), %s),
                 updated_at = now()
@@ -162,6 +172,8 @@ def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: flo
             (
                 gmgn_created_ts if gmgn_created_ts > 0 else None,
                 gmgn_created_ts if gmgn_created_ts > 0 else None,
+                gmgn_open_ts if gmgn_open_ts > 0 else None,
+                gmgn_open_ts if gmgn_open_ts > 0 else None,
                 gmgn_ath_mcap,
                 gmgn_ath_mcap,
                 address,
@@ -170,8 +182,13 @@ def save_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: flo
     db_op(_op)
 
 
-def fill_watchlist_token_created_at(address: str, gmgn_created_ts: int, gmgn_ath_mcap: float = 0) -> None:
-    save_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap)
+def fill_watchlist_token_created_at(
+    address: str,
+    gmgn_created_ts: int,
+    gmgn_ath_mcap: float = 0,
+    gmgn_open_ts: int = 0,
+) -> None:
+    save_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap, gmgn_open_ts)
 
 
 def ensure_watchlist_daily_mcap_columns() -> None:
@@ -185,6 +202,8 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS fee_sol NUMERIC DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS token_created_at BIGINT DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS token_launch_at BIGINT DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS daily_mcap_date DATE;
             ALTER TABLE bottom_watchlist_tokens
@@ -204,6 +223,8 @@ def ensure_watchlist_daily_mcap_columns() -> None:
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS gmgn_created_at BIGINT DEFAULT 0;
             ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS gmgn_open_at BIGINT DEFAULT 0;
+            ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS last_pool_liquidity NUMERIC DEFAULT 0;
@@ -218,7 +239,7 @@ def ensure_watchlist_daily_mcap_columns() -> None:
 
             COMMENT ON TABLE bottom_watchlist_tokens IS '底部异动重点观察池。每个CA一行，保存当前观察状态，不保存每次异动历史';
             COMMENT ON COLUMN bottom_watchlist_tokens.ca IS '代币CA，主键';
-            COMMENT ON COLUMN bottom_watchlist_tokens.create_at IS '代币创建时间，优先来自GMGN创建时间';
+            COMMENT ON COLUMN bottom_watchlist_tokens.create_at IS '代币创建时间，优先来自GMGN creation_timestamp';
             COMMENT ON COLUMN bottom_watchlist_tokens.added_at IS '加入观察池时间';
             COMMENT ON COLUMN bottom_watchlist_tokens.last_seen_at IS '监控最近一次扫描到该CA的时间';
             COMMENT ON COLUMN bottom_watchlist_tokens.updated_at IS '观察池记录最近一次被业务流程更新的时间';
@@ -228,11 +249,13 @@ def ensure_watchlist_daily_mcap_columns() -> None:
             COMMENT ON COLUMN bottom_watchlist_tokens.highest_mcap IS '观察池生命周期内记录到的最高市值，美元';
             COMMENT ON COLUMN bottom_watchlist_tokens.current_mcap IS '当前用于前端展示和判断的最新市值，美元';
             COMMENT ON COLUMN bottom_watchlist_tokens.gmgn_created_at IS 'GMGN返回的代币创建时间，Unix秒';
+            COMMENT ON COLUMN bottom_watchlist_tokens.gmgn_open_at IS 'GMGN返回的代币发射/开盘时间，优先来自open_timestamp，Unix秒';
             COMMENT ON COLUMN bottom_watchlist_tokens.note IS '系统写入的备注，例如自动加入原因';
             COMMENT ON COLUMN bottom_watchlist_tokens.remark IS '人工备注或补充说明';
             COMMENT ON COLUMN bottom_watchlist_tokens.symbol IS '代币符号';
             COMMENT ON COLUMN bottom_watchlist_tokens.fee_sol IS '创建或相关交易手续费SOL，用于1M标筛选';
             COMMENT ON COLUMN bottom_watchlist_tokens.token_created_at IS '代币创建时间，Unix秒';
+            COMMENT ON COLUMN bottom_watchlist_tokens.token_launch_at IS '代币发射/开盘时间，池子迁移或open_timestamp，Unix秒';
             COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_date IS '首次或最近记录达到每日1M市值条件的日期';
             COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_threshold IS '每日市值里程碑阈值，默认1000000美元';
             COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_notified_date IS '每日1M市值通知日期';
@@ -258,6 +281,7 @@ def upsert_daily_mcap_watchlist_token(
     symbol: str | None = None,
     threshold_mcap: float = 1_000_000,
     source: str = "auto_mcap_over_1m",
+    launch_ts: int = 0,
 ) -> None:
     ensure_watchlist_daily_mcap_columns()
 
@@ -269,10 +293,10 @@ def upsert_daily_mcap_watchlist_token(
                 ca, create_at, added_at, last_seen_at, updated_at, source, symbol,
                 peak_mcap, last_mcap, fee_sol, daily_mcap_date,
                 daily_mcap_threshold, highest_mcap, current_mcap,
-                token_created_at, gmgn_created_at, note
+                token_created_at, gmgn_created_at, token_launch_at, gmgn_open_at, note
             ) VALUES (
                 %s, CASE WHEN %s > 0 THEN to_timestamp(%s) ELSE NULL END,
-                now(), now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s
+                now(), now(), now(), %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (ca) DO UPDATE SET
                 create_at = COALESCE(bottom_watchlist_tokens.create_at, EXCLUDED.create_at),
@@ -288,6 +312,8 @@ def upsert_daily_mcap_watchlist_token(
                 fee_sol = GREATEST(COALESCE(bottom_watchlist_tokens.fee_sol, 0), EXCLUDED.fee_sol),
                 token_created_at = COALESCE(EXCLUDED.token_created_at, bottom_watchlist_tokens.token_created_at),
                 gmgn_created_at = COALESCE(EXCLUDED.gmgn_created_at, bottom_watchlist_tokens.gmgn_created_at),
+                token_launch_at = COALESCE(EXCLUDED.token_launch_at, bottom_watchlist_tokens.token_launch_at),
+                gmgn_open_at = COALESCE(EXCLUDED.gmgn_open_at, bottom_watchlist_tokens.gmgn_open_at),
                 daily_mcap_date = CURRENT_DATE,
                 daily_mcap_threshold = EXCLUDED.daily_mcap_threshold,
                 note = EXCLUDED.note
@@ -306,6 +332,8 @@ def upsert_daily_mcap_watchlist_token(
                 mcap,
                 created_ts if created_ts > 0 else None,
                 created_ts if created_ts > 0 else None,
+                launch_ts if launch_ts > 0 else None,
+                launch_ts if launch_ts > 0 else None,
                 f"daily auto record when mcap >= ${threshold_mcap:,.0f} and fee >= {fee_sol:.2f} SOL",
             ),
         )

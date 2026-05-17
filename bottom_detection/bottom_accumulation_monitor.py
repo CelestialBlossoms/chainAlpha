@@ -330,25 +330,52 @@ def token_created_ts(row: dict[str, Any]) -> int:
     value = first_value(
         row,
         (
-            "_gmgn_created_ts",
             "token_created_at",
+            "gmgn_created_at",
+            "_gmgn_created_ts",
             "watchlist_create_at",
             "created_at",
             "creation_timestamp",
             "created_timestamp",
             "create_timestamp",
+        ),
+    )
+    return parse_timestamp(value)
+
+
+def token_launch_ts(row: dict[str, Any]) -> int:
+    value = first_value(
+        row,
+        (
+            "token_launch_at",
+            "gmgn_open_at",
+            "_gmgn_open_ts",
             "open_timestamp",
-            "launch_timestamp",
             "pool_creation_timestamp",
+            "launch_timestamp",
             "pair_created_at",
         ),
     )
     return parse_timestamp(value)
 
 
+def token_active_ts(row: dict[str, Any]) -> int:
+    return token_launch_ts(row) or token_created_ts(row)
+
+
 def token_age_sec(row: dict[str, Any]) -> int:
+    active_ts = token_active_ts(row)
+    return now_ts() - active_ts if active_ts > 0 else 0
+
+
+def token_creation_age_sec(row: dict[str, Any]) -> int:
     created_ts = token_created_ts(row)
     return now_ts() - created_ts if created_ts > 0 else 0
+
+
+def token_launch_age_sec(row: dict[str, Any]) -> int:
+    launch_ts = token_launch_ts(row)
+    return now_ts() - launch_ts if launch_ts > 0 else 0
 
 
 def is_new_token(row: dict[str, Any]) -> bool:
@@ -432,7 +459,7 @@ def token_basic_filter_reason(row: dict[str, Any]) -> str | None:
         return f"市值${mcap:,.0f}<{MIN_MCAP_USD:,.0f}"
     age = token_age_sec(row)
     if age and age < MIN_TOKEN_AGE_SEC:
-        return f"创建{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
+        return f"发射{age / 3600:.1f}h<{MIN_TOKEN_AGE_SEC / 3600:.1f}h"
     return None
 
 
@@ -581,6 +608,14 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "symbol": row.get("symbol") or "",
             "blacklisted": bool(row.get("blacklisted")),
         }
+        if row.get("token_created_at"):
+            token["token_created_at"] = row.get("token_created_at")
+        if row.get("gmgn_created_at"):
+            token["gmgn_created_at"] = row.get("gmgn_created_at")
+        if row.get("token_launch_at"):
+            token["token_launch_at"] = row.get("token_launch_at")
+        if row.get("gmgn_open_at"):
+            token["gmgn_open_at"] = row.get("gmgn_open_at")
         if create_at:
             created_ts = int(create_at.timestamp()) if isinstance(create_at, datetime) else parse_timestamp(create_at)
             token["watchlist_create_at"] = created_ts
@@ -953,9 +988,9 @@ def load_kline_cache(address: str, resolution: str) -> list[dict[str, Any]]:
 
 
 def initial_kline_start_ts(token: dict[str, Any], end_ts: int) -> int:
-    created_ts = token_created_ts(token)
-    if created_ts > 0:
-        return min(created_ts, end_ts - kline_resolution_seconds(token_kline_resolution(token)))
+    start_ts = token_launch_ts(token) or token_created_ts(token)
+    if start_ts > 0:
+        return min(start_ts, end_ts - kline_resolution_seconds(token_kline_resolution(token)))
     return end_ts - KLINE_LOOKBACK_SEC
 
 
@@ -1213,6 +1248,9 @@ def build_snapshot_json(
         "liquidity": liquidity,
         "pool": pool_summary,
         "created_ts": token_created_ts(token),
+        "launch_ts": token_launch_ts(token),
+        "created_age_sec": token_creation_age_sec(token),
+        "launch_age_sec": token_launch_age_sec(token),
         "age_sec": token_age_sec(token),
         "fee_sol": fee_sol(token),
         "kline": summarize_kline(candles or [], kline_resolution or token_kline_resolution(token)),
@@ -1903,8 +1941,8 @@ def publish_frontend_signal_update(
 
 def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_fee_sol: float) -> str:
     address = token_address(token)
-    created_ts = token_created_ts(token)
-    age_text = f"{token_age_sec(token) / 3600:.1f}h" if created_ts > 0 else "未知"
+    active_ts = token_active_ts(token)
+    age_text = f"{token_age_sec(token) / 3600:.1f}h" if active_ts > 0 else "未知"
     pool_summary = summarize_pools(token)
     pool_liquidity = to_float(pool_summary.get("total_liquidity"))
     pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
@@ -1914,7 +1952,7 @@ def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_f
         f"市值: ${current_mcap:,.0f} | 要求: >=${DAILY_MCAP_MILESTONE_USD:,.0f}\n"
         f"手续费: {current_fee_sol:.2f} SOL | 要求: >={DAILY_MCAP_MIN_FEE_SOL:.2f} SOL\n"
         f"池子: ${pool_liquidity:,.0f} | 池/市值: {pool_ratio:.1%} | 要求: >=${BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD:,.0f} / >{DAILY_MCAP_MIN_POOL_MCAP_RATIO:.1%}\n"
-        f"创建年龄: {age_text}\n"
+        f"发射年龄: {age_text}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
 
@@ -1953,6 +1991,11 @@ def publish_daily_1m_frontend_update(token, current_mcap, peak_mcap, pool_liquid
         "drop_from_peak_pct": drop,
         "liquidity": to_float(pool_liquidity if pool_liquidity is not None else (token.get("liquidity") or token.get("pool_liquidity"))),
         "holders": token.get("holder_count", 0),
+        "created_ts": token_created_ts(token),
+        "launch_ts": token_launch_ts(token),
+        "created_age_sec": token_creation_age_sec(token),
+        "launch_age_sec": token_launch_age_sec(token),
+        "age_sec": token_age_sec(token),
         "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
         "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
         "narrative_type": narrative.get("narrative_type") or token.get("narrative_type") or "",
@@ -1999,6 +2042,7 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
         current_fee_sol,
         symbol=token.get("symbol"),
         threshold_mcap=DAILY_MCAP_MILESTONE_USD,
+        launch_ts=token_launch_ts(token),
     )
     print(f"{token_label(token)} watchlist daily 1M recorded peak=${peak_mcap:,.0f} cur=${current_mcap:,.0f} fee={current_fee_sol:.2f} SOL")
     if notify and daily_mcap_watchlist_needs_notify(address):
@@ -2024,6 +2068,9 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
             "pool_mcap_ratio": pool_ratio,
             "required_pool_mcap_ratio": DAILY_MCAP_MIN_POOL_MCAP_RATIO,
             "created_ts": token_created_ts(token),
+            "launch_ts": token_launch_ts(token),
+            "created_age_sec": token_creation_age_sec(token),
+            "launch_age_sec": token_launch_age_sec(token),
             "age_sec": age_sec,
             "narrative": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
             "narrative_desc": narrative.get("narrative_desc") or token.get("narrative_desc") or "",
@@ -2247,6 +2294,9 @@ def build_bottom_signal_extra(
         "liquidity": pool_liquidity,
         "holder_count": summary.get("holder_count", 0),
         "created_ts": summary.get("created_ts", 0),
+        "launch_ts": summary.get("launch_ts", 0),
+        "created_age_sec": summary.get("created_age_sec", 0),
+        "launch_age_sec": summary.get("launch_age_sec", 0),
         "age_sec": summary.get("age_sec", 0),
         "first_signal_mcap": first_mcap,
         "first_signal_ts": first_ts,
@@ -2953,6 +3003,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 "liquidity": pool_liq,
                 "holder_count": summary.get("holder_count", 0),
                 "created_ts": summary.get("created_ts", 0),
+                "launch_ts": summary.get("launch_ts", 0),
+                "created_age_sec": summary.get("created_age_sec", 0),
+                "launch_age_sec": summary.get("launch_age_sec", 0),
                 "age_sec": summary.get("age_sec", 0),
                 "first_signal_mcap": first_mcap,
                 "first_signal_ts": to_int(ema_baseline.get("first_signal_ts")),
@@ -3064,23 +3117,24 @@ def scan_once(
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
-            # Open time filter: token must have been trading for >= 4h, else skip
-            open_ts = int(to_float((info or {}).get("open_timestamp") or 0))
-            if open_ts <= 0:
+            # Launch/open time filter: token must be >=4h past pool migration.
+            created_ts = token_created_ts(info)
+            launch_ts = token_launch_ts(info)
+            if launch_ts <= 0:
                 skipped += 1
                 token["_trench"] = True
                 print(f"{token_label(token)} skip open_ts missing (在战壕)")
                 continue
-            open_age_sec = now_ts() - open_ts
+            open_age_sec = now_ts() - launch_ts
             if open_age_sec < 4 * 3600:
                 skipped += 1
                 print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (在战壕)")
                 continue
-            gmgn_created_ts = int(to_float(info.get("creation_timestamp") or info.get("open_timestamp") or 0))
             gmgn_ath_mcap = current_token_ath_mcap(info)
-            if gmgn_created_ts > 0 or gmgn_ath_mcap > 0:
-                store_fill_token_created_at(address, gmgn_created_ts, gmgn_ath_mcap)
-                token["_gmgn_created_ts"] = gmgn_created_ts
+            if created_ts > 0 or launch_ts > 0 or gmgn_ath_mcap > 0:
+                store_fill_token_created_at(address, created_ts, gmgn_ath_mcap, launch_ts)
+                token["_gmgn_created_ts"] = created_ts
+                token["_gmgn_open_ts"] = launch_ts
                 if gmgn_ath_mcap > 0:
                     token["_gmgn_ath_mcap"] = gmgn_ath_mcap
             current_mcap = calc_mcap(token)
@@ -3148,8 +3202,8 @@ def scan_once(
                 )
                 daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
                 if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
-                    gmgn_ts = int(to_float(token.get("_gmgn_created_ts") or info.get("creation_timestamp") or info.get("open_timestamp") or 0))
-                    age_sec = (now_ts() - gmgn_ts) if gmgn_ts > 0 else 0
+                    active_ts = token_active_ts({**token, **(info or {})})
+                    age_sec = (now_ts() - active_ts) if active_ts > 0 else 0
                     if 0 < age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC:
                         pool_summary = summarize_pools(token)
                         pool_liq = to_float(pool_summary.get("total_liquidity"))
@@ -3256,12 +3310,12 @@ def fast_scan_once(args: argparse.Namespace) -> None:
             token = merge_token_metadata(token, info, {})
             fill_watchlist_create_at(token)
 
-            # Open time filter (fast scan)
-            open_ts = int(to_float((info or {}).get("open_timestamp") or 0))
-            if open_ts <= 0:
+            # Launch/open time filter (fast scan)
+            launch_ts = token_launch_ts(info)
+            if launch_ts <= 0:
                 skipped += 1
                 continue
-            if now_ts() - open_ts < 4 * 3600:
+            if now_ts() - launch_ts < 4 * 3600:
                 skipped += 1
                 continue
 

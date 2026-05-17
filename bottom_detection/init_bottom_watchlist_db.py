@@ -24,6 +24,7 @@ def init_bottom_watchlist_table(conn):
             highest_mcap NUMERIC DEFAULT 0,
             current_mcap NUMERIC DEFAULT 0,
             gmgn_created_at BIGINT DEFAULT 0,
+            gmgn_open_at BIGINT DEFAULT 0,
             note TEXT,
             remark TEXT
         );
@@ -48,6 +49,8 @@ def init_bottom_watchlist_table(conn):
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS gmgn_created_at BIGINT DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS gmgn_open_at BIGINT DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS note TEXT;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS remark TEXT;
@@ -57,6 +60,8 @@ def init_bottom_watchlist_table(conn):
             ADD COLUMN IF NOT EXISTS fee_sol NUMERIC DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS token_created_at BIGINT DEFAULT 0;
+        ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS token_launch_at BIGINT DEFAULT 0;
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS daily_mcap_date DATE;
         ALTER TABLE bottom_watchlist_tokens
@@ -92,11 +97,13 @@ def init_bottom_watchlist_table(conn):
         COMMENT ON COLUMN bottom_watchlist_tokens.highest_mcap IS '观察池生命周期内记录到的最高市值，美元';
         COMMENT ON COLUMN bottom_watchlist_tokens.current_mcap IS '当前用于前端展示和判断的最新市值，美元';
         COMMENT ON COLUMN bottom_watchlist_tokens.gmgn_created_at IS 'GMGN返回的代币创建时间，Unix秒';
+        COMMENT ON COLUMN bottom_watchlist_tokens.gmgn_open_at IS 'GMGN返回的代币发射/开盘时间，优先来自open_timestamp，Unix秒';
         COMMENT ON COLUMN bottom_watchlist_tokens.note IS '系统写入的备注，例如自动加入原因';
         COMMENT ON COLUMN bottom_watchlist_tokens.remark IS '人工备注或补充说明';
         COMMENT ON COLUMN bottom_watchlist_tokens.symbol IS '代币符号';
         COMMENT ON COLUMN bottom_watchlist_tokens.fee_sol IS '创建或相关交易手续费SOL，用于1M标筛选';
         COMMENT ON COLUMN bottom_watchlist_tokens.token_created_at IS '代币创建时间，Unix秒';
+        COMMENT ON COLUMN bottom_watchlist_tokens.token_launch_at IS '代币发射/开盘时间，池子迁移或open_timestamp，Unix秒';
         COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_date IS '首次或最近记录达到每日1M市值条件的日期';
         COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_threshold IS '每日市值里程碑阈值，默认1000000美元';
         COMMENT ON COLUMN bottom_watchlist_tokens.daily_mcap_notified_date IS '每日1M市值通知日期';
