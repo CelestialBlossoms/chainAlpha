@@ -60,8 +60,10 @@ def ensure_top100_push_records_table() -> None:
                 ON bottom_top100_push_records(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_bottom_top100_push_records_pushed_at
                 ON bottom_top100_push_records(pushed_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_bottom_top100_push_records_ca
+                ON bottom_top100_push_records(chain, source, address);
 
-            COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动推送事件长期记录表。一条记录代表一次真实推送到插件或前端的异动，不要求CA唯一';
+            COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动首次推送记录表。每个CA在同一chain/source下只保留首次推送，后续检索明细由bottom_top100_snapshots记录';
             COMMENT ON COLUMN bottom_top100_push_records.id IS '推送记录自增ID';
             COMMENT ON COLUMN bottom_top100_push_records.pushed_at IS '数据库写入时间';
             COMMENT ON COLUMN bottom_top100_push_records.event_ts IS '推送发生时间，Unix秒';
@@ -69,7 +71,7 @@ def ensure_top100_push_records_table() -> None:
             COMMENT ON COLUMN bottom_top100_push_records.chain IS '链名称，当前主要为sol';
             COMMENT ON COLUMN bottom_top100_push_records.source IS '推送来源模块，例如bottom_abnormal';
             COMMENT ON COLUMN bottom_top100_push_records.status IS '推送状态，例如frontend_update';
-            COMMENT ON COLUMN bottom_top100_push_records.address IS '代币CA，同一个CA可多次推送多次记录';
+            COMMENT ON COLUMN bottom_top100_push_records.address IS '代币CA，同一chain/source下唯一，只记录首次推送';
             COMMENT ON COLUMN bottom_top100_push_records.symbol IS '推送时识别到的代币符号';
             COMMENT ON COLUMN bottom_top100_push_records.signal_type IS '异动类型，例如abnormal、new_revival、drop_40w、quiet_runup、ema_golden_cross';
             COMMENT ON COLUMN bottom_top100_push_records.abnormal_rule IS '命中的异动规则或档位';
@@ -121,13 +123,13 @@ def record_top100_push(
     status: str = "frontend_update",
     source: str = "bottom_abnormal",
     chain: str = "sol",
-) -> None:
+) -> bool:
     address = str((extra or {}).get("address") or "").strip()
     if not address:
-        return
+        return False
     signal_type = str((extra or {}).get("signal_type") or "").strip()
     if not signal_type or signal_type == "watch":
-        return
+        return False
     snapshot_id = _int(extra, "snapshot_id")
     liquidity = _num(extra, "liquidity") or _num(extra, "pool_total_liquidity") or _num(extra, "pool_liquidity")
     event_ts = _int(extra, "event_ts") or _int(extra, "signal_ts") or int(time.time())
@@ -147,6 +149,8 @@ def record_top100_push(
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s
             )
+            ON CONFLICT (chain, source, address) DO NOTHING
+            RETURNING id
             """,
             (
                 event_ts,
@@ -174,6 +178,34 @@ def record_top100_push(
                 Json(extra),
             ),
         )
+        return cur.fetchone() is not None
 
     ensure_top100_push_records_table()
-    db_op(_op)
+    return bool(db_op(_op))
+
+
+def top100_push_record_exists(
+    address: str,
+    *,
+    source: str = "bottom_abnormal",
+    chain: str = "sol",
+) -> bool:
+    address = str(address or "").strip()
+    if not address:
+        return False
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM bottom_top100_push_records
+            WHERE chain = %s AND source = %s AND address = %s
+            LIMIT 1
+            """,
+            (chain, source, address),
+        )
+        return cur.fetchone() is not None
+
+    ensure_top100_push_records_table()
+    return bool(db_op(_op))

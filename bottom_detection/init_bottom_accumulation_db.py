@@ -96,8 +96,10 @@ def init_bottom_accumulation_tables(conn):
             ON bottom_top100_push_records(snapshot_id);
         CREATE INDEX idx_bottom_top100_push_records_pushed_at
             ON bottom_top100_push_records(pushed_at DESC);
+        CREATE UNIQUE INDEX uq_bottom_top100_push_records_ca
+            ON bottom_top100_push_records(chain, source, address);
 
-        COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动推送事件长期记录表。一条记录代表一次真实推送到插件或前端的异动，不要求CA唯一';
+        COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动首次推送记录表。每个CA在同一chain/source下只保留首次推送，后续检索明细由bottom_top100_snapshots记录';
         COMMENT ON COLUMN bottom_top100_push_records.id IS '推送记录自增ID';
         COMMENT ON COLUMN bottom_top100_push_records.pushed_at IS '数据库写入时间';
         COMMENT ON COLUMN bottom_top100_push_records.event_ts IS '推送发生时间，Unix秒';
@@ -105,7 +107,7 @@ def init_bottom_accumulation_tables(conn):
         COMMENT ON COLUMN bottom_top100_push_records.chain IS '链名称，当前主要为sol';
         COMMENT ON COLUMN bottom_top100_push_records.source IS '推送来源模块，例如bottom_abnormal';
         COMMENT ON COLUMN bottom_top100_push_records.status IS '推送状态，例如frontend_update';
-        COMMENT ON COLUMN bottom_top100_push_records.address IS '代币CA，同一个CA可多次推送多次记录';
+        COMMENT ON COLUMN bottom_top100_push_records.address IS '代币CA，同一chain/source下唯一，只记录首次推送';
         COMMENT ON COLUMN bottom_top100_push_records.symbol IS '推送时识别到的代币符号';
         COMMENT ON COLUMN bottom_top100_push_records.signal_type IS '异动类型，例如abnormal、new_revival、drop_40w、quiet_runup、ema_golden_cross';
         COMMENT ON COLUMN bottom_top100_push_records.abnormal_rule IS '命中的异动规则或档位';

@@ -44,7 +44,7 @@ from bottom_detection.bottom_watchlist_store import (
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
 )
-from bottom_detection.top100_push_record_store import record_top100_push
+from bottom_detection.top100_push_record_store import record_top100_push, top100_push_record_exists
 
 
 CHAIN = "sol"
@@ -1862,6 +1862,10 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
     extra = extra or {}
     if not extra.get("event_ts"):
         extra = {**extra, "event_ts": now_ts()}
+    address = str(extra.get("address") or "").strip() or extract_address_from_text(text)
+    if is_bottom_tg_extra(extra) and top100_push_record_exists(address, source="bottom_abnormal", chain=CHAIN):
+        print(f"{address[:8]} skip tg: first push already recorded")
+        return
     try:
         tg_text = format_bottom_tg_message(text, extra)
     except Exception as exc:
@@ -1932,7 +1936,20 @@ def publish_frontend_signal_update(
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
+    if top100_push_record_exists(address, source="bottom_abnormal", chain=CHAIN):
+        print(f"{address[:8]} skip frontend push: first push already recorded")
+        return
     risk_tags = compute_risk_tags(extra or {})
+    if risk_tags:
+        extra = {**(extra or {}), "risk_tags": risk_tags}
+    try:
+        inserted = record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
+    except Exception as exc:
+        print(f"{address[:8]} top100 push record failed: {exc}")
+        inserted = True
+    if not inserted:
+        print(f"{address[:8]} skip frontend push: duplicate first push record")
+        return
     # Filter 1: ceiling + dead_vol = ~0% success (21 failures, 8 successes killed)
     if "天花板" in risk_tags and "无量" in risk_tags:
         print(f"{address[:8]} skip push: ceiling+dead_vol combo")
@@ -1942,12 +1959,6 @@ def publish_frontend_signal_update(
     if 0 < vol < 5_000:
         print(f"{address[:8]} skip push: extreme dead vol ${vol:,.0f} < $5K")
         return
-    if risk_tags:
-        extra = {**(extra or {}), "risk_tags": risk_tags}
-    try:
-        record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
-    except Exception as exc:
-        print(f"{address[:8]} top100 push record failed: {exc}")
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
 
