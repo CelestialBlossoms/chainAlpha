@@ -1712,27 +1712,130 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
     return db_op(_op)
 
 
+def format_ts_text(ts: Any) -> str:
+    ts_int = to_int(ts)
+    if ts_int <= 0:
+        return "未知"
+    return datetime.fromtimestamp(ts_int).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_age_text(age_sec: Any) -> str:
+    age = to_int(age_sec)
+    if age <= 0:
+        return "未知"
+    if age >= 86400:
+        return f"{age / 86400:.1f}天"
+    if age >= 3600:
+        return f"{age / 3600:.1f}小时"
+    return f"{max(1, age // 60)}分钟"
+
+
+def format_money_text(value: Any) -> str:
+    amount = to_float(value)
+    if amount <= 0:
+        return "$0"
+    return f"${amount:,.0f}"
+
+
+def format_pct_text(value: Any, *, signed: bool = True) -> str:
+    pct = to_float(value)
+    prefix = "+" if signed and pct > 0 else ""
+    return f"{prefix}{pct:.1f}%"
+
+
+def short_text(value: Any, limit: int = 220) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def is_bottom_tg_extra(extra: dict[str, Any]) -> bool:
+    signal_type = str((extra or {}).get("signal_type") or "")
+    return signal_type in {
+        "abnormal",
+        "new_revival",
+        "drop_50w",
+        "drop_40w",
+        "quiet_breakout",
+        "quiet_runup",
+        "ema_golden_cross",
+    }
+
+
+def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
+    if not is_bottom_tg_extra(extra):
+        return text
+
+    address = str(extra.get("address") or "").strip() or extract_address_from_text(text)
+    symbol = str(extra.get("symbol") or "UNKNOWN").strip() or "UNKNOWN"
+    signal_type = str(extra.get("signal_type") or "")
+    current_mcap = to_float(extra.get("current_mcap"))
+    first_mcap = to_float(extra.get("first_signal_mcap")) or current_mcap
+    first_ts = to_int(extra.get("first_signal_ts")) or to_int(extra.get("event_ts")) or now_ts()
+    event_ts = to_int(extra.get("event_ts") or extra.get("signal_ts")) or now_ts()
+    ath_mcap = to_float(extra.get("ath_mcap") or extra.get("peak_mcap"))
+    history_gain_pct = ((ath_mcap - first_mcap) / first_mcap * 100) if first_mcap > 0 and ath_mcap > 0 else 0.0
+    liquidity = to_float(extra.get("pool_total_liquidity") or extra.get("liquidity") or extra.get("pool_liquidity"))
+    pool_ratio = to_float(extra.get("pool_mcap_ratio"))
+    pool_exchange = str(extra.get("pool_main_exchange") or "").strip()
+    pool_count = to_int(extra.get("pool_count"))
+    pool_label = pool_exchange or "未知"
+    if pool_count > 1:
+        pool_label = f"{pool_label}({pool_count}池)"
+    narrative_type = short_text(extra.get("narrative_type"), 80) or "未分类"
+    narrative_desc = short_text(extra.get("narrative_desc") or extra.get("narrative"), 220) or "暂无"
+
+    return (
+        f"底部异动 | ${symbol}\n"
+        f"类型: {signal_type_text(signal_type)} | 档位: {extra.get('abnormal_rule') or '-'}\n"
+        f"叙事: {narrative_type} | {narrative_desc}\n"
+        f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)}\n"
+        f"首次异动时间: {format_ts_text(first_ts)}\n"
+        f"相对首次异动涨幅: {format_pct_text(extra.get('first_signal_change_pct'))} | 涨幅: {format_pct_text(extra.get('price_change_pct') or extra.get('change_pct'))}\n"
+        f"历史涨幅: {format_pct_text(history_gain_pct)} | 币龄: {format_age_text(extra.get('age_sec'))}\n"
+        f"最高市值: {format_money_text(ath_mcap)} | 流动性: {format_money_text(liquidity)}\n"
+        f"池子: {pool_label} | 池/市值: {pool_ratio:.1%}\n"
+        f"异动时间: {format_ts_text(event_ts)}\n"
+        f"CA: {address}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def extract_address_from_text(text: str) -> str:
+    match = SOL_CA_RE.search(text or "")
+    return match.group(0) if match else ""
+
+
 def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
     extra = extra or {}
+    if not extra.get("event_ts"):
+        extra = {**extra, "event_ts": now_ts()}
+    try:
+        tg_text = format_bottom_tg_message(text, extra)
+    except Exception as exc:
+        print(f"tg format exception: {exc}")
+        extra = {**extra, "format_error": str(exc)}
+        tg_text = text
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        publish_tg_alert(text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
+        publish_tg_alert(tg_text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
         return
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": text, "disable_web_page_preview": True},
+            json={"chat_id": TG_CHAT_ID, "text": tg_text, "disable_web_page_preview": True},
             timeout=15,
         )
         if not resp.ok:
             print(f"tg failed: {resp.status_code} {resp.text[:200]}")
-            publish_tg_alert(text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
+            publish_tg_alert(tg_text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
             return
         payload = resp.json()
         message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
-        publish_tg_alert(text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
+        publish_tg_alert(tg_text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
     except Exception as exc:
         print(f"tg exception: {exc}")
-        publish_tg_alert(text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={"error": str(exc)})
+        publish_tg_alert(tg_text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
 
 
 def compute_risk_tags(extra: dict[str, Any]) -> list[str]:
@@ -1941,6 +2044,9 @@ def signal_type_text(signal_type: str) -> str:
         "drop_50w": "新币跌破50W",
         "drop_40w": "新币跌破40W",
         "new_revival": "新币底部启动",
+        "quiet_breakout": "横盘异动",
+        "quiet_runup": "横盘拉升",
+        "ema_golden_cross": "EMA金叉",
     }
     return mapping.get(signal_type, signal_type or "未知")
 
@@ -2127,8 +2233,11 @@ def build_bottom_signal_extra(
     first_change_pct = (first_delta / first_mcap * 100) if first_mcap > 0 else 0.0
     pool_summary = summary.get("pool") or {}
     pool_liquidity = to_float(analysis.get("pool_total_liquidity")) or to_float(pool_summary.get("total_liquidity"))
+    signal_ts = now_ts()
     return {
         "snapshot_id": analysis.get("snapshot_id", 0),
+        "event_ts": signal_ts,
+        "signal_ts": signal_ts,
         "signal_type": analysis.get("signal_type"),
         "abnormal_rule": analysis.get("abnormal_rule"),
         "trend_interval": token.get("_trend_interval") or TREND_INTERVAL,
@@ -2165,7 +2274,12 @@ def build_bottom_signal_extra(
         "required_bottom_low_mcap": analysis.get("required_bottom_low_mcap", 0),
         "pool_total_liquidity": pool_liquidity,
         "required_pool_liquidity": analysis.get("required_pool_liquidity", 0),
+        "pool_count": pool_summary.get("pool_count", 0),
+        "pool_main_address": pool_summary.get("main_pool_address", ""),
         "pool_main_exchange": pool_summary.get("main_exchange", ""),
+        "pool_main_quote_symbol": pool_summary.get("main_quote_symbol", ""),
+        "pool_main_liquidity": pool_summary.get("main_liquidity", 0),
+        "pool_main_share": pool_summary.get("main_share", 0),
         "pool_mcap_ratio": analysis.get("pool_mcap_ratio", 0),
         "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
         "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),

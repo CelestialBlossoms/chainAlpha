@@ -130,7 +130,7 @@ def record_top100_push(
         return
     snapshot_id = _int(extra, "snapshot_id")
     liquidity = _num(extra, "liquidity") or _num(extra, "pool_total_liquidity") or _num(extra, "pool_liquidity")
-    event_ts = int(time.time())
+    event_ts = _int(extra, "event_ts") or _int(extra, "signal_ts") or int(time.time())
 
     def _op(conn):
         cur = conn.cursor()
