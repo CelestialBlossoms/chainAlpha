@@ -95,7 +95,7 @@
     copied: "",
     dragging: false,
     resizing: false,
-    view: "ca",
+    view: "abnormal",
     abnormalLoading: false,
     abnormalItems: [],
     abnormalError: "",
@@ -521,37 +521,18 @@
   }
 
   function render() {
-    panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""}${STATE.view === "abnormal" ? " ca-watch-mode" : ""}`;
-    const caBody = STATE.loading
-      ? `<div class="ca-cluster-loading">${L.analyzing} ${escapeHtml(shortCa(STATE.ca))}</div>`
-      : STATE.error
-        ? `<div class="ca-cluster-error">${escapeHtml(STATE.error)}</div>`
-        : STATE.result
-          ? renderResult(STATE.result)
-          : `<div class="ca-cluster-empty">${L.openHint}</div>`;
-    const body = STATE.view === "abnormal" ? renderWatchView() : caBody;
-    const inputRow =
-      STATE.view === "ca"
-        ? `<div class="ca-cluster-input-row">
-          <input class="ca-cluster-input" value="${escapeAttr(STATE.ca)}" placeholder="Token CA" />
-          <button class="ca-cluster-button ca-cluster-run" title="${L.analyze}">${L.run}</button>
-        </div>`
-        : "";
+    STATE.view = "abnormal";
+    panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""} ca-watch-mode`;
 
     panel.innerHTML = `
       <div class="ca-cluster-header">
-        <div class="ca-cluster-title">${L.title}</div>
+        <div class="ca-cluster-title">${L.watchView}</div>
         <div class="ca-cluster-actions">
           <button class="ca-cluster-button ca-cluster-toggle" title="${L.collapse}">${STATE.collapsed ? "+" : "-"}</button>
         </div>
       </div>
       <div class="ca-cluster-body">
-        ${inputRow}
-        ${body}
-      </div>
-      <div class="ca-bottom-tabs">
-        <button class="ca-view-button${STATE.view === "ca" ? " is-active" : ""}" data-view="ca">${L.caView}</button>
-        <button class="ca-view-button${STATE.view === "abnormal" ? " is-active" : ""}" data-view="abnormal">${L.watchView}</button>
+        ${renderWatchView()}
       </div>
       <div class="ca-resize-handle" title="Resize"></div>
     `;
@@ -560,30 +541,15 @@
       STATE.collapsed = !STATE.collapsed;
       render();
     });
-    panel.querySelector(".ca-cluster-run")?.addEventListener("click", () => {
-      const value = panel.querySelector(".ca-cluster-input")?.value?.trim() || "";
-      analyze(value, true);
-    });
     attachDragHandlers();
     attachResizeHandlers();
-    panel.querySelectorAll(".ca-view-button").forEach((button) => {
-      button.addEventListener("click", () => {
-        const view = button.getAttribute("data-view") || "ca";
-        STATE.view = view;
-        render();
-        if (view === "abnormal") {
-          startAbnormalAutoRefresh();
-          if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
-            loadBottomWatchlist(false);
-          }
-        } else {
-          stopAbnormalAutoRefresh();
-        }
-      });
-    });
     attachAbnormalRowHandlers();
     attachCopyHandlers();
     attachDismissHandlers();
+    startAbnormalAutoRefresh();
+    if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
+      loadBottomWatchlist(false);
+    }
   }
 
   function attachCopyHandlers() {

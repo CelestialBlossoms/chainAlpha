@@ -67,25 +67,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type !== "ANALYZE_CA") {
-    return false;
-  }
-
-  const address = String(message.address || "").trim();
-  const chain = String(message.chain || "sol").trim() || "sol";
-  const limit = Number(message.limit || 100);
-
-  fetchServiceJson(`/api/ca-clusters?chain=${encodeURIComponent(chain)}&limit=${encodeURIComponent(limit)}&address=${encodeURIComponent(address)}`)
-    .then((resp) => {
-      if (resp.ok && resp.data && resp.data.ok === false) {
-        sendResponse({ ok: false, status: resp.status || 200, mode: resp.mode, baseUrl: resp.baseUrl, error: resp.data.error || "Analysis returned no data." });
-        return;
-      }
-      sendResponse(resp);
-    })
-    .catch((err) => {
-      sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
-    });
-
-  return true;
+  return false;
 });
