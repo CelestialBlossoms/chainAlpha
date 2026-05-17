@@ -48,6 +48,7 @@
     poolGreat: "\u975e\u5e38\u597d",
     priceChange: "\u6da8\u5e45",
     abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
+    topHoldChange: "Top\u6301\u4ed3\u53d8\u5316",
     watchlistLowMcap: "\u91cd\u70b9\u4f4e\u5e02\u503c",
     watchlistMcap: "\u89c2\u5bdf\u5e02\u503c",
     tokenAge: "\u5e01\u9f84",
@@ -196,6 +197,22 @@
         return `<span class="${cls}">${escapeHtml(fmtSignedPct(pct))}</span>`;
       })
       .join("<i>,</i>");
+  }
+
+  function renderTopHoldChanges(item) {
+    const groups = [
+      ["T10", item.top10_pct_delta],
+      ["T20", item.top20_pct_delta],
+      ["T50", item.top50_pct_delta],
+      ["T100", item.top100_pct_delta],
+    ];
+    return groups
+      .map(([label, value]) => {
+        const pct = toNumber(value) * 100;
+        const cls = pct >= 0 ? "ca-positive" : "ca-negative";
+        return `<small><i>${label}</i><strong class="${cls}">${escapeHtml(fmtSignedPct(pct))}</strong></small>`;
+      })
+      .join("");
   }
 
   function calcFirstGainPct(currentMcap, firstMcap) {
@@ -465,6 +482,7 @@
                 <span><em>${L.firstGain}</em><b class="${firstGainPct === null || firstGainPct >= 0 ? "ca-positive" : "ca-negative"}">${firstGainPct === null ? "-" : fmtSignedPct(firstGainPct)}</b></span>
                 <span><em>${L.priceChange}</em><b class="${toNumber(item.price_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_change_pct)}</b></span>
                 <span class="ca-history-metric"><em>${L.abnormalHistory}</em><b class="ca-history-changes">${renderChangeHistory(item.abnormal_mcap_change_history, item.abnormal_mcap_change_text)}</b></span>
+                <span class="ca-top-hold-metric"><em>${L.topHoldChange}</em><b>${renderTopHoldChanges(item)}</b></span>
                 <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtAge(item.age_sec))}</b></span>
                 <span><em>${L.maxMcap}</em><b>${fmtUsd(item.max_mcap || item.ath_mcap || item.peak_mcap)}</b></span>
                 <span><em>${L.liquidity}</em><b>${fmtUsd(item.liquidity)}</b></span>
@@ -702,6 +720,18 @@
       abnormal_signal_count: toNumber(extra.abnormal_signal_count),
       age_sec: toNumber(extra.age_sec),
       pool_mcap_ratio: toNumber(extra.pool_mcap_ratio),
+      top10_pct_delta: toNumber(extra.top10_pct_delta),
+      top10_current_pct: toNumber(extra.top10_current_pct),
+      top10_previous_pct: toNumber(extra.top10_previous_pct),
+      top20_pct_delta: toNumber(extra.top20_pct_delta),
+      top20_current_pct: toNumber(extra.top20_current_pct),
+      top20_previous_pct: toNumber(extra.top20_previous_pct),
+      top50_pct_delta: toNumber(extra.top50_pct_delta),
+      top50_current_pct: toNumber(extra.top50_current_pct),
+      top50_previous_pct: toNumber(extra.top50_previous_pct),
+      top100_pct_delta: toNumber(extra.top100_pct_delta),
+      top100_current_pct: toNumber(extra.top100_current_pct),
+      top100_previous_pct: toNumber(extra.top100_previous_pct),
       in_bottom_watchlist: Boolean(extra.in_bottom_watchlist),
       watchlist_current_mcap: toNumber(extra.watchlist_current_mcap),
       watchlist_low_mcap_threshold: toNumber(extra.watchlist_low_mcap_threshold),

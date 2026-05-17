@@ -403,6 +403,10 @@
   grid-column: span 2;
 }
 
+.ca-abnormal-metrics .ca-top-hold-metric {
+  grid-column: span 3;
+}
+
 .ca-abnormal-metrics .ca-pool-metric {
   min-width: 92px;
 }
@@ -426,6 +430,37 @@
 }
 
 .ca-history-changes .ca-negative {
+  color: #fca5a5;
+}
+
+.ca-top-hold-metric b {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.ca-top-hold-metric small {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.ca-top-hold-metric i {
+  color: #94a3b8;
+  font-style: normal;
+  font-size: 9px;
+}
+
+.ca-top-hold-metric .ca-positive {
+  color: #86efac;
+}
+
+.ca-top-hold-metric .ca-negative {
   color: #fca5a5;
 }
 

@@ -1581,12 +1581,15 @@ def analyze_abnormal_snapshot(
             "netflow_usd": 0.0,
         }
     )
+    current_top10_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:10])
     current_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:20])
     current_top50_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:50])
     current_top100_pct = sum(to_float(holder.get("hold_pct")) for holder in current_holders[:100])
+    previous_top10_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:10]) if previous_holders else 0.0
     previous_top20_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:20]) if previous_holders else 0.0
     previous_top50_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:50]) if previous_holders else 0.0
     previous_top100_pct = sum(to_float(holder.get("hold_pct")) for holder in previous_holders[:100]) if previous_holders else 0.0
+    top10_pct_delta = current_top10_pct - previous_top10_pct if previous_holders else 0.0
     top20_pct_delta = current_top20_pct - previous_top20_pct if previous_holders else 0.0
     top50_pct_delta = current_top50_pct - previous_top50_pct if previous_holders else 0.0
     top100_pct_delta = current_top100_pct - previous_top100_pct if previous_holders else 0.0
@@ -1701,6 +1704,9 @@ def analyze_abnormal_snapshot(
         "window_pool_mcap_ratio_delta": window_pool_stats["pool_mcap_ratio_delta"],
         "accumulation_pct_delta": holder_change["accumulation_pct_delta"],
         "distribution_pct_delta": holder_change["distribution_pct_delta"],
+        "top10_pct_delta": top10_pct_delta,
+        "top10_current_pct": current_top10_pct,
+        "top10_previous_pct": previous_top10_pct,
         "top20_pct_delta": top20_pct_delta,
         "top20_current_pct": current_top20_pct,
         "top20_previous_pct": previous_top20_pct,
@@ -1837,6 +1843,7 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         f"首次异动时间: {format_ts_text(first_ts)}\n"
         f"相对首次异动涨幅: {format_pct_text(extra.get('first_signal_change_pct'))} | 涨幅: {format_pct_text(extra.get('price_change_pct') or extra.get('change_pct'))}\n"
         f"历史涨幅: {format_pct_text(history_gain_pct)} | 币龄: {format_age_text(extra.get('age_sec'))}\n"
+        f"Top持仓变化: T10 {format_pct_text(to_float(extra.get('top10_pct_delta')) * 100)} | T20 {format_pct_text(to_float(extra.get('top20_pct_delta')) * 100)} | T50 {format_pct_text(to_float(extra.get('top50_pct_delta')) * 100)} | T100 {format_pct_text(to_float(extra.get('top100_pct_delta')) * 100)}\n"
         f"最高市值: {format_money_text(ath_mcap)} | 流动性: {format_money_text(liquidity)}\n"
         f"池子: {pool_label} | 池/市值: {pool_ratio:.1%}\n"
         f"异动时间: {format_ts_text(event_ts)}\n"
@@ -2373,6 +2380,9 @@ def build_bottom_signal_extra(
         "pool_mcap_ratio_text": analysis.get("pool_mcap_ratio_text", "N/A"),
         "accumulation_pct_delta": analysis.get("accumulation_pct_delta", 0),
         "distribution_pct_delta": analysis.get("distribution_pct_delta", 0),
+        "top10_pct_delta": analysis.get("top10_pct_delta", 0),
+        "top10_current_pct": analysis.get("top10_current_pct", 0),
+        "top10_previous_pct": analysis.get("top10_previous_pct", 0),
         "top20_pct_delta": analysis.get("top20_pct_delta", 0),
         "top20_current_pct": analysis.get("top20_current_pct", 0),
         "top20_previous_pct": analysis.get("top20_previous_pct", 0),
