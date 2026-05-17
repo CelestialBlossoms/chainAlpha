@@ -8,6 +8,7 @@ gmgn_account_*/.env.*
 *.pem
 *.p12
 *.pfx
+secrets/
 
 # Python
 __pycache__/
