@@ -302,6 +302,21 @@
   vertical-align: middle;
 }
 
+.ca-narrative-category {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid #2563eb;
+  background: #172554;
+  color: #bfdbfe;
+  font-size: 9px;
+  font-weight: 800;
+  margin-left: 3px;
+  vertical-align: middle;
+}
+
 .ca-priority-text {
   color: #fecaca;
 }

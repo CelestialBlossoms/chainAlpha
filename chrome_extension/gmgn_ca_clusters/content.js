@@ -47,6 +47,7 @@
     poolGood: "\u826f\u597d",
     poolGreat: "\u975e\u5e38\u597d",
     priceChange: "\u6da8\u5e45",
+    narrativeCategory: "\u53d9\u4e8b\u7c7b\u578b",
     abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
     topHoldChange: "Top\u6301\u4ed3\u53d8\u5316",
     watchlistLowMcap: "\u91cd\u70b9\u4f4e\u5e02\u503c",
@@ -449,6 +450,7 @@
               ? `<span class="ca-priority-badge">${L.watchlistLowMcap} ${fmtUsd(item.watchlist_current_mcap)}</span>`
               : "";
             const riskTags = Array.isArray(item.risk_tags) ? item.risk_tags : [];
+            const narrativeCategory = item.narrative_category || "";
             const TAG_STYLES = {
               "瞬爆": "background:#92400e;color:#fbbf24;border:1px solid #b45309",
               "天花板": "background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b",
@@ -467,6 +469,7 @@
                   <span>${escapeHtml(shortCa(ca))}</span>
                 </button>
                 ${watchlistBadge}
+                ${narrativeCategory ? `<span class="ca-narrative-category">${escapeHtml(narrativeCategory)}</span>` : ""}
                 ${riskTagsHtml}
                 <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
                   ${STATE.copied === ca ? L.copied : L.copyCa}
@@ -475,6 +478,7 @@
               </div>
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
+                ${narrativeCategory ? `<span><em>${L.narrativeCategory}</em><b>${escapeHtml(narrativeCategory)}</b></span>` : ""}
                 <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
                 ${isLowWatchlist ? `<span><em>${L.watchlistMcap}</em><b class="ca-priority-text">${fmtUsd(item.watchlist_current_mcap)}</b></span>` : ""}
                 <span><em>${L.firstAbnormalMcap}</em><b>${fmtUsd(item.first_abnormal_mcap)}</b></span>
@@ -708,6 +712,8 @@
       signal_type: signalType,
       abnormal_rule: extra.abnormal_rule || "",
       narrative: extra.narrative || extra.narrative_desc || item.text || "",
+      narrative_category: extra.narrative_category || "",
+      narrative_type: extra.narrative_type || "",
       current_mcap: currentMcap,
       first_abnormal_mcap: firstAbnormalMcap,
       first_abnormal_ts: firstAbnormalTs,

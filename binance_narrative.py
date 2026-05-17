@@ -35,6 +35,36 @@ TOPIC_RUSH_URL = "https://web3.binance.com/bapi/defi/v2/public/wallet-direct/buw
 CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 ENGLISH_RE = re.compile(r"[A-Za-z]")
 
+NARRATIVE_CATEGORY_KEYWORDS = {
+    "政治": [
+        "总统", "选举", "特朗普", "拜登", "政府", "政治", "国会", "白宫", "民主党", "共和党",
+        "法律", "法官", "法院", "政策", "税收", "投票", "竞选", "党派", "国家", "国旗",
+        "爱国", "自由", "军事", "战争", "军队", "america", "usa", "trump", "biden", "election",
+        "president", "government", "congress", "white house", "democrat", "republican", "elon",
+    ],
+    "动物": [
+        "猫", "狗", "熊猫", "熊", "兔", "鱼", "马", "牛", "羊", "鸡", "鸭", "鹅", "蛇", "鼠",
+        "虎", "龙", "狮", "狼", "狐", "鹰", "鸟", "鲸", "鲨", "青蛙", "猴子", "猩猩", "大象",
+        "猪", "企鹅", "宠物", "动物", "野兽", "dog", "cat", "bear", "bull", "ape", "pepe",
+        "doge", "shib", "frog", "toad", "fish", "lobster", "rabbit", "penguin", "monkey", "wolf",
+    ],
+    "应用": [
+        "ai", "人工智能", "平台", "应用", "工具", "软件", "协议", "网络", "系统", "defi", "dex",
+        "交易所", "钱包", "链", "智能合约", "nft", "gamefi", "app", "bot", "机器人", "自动化",
+        "算法", "数据", "分析", "支付", "跨链", "layer", "扩容", "基础设施", "开发", "代码",
+        "open source", "开源", "builder", "build", "技术", "trading", "swap", "bridge", "oracle",
+        "agi", "llm", "模型", "gpt", "claude", "openai", "anthropic", "ide", "saas", "cloud",
+        "agent", "agents",
+    ],
+    "抽象": [
+        "meme", "迷因", "梗", "搞笑", "讽刺", "幽默", "表情包", "文化", "社区", "社交", "病毒",
+        "传播", "信仰", "宗教", "哲学", "意识", "精神", "灵魂", "死亡", "重生", "永恒", "虚无",
+        "混沌", "秩序", "艺术", "音乐", "绘画", "设计", "创意", "情绪", "感觉", "氛围", "vibe",
+        "energy", "梦想", "希望", "爱", "恨", "恐惧", "抽象", "幻想", "童话", "传说", "culture",
+        "theme", "themes",
+    ],
+}
+
 
 def _headers() -> dict[str, str]:
     return {"Accept-Encoding": "identity", "User-Agent": BINANCE_USER_AGENT}
@@ -161,7 +191,22 @@ def translate_narrative_to_chinese(text: str) -> str:
         return translated[:500] if translated else text
     except Exception as exc:
         print(f"deepseek narrative translate failed: {exc}")
-        return text
+    return text
+
+
+def classify_narrative_category(desc: Any = "", narrative_type: Any = "", tags: Any = None) -> str:
+    parts = [str(desc or ""), str(narrative_type or "")]
+    if isinstance(tags, list):
+        parts.extend(str(item or "") for item in tags)
+    elif tags:
+        parts.append(str(tags))
+    text = " ".join(parts).lower()
+    scores = {
+        category: sum(1 for keyword in keywords if keyword.lower() in text)
+        for category, keywords in NARRATIVE_CATEGORY_KEYWORDS.items()
+    }
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else "其他"
 
 
 def _first_topic_match(address: str, symbol: str = "", name: str = "") -> dict[str, Any]:
@@ -416,6 +461,7 @@ def get_binance_narrative(
         "narrative_desc_original": original_desc[:500],
         "narrative_translated": translated_desc != original_desc,
         "narrative_type": narrative_type[:180],
+        "narrative_category": classify_narrative_category(translated_desc, narrative_type, tags),
         "tags": tags,
         "source": "binance_web3",
         "updated_ts": int(time.time()),
@@ -458,6 +504,12 @@ def compact_narrative(narrative: dict[str, Any] | None) -> dict[str, Any]:
         "narrative_desc_original": narrative.get("narrative_desc_original") or "",
         "narrative_translated": bool(narrative.get("narrative_translated")),
         "narrative_type": narrative.get("narrative_type") or "",
+        "narrative_category": narrative.get("narrative_category")
+        or classify_narrative_category(
+            narrative.get("narrative_desc") or "",
+            narrative.get("narrative_type") or "",
+            narrative.get("tags") or [],
+        ),
         "tags": (narrative.get("tags") or [])[:12],
         "source": narrative.get("source") or "",
         "updated_ts": narrative.get("updated_ts") or 0,

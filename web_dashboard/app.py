@@ -223,6 +223,8 @@ def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
             "symbol": extra.get("symbol") or item.get("title") or "UNKNOWN",
             "narrative": extra.get("narrative") or extra.get("narrative_desc") or "",
             "narrative_desc": extra.get("narrative_desc") or extra.get("narrative") or "",
+            "narrative_category": extra.get("narrative_category") or "",
+            "narrative_type": extra.get("narrative_type") or "",
             "current_mcap": extra.get("current_mcap") or 0,
             "first_signal_mcap": extra.get("first_signal_mcap") or 0,
             "first_signal_ts": extra.get("first_signal_ts") or 0,

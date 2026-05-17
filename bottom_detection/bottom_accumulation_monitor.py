@@ -27,7 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
-from binance_narrative import compact_narrative, get_binance_narrative, resolve_cached_or_db_narrative
+from binance_narrative import classify_narrative_category, compact_narrative, get_binance_narrative, resolve_cached_or_db_narrative
 from plugin_signal_stream import publish_plugin_signal
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
@@ -1833,12 +1833,13 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     if pool_count > 1:
         pool_label = f"{pool_label}({pool_count}池)"
     narrative_type = short_text(extra.get("narrative_type"), 80) or "未分类"
+    narrative_category = short_text(extra.get("narrative_category"), 20) or "其他"
     narrative_desc = short_text(extra.get("narrative_desc") or extra.get("narrative"), 220) or "暂无"
 
     return (
         f"底部异动 | ${symbol}\n"
         f"类型: {signal_type_text(signal_type)} | 档位: {extra.get('abnormal_rule') or '-'}\n"
-        f"叙事: {narrative_type} | {narrative_desc}\n"
+        f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
         f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)}\n"
         f"首次异动时间: {format_ts_text(first_ts)}\n"
         f"相对首次异动涨幅: {format_pct_text(extra.get('first_signal_change_pct'))} | 涨幅: {format_pct_text(extra.get('price_change_pct') or extra.get('change_pct'))}\n"
@@ -2310,6 +2311,11 @@ def build_bottom_signal_extra(
     watchlist_narrative_type = token.get("watchlist_narrative_type") or token.get("narrative_type") or ""
     narrative_desc = narrative.get("narrative_desc") or watchlist_narrative_desc
     narrative_type = narrative.get("narrative_type") or watchlist_narrative_type
+    narrative_category = narrative.get("narrative_category") or classify_narrative_category(
+        narrative_desc,
+        narrative_type,
+        narrative.get("tags") or [],
+    )
     current_mcap = to_float(analysis.get("current_mcap", calc_mcap(token)))
     first_mcap = to_float((baseline or {}).get("first_signal_mcap")) or current_mcap
     first_ts = to_int((baseline or {}).get("first_signal_ts")) or now_ts()
@@ -2401,6 +2407,7 @@ def build_bottom_signal_extra(
         "narrative": narrative_desc,
         "narrative_desc": narrative_desc,
         "narrative_type": narrative_type,
+        "narrative_category": narrative_category,
         "binance_narrative": compact_narrative(narrative),
         "watchlist_narrative_desc": watchlist_narrative_desc,
         "watchlist_narrative_type": watchlist_narrative_type,
