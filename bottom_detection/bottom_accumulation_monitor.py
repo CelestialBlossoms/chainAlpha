@@ -2907,6 +2907,15 @@ def check_quiet_runup(
     if current_mcap <= 0 or current_price <= 0:
         return None
 
+    # Skip if recent trend is declining (run-up already collapsed)
+    if len(lookback) >= 6:
+        recent_3 = lookback[-3:]
+        recent_start = to_float(recent_3[0].get("close"))
+        recent_end = to_float(recent_3[-1].get("close"))
+        recent_trend = (recent_end - recent_start) / recent_start * 100 if recent_start > 0 else 0
+        if recent_trend < -5:
+            return None  # Don't push a run-up that already collapsed
+
     best: dict[str, Any] | None = None
     max_start = len(lookback) - min_quiet - 2
     for start in range(0, max_start + 1):
