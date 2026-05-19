@@ -102,6 +102,36 @@ def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
         cur = conn.cursor()
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS alpha_push_events (
+                id BIGSERIAL PRIMARY KEY,
+                address TEXT NOT NULL,
+                chain TEXT NOT NULL,
+                symbol TEXT,
+                source TEXT,
+                trend_interval TEXT,
+                alert_no INTEGER DEFAULT 1,
+                repeat_alert BOOLEAN DEFAULT FALSE,
+                repeat_alert_type TEXT,
+                entry_mcap NUMERIC,
+                entry_price NUMERIC,
+                holder_count INTEGER,
+                fee_sol NUMERIC,
+                buy_score INTEGER,
+                tg_chat_id TEXT,
+                tg_message_id BIGINT,
+                raw_stats JSONB,
+                pushed_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_alpha_push_events_address
+                ON alpha_push_events(address);
+            CREATE INDEX IF NOT EXISTS idx_alpha_push_events_pushed_at
+                ON alpha_push_events(pushed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_alpha_push_events_address_alert_no
+                ON alpha_push_events(address, alert_no);
+            CREATE INDEX IF NOT EXISTS idx_alpha_push_events_source_interval
+                ON alpha_push_events(source, trend_interval);
+        """)
+        cur.execute("""
             INSERT INTO alpha_token_candidates (
                 address, chain, symbol, trend_interval, mcap_at_alert,
                 holder_count, fee_sol, pool_label, pool_liquidity,
@@ -201,6 +231,35 @@ def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
                 mcap_at_alert = EXCLUDED.mcap_at_alert,
                 milestone = EXCLUDED.milestone
         """, (address, chain, stats.get("symbol"), stats.get("mcap"), f"DeepControl_{interval}"))
+        if tg_message_id:
+            cur.execute("""
+                INSERT INTO alpha_push_events (
+                    address, chain, symbol, source, trend_interval, alert_no,
+                    repeat_alert, repeat_alert_type, entry_mcap, entry_price,
+                    holder_count, fee_sol, buy_score, tg_chat_id, tg_message_id, raw_stats
+                ) VALUES (
+                    %(address)s, %(chain)s, %(symbol)s, %(source)s, %(trend_interval)s, %(alert_no)s,
+                    %(repeat_alert)s, %(repeat_alert_type)s, %(entry_mcap)s, %(entry_price)s,
+                    %(holder_count)s, %(fee_sol)s, %(buy_score)s, %(tg_chat_id)s, %(tg_message_id)s, %(raw_stats)s
+                )
+            """, {
+                "address": address,
+                "chain": chain,
+                "symbol": stats.get("symbol"),
+                "source": stats.get("source") or interval,
+                "trend_interval": interval,
+                "alert_no": int(safe_float(stats.get("alert_sequence_no"), 1) or 1),
+                "repeat_alert": bool(stats.get("repeat_alert")),
+                "repeat_alert_type": stats.get("repeat_alert_type"),
+                "entry_mcap": stats.get("mcap"),
+                "entry_price": stats.get("price"),
+                "holder_count": stats.get("holder_count"),
+                "fee_sol": stats.get("fee_sol"),
+                "buy_score": stats.get("buy_score"),
+                "tg_chat_id": str(ALPHA_TG_CHAT_ID),
+                "tg_message_id": tg_message_id,
+                "raw_stats": Json(stats),
+            })
     db_op(_op)
     cache_candidate_snapshot(address, stats)
 

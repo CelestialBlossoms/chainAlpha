@@ -69,6 +69,36 @@ def init_tables(conn):
             ON alpha_token_candidates(chain, trend_interval);
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS alpha_push_events (
+            id BIGSERIAL PRIMARY KEY,
+            address TEXT NOT NULL,
+            chain TEXT NOT NULL,
+            symbol TEXT,
+            source TEXT,
+            trend_interval TEXT,
+            alert_no INTEGER DEFAULT 1,
+            repeat_alert BOOLEAN DEFAULT FALSE,
+            repeat_alert_type TEXT,
+            entry_mcap NUMERIC,
+            entry_price NUMERIC,
+            holder_count INTEGER,
+            fee_sol NUMERIC,
+            buy_score INTEGER,
+            tg_chat_id TEXT,
+            tg_message_id BIGINT,
+            raw_stats JSONB,
+            pushed_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_alpha_push_events_address
+            ON alpha_push_events(address);
+        CREATE INDEX IF NOT EXISTS idx_alpha_push_events_pushed_at
+            ON alpha_push_events(pushed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_alpha_push_events_address_alert_no
+            ON alpha_push_events(address, alert_no);
+        CREATE INDEX IF NOT EXISTS idx_alpha_push_events_source_interval
+            ON alpha_push_events(source, trend_interval);
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS onchain_trading_guides (
             id BIGSERIAL PRIMARY KEY,
             title TEXT NOT NULL,

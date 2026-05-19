@@ -66,6 +66,49 @@ def run_gmgn(args: list[str], timeout: int = 90) -> dict[str, Any] | list[Any] |
 def fetch_recent_alerts(limit: int) -> list[dict[str, Any]]:
     def _op(conn):
         cur = conn.cursor()
+        cur.execute("SELECT to_regclass('public.alpha_push_events')")
+        if cur.fetchone()[0]:
+            cur.execute(
+                """
+                SELECT
+                    address,
+                    chain,
+                    symbol,
+                    entry_mcap,
+                    holder_count,
+                    pushed_at,
+                    pushed_at,
+                    alert_no,
+                    raw_stats,
+                    entry_price,
+                    source,
+                    repeat_alert,
+                    repeat_alert_type
+                FROM alpha_push_events
+                ORDER BY pushed_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "address": row[0],
+                    "chain": row[1] or "sol",
+                    "symbol": row[2] or "UNKNOWN",
+                    "mcap_at_alert": to_float(row[3]),
+                    "holder_count": int(row[4] or 0),
+                    "first_seen_at": row[5],
+                    "last_seen_at": row[6],
+                    "alert_count": int(row[7] or 0),
+                    "raw_stats": row[8] if isinstance(row[8], dict) else {},
+                    "entry_price": to_float(row[9]),
+                    "source": row[10] or "",
+                    "repeat_alert": bool(row[11]),
+                    "repeat_alert_type": row[12] or "",
+                }
+                for row in rows
+            ]
         cur.execute(
             """
             SELECT
@@ -160,7 +203,7 @@ def analyze_alert(alert: dict[str, Any], resolution: str, now_ts: int) -> dict[s
     chain = alert.get("chain") or "sol"
     address = alert["address"]
     candles = fetch_kline(chain, address, resolution, alert_ts, now_ts)
-    entry_price = to_float(raw_stats.get("price"))
+    entry_price = to_float(alert.get("entry_price")) or to_float(raw_stats.get("price"))
     if entry_price <= 0 and candles:
         entry_price = candles[0]["open"] or candles[0]["close"]
     if entry_price <= 0:
@@ -181,6 +224,9 @@ def analyze_alert(alert: dict[str, Any], resolution: str, now_ts: int) -> dict[s
         "alert_time": datetime.fromtimestamp(alert_ts).strftime("%Y-%m-%d %H:%M:%S") if alert_ts else "",
         "alert_hour": datetime.fromtimestamp(alert_ts).strftime("%Y-%m-%d %H:00") if alert_ts else "",
         "alert_count": alert.get("alert_count", 0),
+        "source": alert.get("source", ""),
+        "repeat_alert": alert.get("repeat_alert", False),
+        "repeat_alert_type": alert.get("repeat_alert_type", ""),
         "entry_price": entry_price,
         "current_price": current_close,
         "max_price": max_high,
@@ -214,6 +260,9 @@ def write_csv(path: str, rows: list[dict[str, Any]]) -> None:
         "alert_time",
         "alert_hour",
         "alert_count",
+        "source",
+        "repeat_alert",
+        "repeat_alert_type",
         "entry_price",
         "current_price",
         "max_price",
