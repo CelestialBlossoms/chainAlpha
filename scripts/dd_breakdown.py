@@ -9,7 +9,16 @@ from db_client import db_op
 def main():
     def run(conn):
         cur = conn.cursor()
-        cur.execute("SELECT symbol, max_gain_pct, current_return_pct, entry_drawdown_pct, time_to_peak_min FROM bottom_push_performance WHERE analysis_date=%s AND result=%s ORDER BY entry_drawdown_pct", ("2026-05-19", "成功"))
+        cur.execute("SELECT symbol, max_gain_pct, current_return_pct, entry_drawdown_pct, time_to_peak_min FROM bottom_push_performance WHERE result=%s ORDER BY entry_drawdown_pct", ("成功",))
+    rows_all = cur.fetchall()
+    cur.execute("SELECT symbol, max_gain_pct, current_return_pct, entry_drawdown_pct, time_to_peak_min FROM bottom_push_performance WHERE result=%s ORDER BY entry_drawdown_pct", ("失败",))
+    rows_fail = cur.fetchall()
+
+    print('All: {} success {} failed'.format(len(rows_all), len(rows_fail)))
+
+    # Now process all data
+    rows = rows_all  # for backward compat
+    # Actually, let me just do the analysis for success group as before
         rows = cur.fetchall()
         med = lambda arr: sorted(arr)[len(arr)//2] if arr else 0
 
