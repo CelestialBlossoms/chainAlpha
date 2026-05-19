@@ -79,6 +79,10 @@ ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:
 ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
 ALERT_MISS_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_TTL_SEC", "300"))
+NEW_TOKEN_TG_BOT_TOKEN = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_BOT_TOKEN", "")
+NEW_TOKEN_TG_CHAT_ID = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_CHAT_ID", TG_CHAT_ID)
+NEW_TOKEN_TG_ENABLED = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+NEW_TOKEN_TG_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_MAX_AGE_SEC", str(NEW_TOKEN_MAX_AGE_SEC)))
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -234,6 +238,77 @@ def send_tg_alert(msg, *, ca=None, extra=None):
         exception_extra = {**stream_extra, "error": str(e)}
         publish_tg_alert(msg, "deep_alpha", status="exception", ca=ca, chat_id=TG_CHAT_ID, extra=exception_extra)
         return None
+
+def send_new_token_ca_alert(stats):
+    if not NEW_TOKEN_TG_ENABLED or not NEW_TOKEN_TG_BOT_TOKEN or not NEW_TOKEN_TG_CHAT_ID:
+        return None
+    address = stats.get("address") or ""
+    if not address:
+        return None
+    text = (
+        "Deep Alpha Pro 1m new token CA\n"
+        f"${stats.get('symbol') or 'UNKNOWN'}\n"
+        f"MCap: ${safe_float(stats.get('mcap')):,.0f} | Holders: {int(safe_float(stats.get('holder_count')))}\n"
+        f"Fee: {safe_float(stats.get('fee_sol')):.2f} SOL | Pool: {stats.get('pool_label') or 'N/A'}\n"
+        f"Created: {stats.get('created_time') or 'N/A'}\n"
+        f"CA: {address}\n"
+        f"https://gmgn.ai/{stats.get('chain') or 'sol'}/token/{address}"
+    )
+    url = f"https://api.telegram.org/bot{NEW_TOKEN_TG_BOT_TOKEN}/sendMessage"
+    stream_extra = {"stats": stats, "address": address, "target": "new_token_ca"}
+    try:
+        resp = requests.post(url, json={"chat_id": NEW_TOKEN_TG_CHAT_ID, "text": text}, timeout=15)
+        if not resp.ok:
+            print(f"New-token TG send failed: http={resp.status_code} body={resp.text[:200]}")
+            publish_tg_alert(
+                text,
+                "deep_alpha_new_token_ca",
+                status=f"failed_http_{resp.status_code}",
+                ca=address,
+                chat_id=NEW_TOKEN_TG_CHAT_ID,
+                extra=stream_extra,
+            )
+            return None
+        payload = resp.json()
+        if not payload.get("ok"):
+            print(f"New-token TG send failed: {payload}")
+            publish_tg_alert(
+                text,
+                "deep_alpha_new_token_ca",
+                status="failed_api",
+                ca=address,
+                chat_id=NEW_TOKEN_TG_CHAT_ID,
+                extra={**stream_extra, "telegram": payload},
+            )
+            return None
+        message_id = payload.get("result", {}).get("message_id")
+        publish_tg_alert(
+            text,
+            "deep_alpha_new_token_ca",
+            status="sent",
+            ca=address,
+            chat_id=NEW_TOKEN_TG_CHAT_ID,
+            message_id=message_id,
+            extra=stream_extra,
+        )
+        return message_id
+    except Exception as e:
+        print(f"New-token TG send exception: {e}")
+        publish_tg_alert(
+            text,
+            "deep_alpha_new_token_ca",
+            status="exception",
+            ca=address,
+            chat_id=NEW_TOKEN_TG_CHAT_ID,
+            extra={**stream_extra, "error": str(e)},
+        )
+        return None
+
+def should_send_new_token_ca_alert(stats, interval):
+    if interval != "1m" or stats.get("repeat_alert"):
+        return False
+    age_seconds = token_age_seconds(stats.get("created_at"))
+    return age_seconds is not None and age_seconds <= NEW_TOKEN_TG_MAX_AGE_SEC
 
 def edit_tg_alert(chat_id, message_id, msg):
     if not TG_BOT_TOKEN or "浣犵殑" in TG_BOT_TOKEN or not chat_id or not message_id:
@@ -2567,6 +2642,8 @@ def scan_pro():
                             existing_candidate=existing_candidate,
                             stats=s,
                         )
+                        if should_send_new_token_ca_alert(s, interval):
+                            send_new_token_ca_alert(s)
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
