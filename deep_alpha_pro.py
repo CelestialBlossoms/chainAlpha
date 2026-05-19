@@ -79,10 +79,16 @@ ALERT_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_REDIS_PREFIX", "deep_alpha:
 ALERT_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
 ALERT_MISS_REDIS_KEY_PREFIX = os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_PREFIX", "deep_alpha:alert_candidate_miss")
 ALERT_MISS_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_ALERT_MISS_REDIS_TTL_SEC", "300"))
-NEW_TOKEN_TG_BOT_TOKEN = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_BOT_TOKEN", "")
-NEW_TOKEN_TG_CHAT_ID = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_CHAT_ID", TG_CHAT_ID)
+ALPHA_TG_BOT_TOKEN = os.getenv("DEEP_ALPHA_TG_BOT_TOKEN", TG_BOT_TOKEN)
+ALPHA_TG_CHAT_ID = os.getenv("DEEP_ALPHA_TG_CHAT_ID", TG_CHAT_ID)
+NEW_TOKEN_TG_BOT_TOKEN = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_BOT_TOKEN", ALPHA_TG_BOT_TOKEN)
+NEW_TOKEN_TG_CHAT_ID = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_CHAT_ID", ALPHA_TG_CHAT_ID)
 NEW_TOKEN_TG_ENABLED = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 NEW_TOKEN_TG_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_MAX_AGE_SEC", str(NEW_TOKEN_MAX_AGE_SEC)))
+
+# Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
+TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
+TG_CHAT_ID = ALPHA_TG_CHAT_ID
 
 def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
     def _op(conn):
@@ -176,7 +182,7 @@ def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
             "snipers": stats.get("snipers"),
             "rug_ratio": str(stats.get("rug_ratio", "")),
             "raw_stats": Json(stats),
-            "tg_chat_id": str(TG_CHAT_ID) if tg_message_id else None,
+            "tg_chat_id": str(ALPHA_TG_CHAT_ID) if tg_message_id else None,
             "tg_message_id": tg_message_id,
         })
         cur.execute("""
