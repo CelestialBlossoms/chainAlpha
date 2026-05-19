@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -44,7 +45,10 @@ from bottom_detection.bottom_watchlist_store import (
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
 )
-from bottom_detection.top100_push_record_store import record_top100_push, top100_push_record_exists
+from bottom_detection.top100_push_record_store import (
+    record_top100_push,
+    top100_signal_push_record_exists,
+)
 
 
 CHAIN = "sol"
@@ -1863,9 +1867,6 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
     if not extra.get("event_ts"):
         extra = {**extra, "event_ts": now_ts()}
     address = str(extra.get("address") or "").strip() or extract_address_from_text(text)
-    if is_bottom_tg_extra(extra) and top100_push_record_exists(address, source="bottom_abnormal", chain=CHAIN):
-        print(f"{address[:8]} skip tg: first push already recorded")
-        return
     try:
         tg_text = format_bottom_tg_message(text, extra)
     except Exception as exc:
@@ -1936,8 +1937,9 @@ def publish_frontend_signal_update(
     address = str((extra or {}).get("address") or "").strip()
     if not address:
         return
-    if top100_push_record_exists(address, source="bottom_abnormal", chain=CHAIN):
-        print(f"{address[:8]} skip frontend push: first push already recorded")
+    signal_type = str((extra or {}).get("signal_type") or "").strip()
+    if top100_signal_push_record_exists(address, signal_type, source="bottom_abnormal", chain=CHAIN):
+        print(f"{address[:8]} skip frontend push: {signal_type} push already recorded")
         return
     risk_tags = compute_risk_tags(extra or {})
     if risk_tags:
@@ -1961,6 +1963,101 @@ def publish_frontend_signal_update(
         return
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+
+    # Schedule 10-minute follow-up verdict via TG
+    threading.Thread(
+        target=_send_quick_verdict,
+        args=(address, extra),
+        daemon=True,
+    ).start()
+
+
+QUICK_VERDICT_BARS = int(os.getenv("BOTTOM_QUICK_VERDICT_BARS", "6"))
+QUICK_VERDICT_DELAY_SEC = int(os.getenv("BOTTOM_QUICK_VERDICT_DELAY_SEC", "600"))
+BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
+
+
+def _send_quick_verdict(address: str, extra: dict[str, Any]) -> None:
+    """Wait 10 minutes after push, then analyze 1m/5m volume to classify DCB vs Real."""
+    time.sleep(QUICK_VERDICT_DELAY_SEC)
+
+    try:
+        # Fetch fresh K-line
+        params_1m = {"address": address, "platform": "solana", "interval": "1min", "limit": 24, "pm": "p"}
+        params_5m = {"address": address, "platform": "solana", "interval": "5min", "limit": 12, "pm": "p"}
+        headers = {"Accept-Encoding": "identity", "User-Agent": "binance-web3/1.1 (Skill)"}
+
+        resp_1m = requests.get(BINANCE_KLINE_URL, params=params_1m, headers=headers, timeout=15)
+        resp_5m = requests.get(BINANCE_KLINE_URL, params=params_5m, headers=headers, timeout=15)
+
+        c1m = resp_1m.json().get("data", []) if resp_1m.ok else []
+        c5m = resp_5m.json().get("data", []) if resp_5m.ok else []
+
+        if not c1m or not c5m:
+            return
+
+        # Extract volumes
+        def get_vols(candles, start, count):
+            return [float(c[4]) for c in candles[start:start + count] if len(c) > 4]
+
+        # Early (first few bars) vs Late (last few bars)
+        mid_1m = len(c1m) // 2
+        early_1m = sum(get_vols(c1m, 0, QUICK_VERDICT_BARS)) / max(1, QUICK_VERDICT_BARS)
+        late_1m = sum(get_vols(c1m, max(0, len(c1m) - QUICK_VERDICT_BARS), QUICK_VERDICT_BARS)) / max(1, QUICK_VERDICT_BARS)
+        r1m = late_1m / early_1m if early_1m > 0 else 0
+
+        mid_5m = len(c5m) // 2
+        early_5m = sum(get_vols(c5m, 0, 3)) / 3
+        late_5m = sum(get_vols(c5m, max(0, len(c5m) - 3), 3)) / 3
+        r5m = late_5m / early_5m if early_5m > 0 else 0
+
+        # Price change
+        first_price = float(c5m[0][3]) if c5m else 0
+        last_price = float(c5m[-1][3]) if c5m else 0
+        peak_price = max(float(c[1]) for c in c5m) if c5m else 0
+        price_change = (last_price - first_price) / first_price * 100 if first_price > 0 else 0
+
+        # Classification
+        if r1m < 0.4 and price_change < 5:
+            verdict = "🔴 死猫跳"
+            advice = "量能崩塌({:.0f}%), 不建仓".format((1 - r1m) * 100)
+        elif r1m > 1.2 and r5m > 1.0 and price_change > 5:
+            verdict = "🟢 真异动"
+            advice = "1m+5m量能共振, 可小仓试探"
+        elif price_change < -5 and r1m < 0.6:
+            verdict = "🟡 V反进行中"
+            advice = "正在回调, 等量能恢复再入"
+        elif r1m > 0.6 and r5m > 0.6:
+            verdict = "🟡 观望"
+            advice = "量能维持但涨幅不足, 继续观察"
+        else:
+            verdict = "⚪ 不明确"
+            advice = "信号混合, 不建议操作"
+
+        # Build TG message
+        signal_type = extra.get("signal_type", "?")
+        symbol = extra.get("symbol", "UNKNOWN")
+        mcap = to_float(extra.get("current_mcap", 0))
+
+        msg = (
+            "📊 10分钟快速判定 | ${}\n"
+            "信号类型: {}\n"
+            "CA: {}\n"
+            "当前市值: ${:,.0f}\n"
+            "10分钟涨跌: {:+.1f}%\n"
+            "1m量比(后/前): {:.1f}x\n"
+            "5m量比(后/前): {:.1f}x\n"
+            "\n判定: {}\n"
+            "建议: {}\n"
+            "\nhttps://gmgn.ai/sol/token/{}"
+        ).format(symbol, signal_type, address, mcap, price_change, r1m, r5m, verdict, advice, address)
+
+        publish_tg_alert(msg, "bottom_abnormal", status="quick_verdict", ca=address,
+                         extra={"verdict": verdict, "r1m": r1m, "r5m": r5m, "price_change": price_change})
+        print("  [quick_verdict] {}: {} (1m={:.1f}x 5m={:.1f}x)".format(address[:8], verdict, r1m, r5m))
+
+    except Exception as exc:
+        print("  [quick_verdict] {} failed: {}".format(address[:8], exc))
 
 
 def daily_mcap_signal_text(token: dict[str, Any], current_mcap: float, current_fee_sol: float) -> str:
@@ -2171,26 +2268,12 @@ def should_notify(analysis: dict[str, Any]) -> bool:
 def previous_signal_exists(address: str, signal_type: str) -> bool:
     if not signal_type or signal_type == "watch":
         return False
-
-    def _op(conn):
-        cur = conn.cursor()
-        where_age = "AND snapshot_ts >= %s" if SIGNAL_DEDUP_MAX_AGE_SEC > 0 else ""
-        params = [CHAIN, address, signal_type]
-        if SIGNAL_DEDUP_MAX_AGE_SEC > 0:
-            params.append(now_ts() - SIGNAL_DEDUP_MAX_AGE_SEC)
-        cur.execute(
-            f"""
-            SELECT 1
-            FROM bottom_top100_snapshots
-            WHERE chain=%s AND address=%s AND signal_type=%s
-              {where_age}
-            LIMIT 1
-            """,
-            tuple(params),
-        )
-        return cur.fetchone() is not None
-
-    return bool(db_op(_op))
+    return top100_signal_push_record_exists(
+        address,
+        signal_type,
+        source="bottom_abnormal",
+        chain=CHAIN,
+    )
 
 
 def previous_bottom_signal_exists(address: str) -> bool:
@@ -2976,7 +3059,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_snapshot_id = save_snapshot(scan_id + "_quiet", token, summary, holders, quiet_breakout)
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
-            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_breakout), quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id)
+            quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
+            send_tg(quiet_text, extra=quiet_extra)
+            publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id)
             print(
                 f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
                 f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "
@@ -2994,7 +3079,9 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             runup_snapshot_id = save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
-            publish_frontend_signal_update(quiet_breakout_signal_text(token, quiet_runup), runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
+            runup_text = quiet_breakout_signal_text(token, quiet_runup)
+            send_tg(runup_text, extra=runup_extra)
+            publish_frontend_signal_update(runup_text, runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
@@ -3011,9 +3098,11 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             surge_already = previous_signal_exists(address, surge_type)
             if not surge_already:
                 surge_text = old_surge_signal_text(token, surge)
-                send_tg(surge_text, extra={
+                surge_extra = {
+                    "event_ts": now_ts(),
                     "signal_type": surge_type,
                     "change_pct": surge["change_pct"],
+                    "price_change_pct": surge["change_pct"],
                     "required_change_pct": surge.get("required_change_pct"),
                     "age_bucket": surge.get("age_bucket"),
                     "age_sec": surge.get("age_sec"),
@@ -3022,7 +3111,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     "current_mcap": surge["current_mcap"],
                     "symbol": token.get("symbol"),
                     "address": address,
-                })
+                }
+                send_tg(surge_text, extra=surge_extra)
+                record_top100_push(
+                    text=surge_text,
+                    extra=surge_extra,
+                    status="tg_sent",
+                    source="bottom_abnormal",
+                    chain=CHAIN,
+                )
                 print(
                     f"{token_label(token)} old_surge {surge['change_pct']:.1f}%/"
                     f"{surge.get('required_change_pct', 0):.1f}% {surge.get('age_bucket', '')} "

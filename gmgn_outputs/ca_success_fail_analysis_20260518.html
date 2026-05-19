@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>异动推送 CA 成功/失败分析 - 2026-05-18</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#101418;color:#e5edf5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+    main{max-width:1440px;margin:0 auto;padding:28px}h1{font-size:26px;margin:0 0 6px}h2{font-size:17px;margin:28px 0 12px;color:#cbd7e3}
+    .sub{color:#8da0b5;font-size:13px;margin-bottom:18px}.note{background:#18212b;border:1px solid #283645;border-radius:8px;padding:12px 14px;color:#a9bdd1;font-size:13px;line-height:1.65}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#17202a;border:1px solid #283645;border-radius:8px;padding:14px}
+    .label{font-size:12px;color:#8496a8}.value{font-size:24px;font-weight:750;margin-top:5px}.green{color:#35d08f}.red{color:#ff6b6b}.yellow{color:#f2b84b}.blue{color:#5ca8ff}
+    .panels{display:grid;grid-template-columns:1fr 1fr;gap:14px}.panel{background:#17202a;border:1px solid #283645;border-radius:8px;padding:14px}
+    .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:12px}.bar-label{width:88px;text-align:right;color:#9dafc0}.bar-track{height:20px;flex:1;background:#26313e;border-radius:5px;overflow:hidden}.bar-fill{height:100%}.bar-count{width:76px;color:#bcccdc}
+    table{width:100%;border-collapse:collapse;background:#17202a;border:1px solid #283645;border-radius:8px;overflow:hidden;font-size:12px}th{position:sticky;top:0;background:#222e3b;color:#aebdcb;text-align:left;padding:9px 8px;white-space:nowrap}td{padding:8px;border-top:1px solid #26313e;white-space:nowrap}tr:hover td{background:#1d2834}
+    .table-wrap{overflow:auto;border-radius:8px}.result,.badge{display:inline-block;border-radius:999px;padding:3px 8px;font-weight:700;font-size:11px}.result.ok{background:#0e3f30;color:#4ee3a0}.result.bad{background:#4b1c22;color:#ff9aa7}.badge{color:var(--c);border:1px solid color-mix(in srgb,var(--c) 55%,transparent);background:color-mix(in srgb,var(--c) 14%,transparent)}
+    .ca{font-family:Consolas,monospace;color:#7db7ff;display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis}.pos{color:#35d08f;font-weight:700}.neg{color:#ff7777}.warn{color:#f2b84b;font-weight:700}.desc{max-width:420px;overflow:hidden;text-overflow:ellipsis;color:#b8c7d6}
+    .summary{display:grid;grid-template-columns:1fr 1fr;gap:14px}.summary ul{margin:0;padding-left:18px;color:#c2cfdd;line-height:1.8;font-size:13px}.small{font-size:12px;color:#8da0b5}
+    @media(max-width:900px){main{padding:16px}.panels,.summary{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+<main>
+  <h1>异动推送 CA 成功/失败分析</h1>
+  <div class="sub">数据源：gmgn_outputs\bottom_push_perf_20260518_latest.csv | 口径：max_gain_pct >= 10% 为成功 | 时间：Asia/Shanghai</div>
+  <div class="note">本报告只做结构复盘：K线、量能、市值、创建时间和叙事特征。不包含买卖、仓位、止盈止损建议。</div>
+
+  <div class="grid">
+    <div class="card"><div class="label">样本数</div><div class="value blue">23</div></div>
+    <div class="card"><div class="label">成功 / 失败</div><div class="value"><span class="green">14</span> / <span class="red">9</span></div></div>
+    <div class="card"><div class="label">成功率</div><div class="value yellow">61%</div></div>
+    <div class="card"><div class="label">成功组中位最高涨幅</div><div class="value green">+31.1%</div></div>
+    <div class="card"><div class="label">失败组中位最高涨幅</div><div class="value red">+4.2%</div></div>
+    <div class="card"><div class="label">成功/失败中位量能</div><div class="value">$67.1K / $33.8K</div></div>
+  </div>
+
+  <h2>关键差异</h2>
+  <div class="summary">
+    <div class="panel">
+      <ul>
+        <li>成功组推送后量能中位数 $67.1K，失败组 $33.8K。</li>
+        <li>成功组到峰值时间中位数 89m，失败组 9m。</li>
+        <li>成功组代币年龄中位数 22.9h，失败组 71.2h。</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <ul>
+        <li>失败组更集中在短峰：峰值 <=5m 的数量更高，说明推送时接近短线高点。</li>
+        <li>两组叙事都偏 AI/DEX Paid/Pumpfun，叙事大类区分度弱。</li>
+        <li>失败组弱信息叙事更多，包括“疑似、待核实、同名密集发行”等描述。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>成功/失败统计</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组别</th><th>数量</th><th>最高涨幅中位数</th><th>当前回报中位数</th><th>推送市值中位数</th><th>ATH/市值</th><th>量能中位数</th><th>流动性中位数</th><th>池子/市值</th><th>至峰值</th><th>入场回撤</th><th>代币年龄</th></tr></thead>
+      <tbody>
+        <tr><td><span class="result ok">成功</span></td><td>14</td><td class="pos">+31.1%</td><td class="pos">+5.0%</td><td>$125.9K</td><td>2.4x</td><td>$67.1K</td><td>$32.8K</td><td>24.2%</td><td>89m</td><td class="neg">-16.1%</td><td>22.9h</td></tr>
+        <tr><td><span class="result bad">失败</span></td><td>9</td><td class="warn">+4.2%</td><td class="neg">-14.0%</td><td>$132.6K</td><td>5.3x</td><td>$33.8K</td><td>$39.3K</td><td>30.0%</td><td>9m</td><td class="neg">-23.4%</td><td>71.2h</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>分布对比</h2>
+  <div class="panels">
+    <div class="panel"><b>成功组市值分布</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;50K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">50-100K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:28.6%;background:#35d08f"></div></div>
+              <span class="bar-count">4 (29%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">100-200K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:35.7%;background:#35d08f"></div></div>
+              <span class="bar-count">5 (36%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">200-500K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:21.4%;background:#35d08f"></div></div>
+              <span class="bar-count">3 (21%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;500K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>失败组市值分布</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;50K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">50-100K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:33.3%;background:#ff6b6b"></div></div>
+              <span class="bar-count">3 (33%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">100-200K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:44.4%;background:#ff6b6b"></div></div>
+              <span class="bar-count">4 (44%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">200-500K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;500K</span>
+              <div class="bar-track"><div class="bar-fill" style="width:22.2%;background:#ff6b6b"></div></div>
+              <span class="bar-count">2 (22%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>成功组创建时间/年龄</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;=6h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:14.3%;background:#35d08f"></div></div>
+              <span class="bar-count">2 (14%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">6-12h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:28.6%;background:#35d08f"></div></div>
+              <span class="bar-count">4 (29%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">12-24h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">24-48h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:14.3%;background:#35d08f"></div></div>
+              <span class="bar-count">2 (14%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">2-7d</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;7d</span>
+              <div class="bar-track"><div class="bar-fill" style="width:28.6%;background:#35d08f"></div></div>
+              <span class="bar-count">4 (29%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>失败组创建时间/年龄</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;=6h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">6-12h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">12-24h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:11.1%;background:#ff6b6b"></div></div>
+              <span class="bar-count">1 (11%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">24-48h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:11.1%;background:#ff6b6b"></div></div>
+              <span class="bar-count">1 (11%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">2-7d</span>
+              <div class="bar-track"><div class="bar-fill" style="width:55.6%;background:#ff6b6b"></div></div>
+              <span class="bar-count">5 (56%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;7d</span>
+              <div class="bar-track"><div class="bar-fill" style="width:22.2%;background:#ff6b6b"></div></div>
+              <span class="bar-count">2 (22%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>成功组至峰值时间</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;=5m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">5-30m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:7.1%;background:#35d08f"></div></div>
+              <span class="bar-count">1 (7%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">30-120m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:57.1%;background:#35d08f"></div></div>
+              <span class="bar-count">8 (57%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">2-8h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:28.6%;background:#35d08f"></div></div>
+              <span class="bar-count">4 (29%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;8h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#35d08f"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>失败组至峰值时间</b>
+            <div class="bar-row">
+              <span class="bar-label">&lt;=5m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:44.4%;background:#ff6b6b"></div></div>
+              <span class="bar-count">4 (44%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">5-30m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:33.3%;background:#ff6b6b"></div></div>
+              <span class="bar-count">3 (33%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">30-120m</span>
+              <div class="bar-track"><div class="bar-fill" style="width:22.2%;background:#ff6b6b"></div></div>
+              <span class="bar-count">2 (22%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">2-8h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">&gt;8h</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#ff6b6b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            </div>
+  </div>
+
+  <h2>叙事特征</h2>
+  <div class="panels">
+    <div class="panel"><b>成功组叙事标签</b>
+            <div class="bar-row">
+              <span class="bar-label">AI/agent</span>
+              <div class="bar-track"><div class="bar-fill" style="width:100.0%;background:#5ca8ff"></div></div>
+              <span class="bar-count">14 (100%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">culture/meme</span>
+              <div class="bar-track"><div class="bar-fill" style="width:42.9%;background:#5ca8ff"></div></div>
+              <span class="bar-count">6 (43%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">pumpfun</span>
+              <div class="bar-track"><div class="bar-fill" style="width:85.7%;background:#5ca8ff"></div></div>
+              <span class="bar-count">12 (86%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">DEX paid</span>
+              <div class="bar-track"><div class="bar-fill" style="width:100.0%;background:#5ca8ff"></div></div>
+              <span class="bar-count">14 (100%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">volume surging</span>
+              <div class="bar-track"><div class="bar-fill" style="width:21.4%;background:#5ca8ff"></div></div>
+              <span class="bar-count">3 (21%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">weak info</span>
+              <div class="bar-track"><div class="bar-fill" style="width:21.4%;background:#5ca8ff"></div></div>
+              <span class="bar-count">3 (21%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">other</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#5ca8ff"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            </div>
+    <div class="panel"><b>失败组叙事标签</b>
+            <div class="bar-row">
+              <span class="bar-label">AI/agent</span>
+              <div class="bar-track"><div class="bar-fill" style="width:100.0%;background:#f2b84b"></div></div>
+              <span class="bar-count">9 (100%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">culture/meme</span>
+              <div class="bar-track"><div class="bar-fill" style="width:66.7%;background:#f2b84b"></div></div>
+              <span class="bar-count">6 (67%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">pumpfun</span>
+              <div class="bar-track"><div class="bar-fill" style="width:77.8%;background:#f2b84b"></div></div>
+              <span class="bar-count">7 (78%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">DEX paid</span>
+              <div class="bar-track"><div class="bar-fill" style="width:100.0%;background:#f2b84b"></div></div>
+              <span class="bar-count">9 (100%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">volume surging</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#f2b84b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">weak info</span>
+              <div class="bar-track"><div class="bar-fill" style="width:44.4%;background:#f2b84b"></div></div>
+              <span class="bar-count">4 (44%)</span>
+            </div>
+            
+
+            <div class="bar-row">
+              <span class="bar-label">other</span>
+              <div class="bar-track"><div class="bar-fill" style="width:0.0%;background:#f2b84b"></div></div>
+              <span class="bar-count">0 (0%)</span>
+            </div>
+            </div>
+  </div>
+
+  <h2>CA 明细</h2>
+  <div class="small">按最高涨幅降序。CA 单元格保留完整地址，悬停可看完整内容。</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>结果</th><th>Symbol</th><th>CA</th><th>信号</th><th>推送市值</th><th>ATH/市值</th><th>量能</th><th>流动性</th><th>池/市值</th><th>最高涨幅</th><th>当前回报</th><th>入场回撤</th><th>至峰值</th><th>年龄</th><th>创建时间</th><th>叙事</th><th>描述</th></tr></thead>
+      <tbody>
+            <tr data-result="success" data-symbol="Mira">
+              <td>1</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$Mira</b></td>
+              <td><span class="ca" title="4J3PB871SaH2n1jDtxoWtNZUPdDhWvGavN1CKrvEpump">4J3PB871SaH2n1jDtxoWtNZUPdDhWvGavN1CKrvEpump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$60.1K</td>
+              <td>8.1x</td>
+              <td>$87.2K</td>
+              <td>$22.4K</td>
+              <td>37.4%</td>
+              <td class="pos">+108.8%</td>
+              <td class="pos">+18.2%</td>
+              <td class="neg">-0.1%</td>
+              <td>77m</td>
+              <td>17.4h</td>
+              <td>2026-05-17 19:16</td>
+              <td>应用</td>
+              <td class="desc" title="Mira币安Web3标签：Pumpfun平台，代币成交量暴跌，DEX付费。">Mira币安Web3标签：Pumpfun平台，代币成交量暴跌，DEX付费。</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="豆豆">
+              <td>2</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$豆豆</b></td>
+              <td><span class="ca" title="C5QG8mi79H9ndfBzmU8Hn9FRCTbpSnU9MtdA69GVpump">C5QG8mi79H9ndfBzmU8Hn9FRCTbpSnU9MtdA69GVpump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$115.7K</td>
+              <td>2.4x</td>
+              <td>$55.8K</td>
+              <td>$32.7K</td>
+              <td>28.3%</td>
+              <td class="pos">+62.8%</td>
+              <td class="pos">+9.8%</td>
+              <td class="neg">-9.2%</td>
+              <td>87m</td>
+              <td>28.3h</td>
+              <td>2026-05-17 09:03</td>
+              <td>应用</td>
+              <td class="desc" title="Launched on discord.gg/uxento">Launched on discord.gg/uxento</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="ket">
+              <td>3</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$ket</b></td>
+              <td><span class="ca" title="71vDdeajwpXGnj98kBvDZmVuuAYSPYiPbdeU5xGfbrrr">71vDdeajwpXGnj98kBvDZmVuuAYSPYiPbdeU5xGfbrrr</span></td>
+              <td><span class="badge" style="--c:#8b5cf6">quiet_runup</span></td>
+              <td>$201.7K</td>
+              <td>1.1x</td>
+              <td>$35.9K</td>
+              <td>$48.1K</td>
+              <td>23.8%</td>
+              <td class="pos">+54.3%</td>
+              <td class="pos">+49.6%</td>
+              <td class="neg">-18.1%</td>
+              <td>37m</td>
+              <td>604.5h</td>
+              <td>2026-04-23 11:52</td>
+              <td>应用</td>
+              <td class="desc" title="币安Web3标签Dynamic BC，代币交易量激增，DEX付费模式成社区热点。">币安Web3标签Dynamic BC，代币交易量激增，DEX付费模式成社区热点。</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="F.03">
+              <td>4</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$F.03</b></td>
+              <td><span class="ca" title="DkaY3z9hYutckCNoLCy8kfJvrDEDwjojQ9zL1s4Fpump">DkaY3z9hYutckCNoLCy8kfJvrDEDwjojQ9zL1s4Fpump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$92.7K</td>
+              <td>2.4x</td>
+              <td>$36.9K</td>
+              <td>$29.1K</td>
+              <td>31.3%</td>
+              <td class="pos">+48.0%</td>
+              <td class="pos">+5.3%</td>
+              <td class="neg">-8.3%</td>
+              <td>118m</td>
+              <td>47.8h</td>
+              <td>2026-05-16 11:49</td>
+              <td>应用</td>
+              <td class="desc" title="使用j7tracker.io部署">使用j7tracker.io部署</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="SPCX">
+              <td>5</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$SPCX</b></td>
+              <td><span class="ca" title="26YRpwvWhTSBSAkQbhNP6AXBNrJe8uRxibAn7ZXXpump">26YRpwvWhTSBSAkQbhNP6AXBNrJe8uRxibAn7ZXXpump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$115.9K</td>
+              <td>1.2x</td>
+              <td>$21.7K</td>
+              <td>$27.1K</td>
+              <td>23.4%</td>
+              <td class="pos">+39.4%</td>
+              <td class="pos">+24.8%</td>
+              <td class="neg">-19.4%</td>
+              <td>61m</td>
+              <td>10.7h</td>
+              <td>2026-05-18 05:00</td>
+              <td>应用</td>
+              <td class="desc" title="太空探索技术公司币 币安Web3标签：Pumpfun发射，DEX已付费">太空探索技术公司币 币安Web3标签：Pumpfun发射，DEX已付费</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="MEM">
+              <td>6</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$MEM</b></td>
+              <td><span class="ca" title="FX6cuPhKjQbyAEgwkWxjtcJTpat3LbreT3gf8ojypump">FX6cuPhKjQbyAEgwkWxjtcJTpat3LbreT3gf8ojypump</span></td>
+              <td><span class="badge" style="--c:#8b5cf6">quiet_runup</span></td>
+              <td>$155.6K</td>
+              <td>2.0x</td>
+              <td>$104.8K</td>
+              <td>$32.8K</td>
+              <td>21.1%</td>
+              <td class="pos">+34.1%</td>
+              <td class="neg">-11.8%</td>
+              <td class="neg">-26.0%</td>
+              <td>154m</td>
+              <td>1061.0h</td>
+              <td>2026-04-04 07:52</td>
+              <td>应用</td>
+              <td class="desc" title="开发者费转投Claude Memory，MEME币新叙事：社区接管，开发直给AI记忆协议。Claude Memory成热词，传播“把钱给AI记忆”梗。">开发者费转投Claude Memory，MEME币新叙事：社区接管，开发直给AI记忆协议。Claude Memory成热词，传播“把钱给AI记忆”梗。</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="PIGEON">
+              <td>7</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$PIGEON</b></td>
+              <td><span class="ca" title="4pMsh7JF5wXjkx8sK6gJgv14xkBy1kUoMv4ixN8npump">4pMsh7JF5wXjkx8sK6gJgv14xkBy1kUoMv4ixN8npump</span></td>
+              <td><span class="badge" style="--c:#06b6d4">drop_40w</span></td>
+              <td>$382.2K</td>
+              <td>2.9x</td>
+              <td>$246.8K</td>
+              <td>$55.7K</td>
+              <td>14.6%</td>
+              <td class="pos">+31.4%</td>
+              <td class="pos">+5.2%</td>
+              <td class="neg">-14.3%</td>
+              <td>68m</td>
+              <td>5.7h</td>
+              <td>2026-05-18 09:54</td>
+              <td>应用</td>
+              <td class="desc" title="疑似PIGEON Meme币趋势: 据帖子内容，WallStreetBets上流传关于“PIGEON”的Meme图趋势，该词意指市场崩盘指标。相关PIGEON代币信息待核实，请谨慎。">疑似PIGEON Meme币趋势: 据帖子内容，WallStreetBets上流传关于“PIGEON”的Meme图趋势，该词意指市场崩盘指标。相关PIGEON代币信息待核实，请谨慎。</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="SPCX">
+              <td>8</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$SPCX</b></td>
+              <td><span class="ca" title="6ymvbHWYqA8QdfZEqp3UVipqefpfzd5NYK8hYr4nX2Wz">6ymvbHWYqA8QdfZEqp3UVipqefpfzd5NYK8hYr4nX2Wz</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$45.9K</td>
+              <td>11.7x</td>
+              <td>$12.7K</td>
+              <td>$20.3K</td>
+              <td>44.1%</td>
+              <td class="pos">+30.9%</td>
+              <td class="pos">+4.8%</td>
+              <td class="neg">-6.5%</td>
+              <td>149m</td>
+              <td>57.8h</td>
+              <td>2026-05-16 02:45</td>
+              <td>应用</td>
+              <td class="desc" title="memecoin">memecoin</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="RoyalPop">
+              <td>9</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$RoyalPop</b></td>
+              <td><span class="ca" title="8TbnsLM72WoHKmVyDqRqEkEuNRGFgA4zbRXQYv6Gpump">8TbnsLM72WoHKmVyDqRqEkEuNRGFgA4zbRXQYv6Gpump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$380.6K</td>
+              <td>7.1x</td>
+              <td>$78.4K</td>
+              <td>$70.2K</td>
+              <td>18.4%</td>
+              <td class="pos">+25.0%</td>
+              <td class="pos">+11.7%</td>
+              <td class="neg">-7.3%</td>
+              <td>91m</td>
+              <td>174.4h</td>
+              <td>2026-05-11 08:23</td>
+              <td>应用</td>
+              <td class="desc" title="#1 watch worldwide">#1 watch worldwide</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="memecoins">
+              <td>10</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$memecoins</b></td>
+              <td><span class="ca" title="69FVkZNRA3KQK8NeQCWevC7eNfnSeo3rAYtwZkMVpump">69FVkZNRA3KQK8NeQCWevC7eNfnSeo3rAYtwZkMVpump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$154.8K</td>
+              <td>3.3x</td>
+              <td>$254.2K</td>
+              <td>$36.8K</td>
+              <td>23.8%</td>
+              <td class="pos">+23.4%</td>
+              <td class="pos">+2.2%</td>
+              <td class="neg">-54.0%</td>
+              <td>184m</td>
+              <td>10.7h</td>
+              <td>2026-05-18 01:40</td>
+              <td>应用</td>
+              <td class="desc" title="define solana: 据帖子内容，有人对Meme币向开发者收取费用的合理性提出质疑，并附带相关链接。相关信息待核实，请谨慎">define solana: 据帖子内容，有人对Meme币向开发者收取费用的合理性提出质疑，并附带相关链接。相关信息待核实，请谨慎</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="ALIEN">
+              <td>11</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$ALIEN</b></td>
+              <td><span class="ca" title="AQ4TPEj9mdZtLeahiBeUCnAq3odTUN5o2Em5oqMf8YnQ">AQ4TPEj9mdZtLeahiBeUCnAq3odTUN5o2Em5oqMf8YnQ</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$135.9K</td>
+              <td>2.3x</td>
+              <td>$111.0K</td>
+              <td>$33.3K</td>
+              <td>24.5%</td>
+              <td class="pos">+19.1%</td>
+              <td class="neg">-7.3%</td>
+              <td class="neg">-28.9%</td>
+              <td>120m</td>
+              <td>8.2h</td>
+              <td>2026-05-18 05:12</td>
+              <td>应用</td>
+              <td class="desc" title="Alien Coin与Claude AI: 据terry发布的帖子，用户质疑ALIEN COIN代币是否可能是Claude的“golbin”，并引用了Claude表现出异常外星语言行为的观察。该讨论通过Meme图语境将ALIEN COIN代币与AI项目Claude联系起来。">Alien Coin与Claude AI: 据terry发布的帖子，用户质疑ALIEN COIN代币是否可能是Claude的“golbin”，并引用了Claude表现出异常外星语言行为的观察。该讨论通过Meme图语境将ALIEN COIN代币与AI项目Claude联系起来。</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="HERMES">
+              <td>12</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$HERMES</b></td>
+              <td><span class="ca" title="D9pj66xNQcrQ3pfmV2nd6cPVtN7vqFsGGWGooHgpump">D9pj66xNQcrQ3pfmV2nd6cPVtN7vqFsGGWGooHgpump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$603.2K</td>
+              <td>1.7x</td>
+              <td>$83.5K</td>
+              <td>$83.1K</td>
+              <td>13.8%</td>
+              <td class="pos">+17.8%</td>
+              <td class="pos">+3.9%</td>
+              <td class="neg">-17.2%</td>
+              <td>164m</td>
+              <td>204.8h</td>
+              <td>2026-05-10 00:49</td>
+              <td>应用</td>
+              <td class="desc" title="Hermes Agent 由 Nous Research 打造，于 Discord 社区 uxento">Hermes Agent 由 Nous Research 打造，于 Discord 社区 uxento</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="Surfer">
+              <td>13</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$Surfer</b></td>
+              <td><span class="ca" title="5LCFuxVyQmeZ2SpXGFa1NY3Cc8kf46F8xiDxoz8apump">5LCFuxVyQmeZ2SpXGFa1NY3Cc8kf46F8xiDxoz8apump</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$94.6K</td>
+              <td>1.8x</td>
+              <td>$49.9K</td>
+              <td>$24.4K</td>
+              <td>25.8%</td>
+              <td class="pos">+12.8%</td>
+              <td class="neg">-57.3%</td>
+              <td class="neg">-67.3%</td>
+              <td>12m</td>
+              <td>5.6h</td>
+              <td>2026-05-18 06:44</td>
+              <td>应用</td>
+              <td class="desc" title="疑似推出Surfer Meme图: 据DingDong发布的帖子，作者质疑为何未向$TRUMP头号持有者发送“Surfer”Meme图。引用内容指出该持有者匿名，并提及将其纳入计划。相关信息待核实，请谨慎">疑似推出Surfer Meme图: 据DingDong发布的帖子，作者质疑为何未向$TRUMP头号持有者发送“Surfer”Meme图。引用内容指出该持有者匿名，并提及将其纳入计划。相关信息待核实，请谨慎</td>
+            </tr>
+            
+            <tr data-result="success" data-symbol="WMV">
+              <td>14</td>
+              <td><span class="result ok">成功</span></td>
+              <td><b>$WMV</b></td>
+              <td><span class="ca" title="BmKwr5kVmsbCfSZJGFC8geWeH1MF5wo6YqJJvFhD6nKz">BmKwr5kVmsbCfSZJGFC8geWeH1MF5wo6YqJJvFhD6nKz</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$59.7K</td>
+              <td>5.9x</td>
+              <td>$15.4K</td>
+              <td>$20.4K</td>
+              <td>34.2%</td>
+              <td class="pos">+10.4%</td>
+              <td class="neg">-12.4%</td>
+              <td class="neg">-14.9%</td>
+              <td>0m</td>
+              <td>11.5h</td>
+              <td>2026-05-18 03:45</td>
+              <td>应用</td>
+              <td class="desc" title="WOKE MIND VIRUS Binance Web3 tags: DEX Paid">WOKE MIND VIRUS Binance Web3 tags: DEX Paid</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="Ebola">
+              <td>15</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$Ebola</b></td>
+              <td><span class="ca" title="5vicJEyYTDBqMsKe74vWQeDVMe5cmeA3vr1AT8RXb9t1">5vicJEyYTDBqMsKe74vWQeDVMe5cmeA3vr1AT8RXb9t1</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$540.1K</td>
+              <td>1.9x</td>
+              <td>$59.3K</td>
+              <td>$69.4K</td>
+              <td>12.9%</td>
+              <td class="warn">+9.3%</td>
+              <td class="neg">-14.0%</td>
+              <td class="neg">-23.4%</td>
+              <td>0m</td>
+              <td>71.2h</td>
+              <td>2026-05-15 15:53</td>
+              <td>应用</td>
+              <td class="desc" title="EbolaVirus Binance Web3 tags: DEX Paid">EbolaVirus Binance Web3 tags: DEX Paid</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="GAPLA">
+              <td>16</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$GAPLA</b></td>
+              <td><span class="ca" title="3y3X6Bk6zpZpaFJ1KYJ7b33HbFM7ip5TqQPYLWJhpump">3y3X6Bk6zpZpaFJ1KYJ7b33HbFM7ip5TqQPYLWJhpump</span></td>
+              <td><span class="badge" style="--c:#8b5cf6">quiet_runup</span></td>
+              <td>$82.8K</td>
+              <td>2.5x</td>
+              <td>$1.4K</td>
+              <td>$25.2K</td>
+              <td>30.5%</td>
+              <td class="warn">+9.1%</td>
+              <td class="neg">-11.4%</td>
+              <td class="neg">-12.6%</td>
+              <td>4m</td>
+              <td>51.4h</td>
+              <td>2026-05-16 12:59</td>
+              <td>应用</td>
+              <td class="desc" title="疑似Gapla国家代币: 据digitalizedmanul发布的帖子，由17岁Wyatt创立的Gapla疑似推出基于Z世代文化的模因币。作者称该项目自筹资金且在TikTok走红，呼吁通过GitHub支持。相关信息待核实，请谨慎">疑似Gapla国家代币: 据digitalizedmanul发布的帖子，由17岁Wyatt创立的Gapla疑似推出基于Z世代文化的模因币。作者称该项目自筹资金且在TikTok走红，呼吁通过GitHub支持。相关信息待核实，请谨慎</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="tbh">
+              <td>17</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$tbh</b></td>
+              <td><span class="ca" title="8A295DWFRHFBbMMmeTJQwXJSdnUe3wfh6QX6gK4Tpump">8A295DWFRHFBbMMmeTJQwXJSdnUe3wfh6QX6gK4Tpump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$530.8K</td>
+              <td>1.7x</td>
+              <td>$6.6K</td>
+              <td>$58.8K</td>
+              <td>11.1%</td>
+              <td class="warn">+8.4%</td>
+              <td class="neg">-8.3%</td>
+              <td class="neg">-9.0%</td>
+              <td>61m</td>
+              <td>70.8h</td>
+              <td>2026-05-15 13:43</td>
+              <td>抽象</td>
+              <td class="desc" title="Yippee (tbh) 代币灵感来源于互联网迷因文化，以可爱的卡通角色为标志。该代币源于&quot;YIPPEE!&quot;迷因，该迷因展示了一个被彩色纸屑包围的可爱生物，象征着纯粹的喜悦。">Yippee (tbh) 代币灵感来源于互联网迷因文化，以可爱的卡通角色为标志。该代币源于&quot;YIPPEE!&quot;迷因，该迷因展示了一个被彩色纸屑包围的可爱生物，象征着纯粹的喜悦。</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="ELIEN">
+              <td>18</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$ELIEN</b></td>
+              <td><span class="ca" title="5o61DgZrDGbCp5EBeyzLidUFXNVTtbfUGP3nY3s7pump">5o61DgZrDGbCp5EBeyzLidUFXNVTtbfUGP3nY3s7pump</span></td>
+              <td><span class="badge" style="--c:#8b5cf6">quiet_runup</span></td>
+              <td>$108.3K</td>
+              <td>9.2x</td>
+              <td>$7.9K</td>
+              <td>$35.8K</td>
+              <td>33.0%</td>
+              <td class="warn">+6.7%</td>
+              <td class="neg">-6.2%</td>
+              <td class="neg">-6.2%</td>
+              <td>0m</td>
+              <td>588.0h</td>
+              <td>2026-04-24 02:35</td>
+              <td>应用</td>
+              <td class="desc" title="ELIEN MUSK Binance Web3 tags: DEX Paid">ELIEN MUSK Binance Web3 tags: DEX Paid</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="Peace">
+              <td>19</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$Peace</b></td>
+              <td><span class="ca" title="DFeoQbQDdpzZ1doCe3MC4bVoLqsG8dn1P8ymfEfGU5Pu">DFeoQbQDdpzZ1doCe3MC4bVoLqsG8dn1P8ymfEfGU5Pu</span></td>
+              <td><span class="badge" style="--c:#f59e0b">new_revival</span></td>
+              <td>$63.7K</td>
+              <td>5.3x</td>
+              <td>$52.9K</td>
+              <td>$23.2K</td>
+              <td>36.4%</td>
+              <td class="warn">+4.2%</td>
+              <td class="neg">-45.7%</td>
+              <td class="neg">-50.6%</td>
+              <td>29m</td>
+              <td>22.9h</td>
+              <td>2026-05-17 13:51</td>
+              <td>应用</td>
+              <td class="desc" title="疑似推出Peace Meme图: 据digitalizedmanul发布的帖子，其声称日本天皇皇后访问了名为Peace的北极熊，并借此暗示在Solana上推出相关代币。相关信息待核实，请谨慎">疑似推出Peace Meme图: 据digitalizedmanul发布的帖子，其声称日本天皇皇后访问了名为Peace的北极熊，并借此暗示在Solana上推出相关代币。相关信息待核实，请谨慎</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="Yae">
+              <td>20</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$Yae</b></td>
+              <td><span class="ca" title="GbuHq6UTNUp8CaFsoPgUhxpPBnkVXGepDHgFhN2kpump">GbuHq6UTNUp8CaFsoPgUhxpPBnkVXGepDHgFhN2kpump</span></td>
+              <td><span class="badge" style="--c:#06b6d4">drop_40w</span></td>
+              <td>$187.4K</td>
+              <td>14.7x</td>
+              <td>$86.2K</td>
+              <td>$44.0K</td>
+              <td>23.5%</td>
+              <td class="warn">+3.7%</td>
+              <td class="neg">-17.5%</td>
+              <td class="neg">-25.7%</td>
+              <td>9m</td>
+              <td>44.1h</td>
+              <td>2026-05-16 15:50</td>
+              <td>应用</td>
+              <td class="desc" title="疑似Yae代币发行: 市场上同名「Yae」代币同时密集发行，缺乏有效信息，请投资者务必甄别与核实。">疑似Yae代币发行: 市场上同名「Yae」代币同时密集发行，缺乏有效信息，请投资者务必甄别与核实。</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="Dust">
+              <td>21</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$Dust</b></td>
+              <td><span class="ca" title="6veQU7HDdXV5DC2Eqhnri5q71gkMzG73qKkSSudnpump">6veQU7HDdXV5DC2Eqhnri5q71gkMzG73qKkSSudnpump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$132.6K</td>
+              <td>10.6x</td>
+              <td>$35.9K</td>
+              <td>$39.3K</td>
+              <td>29.6%</td>
+              <td class="warn">+3.6%</td>
+              <td class="neg">-24.1%</td>
+              <td class="neg">-27.9%</td>
+              <td>26m</td>
+              <td>72.7h</td>
+              <td>2026-05-15 12:24</td>
+              <td>应用</td>
+              <td class="desc" title="疑似Dust模因币: 据Con发布的帖子，Drake新专辑歌曲$Dust提及SBF和BTC。Con声称唯一合适的Meme图是“永不卖出$Dust”，暗示与模因币相关。相关信息待核实，请谨慎">疑似Dust模因币: 据Con发布的帖子，Drake新专辑歌曲$Dust提及SBF和BTC。Con声称唯一合适的Meme图是“永不卖出$Dust”，暗示与模因币相关。相关信息待核实，请谨慎</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="ALgoat">
+              <td>22</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$ALgoat</b></td>
+              <td><span class="ca" title="Do4PgVvgw9RNUMks4dTwyvrHjSsdMP2bcKcwybk2pump">Do4PgVvgw9RNUMks4dTwyvrHjSsdMP2bcKcwybk2pump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$65.0K</td>
+              <td>3.2x</td>
+              <td>$33.8K</td>
+              <td>$21.3K</td>
+              <td>32.7%</td>
+              <td class="warn">+3.4%</td>
+              <td class="neg">-56.0%</td>
+              <td class="neg">-68.1%</td>
+              <td>0m</td>
+              <td>104.7h</td>
+              <td>2026-05-14 03:58</td>
+              <td>应用</td>
+              <td class="desc" title="Kai发布ALgoat V1: 据Kai发布的帖子，面向Solana迷因币的开源算法交易IDE ALgoat V1已上线。主要功能包括LLM图表分析、简化设置步骤及降低成本。项目代码已开源。">Kai发布ALgoat V1: 据Kai发布的帖子，面向Solana迷因币的开源算法交易IDE ALgoat V1已上线。主要功能包括LLM图表分析、简化设置步骤及降低成本。项目代码已开源。</td>
+            </tr>
+            
+            <tr data-result="fail" data-symbol="STJUDE">
+              <td>23</td>
+              <td><span class="result bad">失败</span></td>
+              <td><b>$STJUDE</b></td>
+              <td><span class="ca" title="E8syR4zsgQG2zo9YyiyfX4ujubByR4z6qj9stjASpump">E8syR4zsgQG2zo9YyiyfX4ujubByR4z6qj9stjASpump</span></td>
+              <td><span class="badge" style="--c:#ef4444">abnormal</span></td>
+              <td>$174.6K</td>
+              <td>17.4x</td>
+              <td>$1.2K</td>
+              <td>$52.4K</td>
+              <td>30.0%</td>
+              <td class="warn">+0.5%</td>
+              <td class="neg">-6.2%</td>
+              <td class="neg">-7.1%</td>
+              <td>76m</td>
+              <td>442.2h</td>
+              <td>2026-04-30 01:54</td>
+              <td>应用</td>
+              <td class="desc" title="圣裘德 币安Web3 标签：Pumpfun、DEX付费">圣裘德 币安Web3 标签：Pumpfun、DEX付费</td>
+            </tr>
+            </tbody>
+    </table>
+  </div>
+</main>
+</body>
+</html>

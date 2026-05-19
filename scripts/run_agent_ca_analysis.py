@@ -89,6 +89,21 @@ def main() -> int:
             f"retracement={float(fib.get('retracement_from_high') or 0):.1%} "
             f"nearest={fib.get('nearest_level')}"
         )
+    sideways = kline_decision.get("sideways") or {}
+    volume = kline_decision.get("volume_health") or {}
+    holder_flow = kline_decision.get("holder_flow") or {}
+    bundle = kline_decision.get("bundle_unwind") or {}
+    structure = kline_decision.get("structure_health") or {}
+    if structure:
+        print(
+            "Structure health: "
+            f"score={structure.get('score')} "
+            f"verdict={structure.get('verdict')} "
+            f"sideways={sideways.get('verdict')} "
+            f"vol={volume.get('verdict')} "
+            f"holder_b/s={float(holder_flow.get('buy_sell_ratio') or 0):.2f} "
+            f"bundler={bundle.get('verdict')}"
+        )
     print(f"Execution plan: {action_execution.get('plan') or []}")
     print(f"Execution results: {action_execution.get('results') or []}")
     return 0

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>底部异动推送绩效分析 - 2026-05-18</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;padding:20px 30px}
+h1{font-size:1.5rem;margin-bottom:4px}
+.subtitle{color:#64748b;font-size:.85rem;margin-bottom:20px}
+h2{font-size:1.05rem;margin:24px 0 10px;color:#94a3b8}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:24px}
+.card{background:#1e293b;border-radius:10px;padding:16px;border:1px solid #334155}
+.card .label{font-size:.72rem;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
+.card .value{font-size:1.4rem;font-weight:700;margin-top:4px}
+.green{color:#10b981}.red{color:#ef4444}.yellow{color:#f59e0b}.purple{color:#8b5cf6}.cyan{color:#06b6d4}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+@media(max-width:800px){.charts{grid-template-columns:1fr}}
+.chart-box{background:#1e293b;border-radius:10px;padding:16px;border:1px solid #334155}
+.chart-box h3{font-size:.85rem;color:#94a3b8;margin-bottom:12px}
+.bar-row{display:flex;align-items:center;margin-bottom:6px;font-size:.8rem}
+.bar-label{width:80px;text-align:right;margin-right:10px;color:#94a3b8;flex-shrink:0}
+.bar-track{flex:1;background:#334155;border-radius:4px;height:22px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px}
+.bar-count{width:90px;font-size:.75rem;margin-left:8px;color:#cbd5e1;flex-shrink:0}
+.search-box{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:8px 14px;color:#e2e8f0;width:220px;font-size:.8rem;margin-bottom:10px}
+.search-box::placeholder{color:#64748b}
+.filter{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.fbtn{padding:6px 14px;border-radius:20px;border:1px solid #334155;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:.78rem;transition:all .2s}
+.fbtn:hover{border-color:#64748b;color:#e2e8f0}
+.fbtn.active{border-color:#3b82f6;color:#60a5fa;background:#1e3050}
+.nar-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px}
+.nar-card{background:#1e293b;border-radius:10px;padding:14px;border:1px solid #334155}
+.nar-card .nar-title{font-size:.85rem;font-weight:700;margin-bottom:8px}
+.nar-card .nar-stat{font-size:.75rem;color:#94a3b8;margin-bottom:3px}
+.nar-card .nar-stat b{color:#e2e8f0}
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid #334155}
+table{width:100%;border-collapse:collapse;font-size:.76rem;background:#1e293b}
+th{background:#334155;padding:9px 7px;text-align:left;font-weight:600;color:#94a3b8;font-size:.68rem;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;position:sticky;top:0;z-index:1}
+th.sortable{cursor:pointer;user-select:none;transition:color .15s}
+th.sortable:hover{color:#e2e8f0}
+th.sortable .sort-arrow{font-size:.6rem;margin-left:3px;opacity:.5}
+th.sortable.asc .sort-arrow,.th.sortable.desc .sort-arrow{opacity:1}
+td{padding:6px 7px;border-bottom:1px solid #1e293b;white-space:nowrap}
+tr:nth-child(even) td{background:#1a2332}
+tr:hover td{background:#162032}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:.68rem;font-weight:600}
+.positive{color:#10b981;font-weight:600}.negative{color:#ef4444}
+.ca-link{font-family:monospace;font-size:.68rem;color:#60a5fa;cursor:pointer;user-select:all}
+.ca-link:hover{color:#93c5fd;text-decoration:underline}
+.ca-link.ca-copied{color:#10b981!important}
+.result-badge{padding:3px 10px;border-radius:12px;font-size:.72rem;font-weight:700}
+.result-success{background:#064e3b;color:#34d399;border:1px solid #065f46}
+.result-fail{background:#451a1a;color:#fca5a5;border:1px solid #7f1d1d}
+.note{background:#1e3050;border:1px solid #1e3a5f;border-radius:8px;padding:10px 16px;font-size:.78rem;color:#93c5fd;margin-bottom:20px}
+.time-col{color:#94a3b8;font-size:.73rem}
+.footer{text-align:center;color:#475569;font-size:.7rem;margin-top:30px;padding:16px}
+</style></head>
+<body>
+<h1>底部异动推送绩效分析</h1>
+<p class="subtitle">2026-05-18 | 28 个首次异动 CA | 推送总记录 28 条(去重) | Entry=信号时刻收盘价 | K线+市值: Binance API | 命中 28/28</p>
+<div class="note">涨幅 ≥10% = <b style="color:#34d399">成功</b>, &lt;10% = <b style="color:#fca5a5">失败</b> | 点击列表头可排序 | 叙事分类基于关键词匹配</div>
+
+<div class="grid">
+<div class="card"><div class="label">样本数</div><div class="value purple">28</div></div>
+<div class="card"><div class="label">成功 (≥10%)</div><div class="value green">16</div></div>
+<div class="card"><div class="label">失败 (&lt;10%)</div><div class="value red">12</div></div>
+<div class="card"><div class="label">成功率</div><div class="value cyan">57%</div></div>
+<div class="card"><div class="label">平均最高涨幅</div><div class="value green">46.9%</div></div>
+<div class="card"><div class="label">中位最高涨幅</div><div class="value yellow">20.7%</div></div>
+</div>
+
+<h2>叙事类别分析</h2>
+<div class="nar-cards"><div class="nar-card"><div class="nar-title" style="color:#8b5cf6">抽象 (3个)</div>
+<div class="nar-stat">成功: <b style="color:#34d399">2</b> | 失败: <b style="color:#fca5a5">1</b></div>
+<div class="nar-stat">成功率: <b>67%</b> | 平均涨幅: <b>62.7%</b></div></div><div class="nar-card"><div class="nar-title" style="color:#3b82f6">应用 (25个)</div>
+<div class="nar-stat">成功: <b style="color:#34d399">14</b> | 失败: <b style="color:#fca5a5">11</b></div>
+<div class="nar-stat">成功率: <b>56%</b> | 平均涨幅: <b>44.9%</b></div></div></div>
+<h2>风险标签分析</h2>
+<div class="nar-cards">
+<div class="nar-card"><div class="nar-title" style="color:#f59e0b">[瞬爆] 标签 (13个)</div><div class="nar-stat">成功: <b style="color:#34d399">10</b> | 失败: <b style="color:#fca5a5">3</b></div><div class="nar-stat">成功率: <b>77%</b></div></div>
+<div class="nar-card"><div class="nar-title" style="color:#ef4444">[天花板] 标签 (5个)</div><div class="nar-stat">成功: <b style="color:#34d399">4</b> | 失败: <b style="color:#fca5a5">1</b></div><div class="nar-stat">成功率: <b>80%</b></div></div>
+<div class="nar-card"><div class="nar-title" style="color:#8b5cf6">[大市值] 标签 (3个)</div><div class="nar-stat">成功: <b style="color:#34d399">0</b> | 失败: <b style="color:#fca5a5">3</b></div><div class="nar-stat">成功率: <b>0%</b></div></div>
+<div class="nar-card"><div class="nar-title" style="color:#64748b">[无量] 标签 (1个)</div><div class="nar-stat">成功: <b style="color:#34d399">1</b> | 失败: <b style="color:#fca5a5">0</b></div><div class="nar-stat">成功率: <b>100%</b></div></div>
+</div>
+<div class="charts">
+<div class="chart-box"><h3>信号时刻 → 后续最高点涨幅分布</h3>
+<div class="bar-row"><span class="bar-label">>=200%</span><div class="bar-track"><div class="bar-fill" style="width:7.142857142857142%;background:#10b981"></div></div><span class="bar-count">2 (7.1%)</span></div>
+<div class="bar-row"><span class="bar-label">100-200%</span><div class="bar-track"><div class="bar-fill" style="width:7.142857142857142%;background:#10b981"></div></div><span class="bar-count">2 (7.1%)</span></div>
+<div class="bar-row"><span class="bar-label">50-100%</span><div class="bar-track"><div class="bar-fill" style="width:3.571428571428571%;background:#10b981"></div></div><span class="bar-count">1 (3.6%)</span></div>
+<div class="bar-row"><span class="bar-label">10-50%</span><div class="bar-track"><div class="bar-fill" style="width:39.285714285714285%;background:#f59e0b"></div></div><span class="bar-count">11 (39.3%)</span></div>
+<div class="bar-row"><span class="bar-label"><10%</span><div class="bar-track"><div class="bar-fill" style="width:42.857142857142854%;background:#ef4444"></div></div><span class="bar-count">12 (42.9%)</span></div>
+</div>
+<div class="chart-box"><h3>叙事类别成功率对比</h3>
+<div class="bar-row"><span class="bar-label">抽象</span><div class="bar-track"><div class="bar-fill" style="width:66.66666666666666%;background:#8b5cf6"></div></div><span class="bar-count">2/3 (67%)</span></div>
+<div class="bar-row"><span class="bar-label">应用</span><div class="bar-track"><div class="bar-fill" style="width:56.00000000000001%;background:#3b82f6"></div></div><span class="bar-count">14/25 (56%)</span></div>
+</div>
+</div>
+<h2>异动代币绩效明细 <span style="font-size:.75rem;color:#64748b;font-weight:400">(点击列头排序)</span></h2>
+<input class="search-box" type="text" id="s" placeholder="搜索 symbol / address..." onkeyup="ft()">
+<div class="filter"><button class="fbtn active" onclick="fs('all')">全部</button>
+<button class="fbtn" onclick="fs('成功')">成功</button>
+<button class="fbtn" onclick="fs('失败')">失败</button>
+<button class="fbtn" style="border-color:#8b5cf6;color:#8b5cf6" onclick="fs('抽象')">抽象 (3)</button>
+<button class="fbtn" style="border-color:#3b82f6;color:#3b82f6" onclick="fs('应用')">应用 (25)</button>
+</div>
+<div class="filter" style="margin-bottom:8px">
+<span style="font-size:.7rem;color:#64748b;margin-right:8px;line-height:28px">时段:</span>
+<button class="fbtn active" onclick="ft2('all')">全部</button>
+<button class="fbtn" onclick="ft2('00-04')">凌晨 00-04</button>
+<button class="fbtn" onclick="ft2('04-08')">凌晨 04-08</button>
+<button class="fbtn" onclick="ft2('08-12')">上午 08-12</button>
+<button class="fbtn" onclick="ft2('12-16')">下午 12-16</button>
+<button class="fbtn" onclick="ft2('16-20')">傍晚 16-20</button>
+<button class="fbtn" onclick="ft2('20-24')">深夜 20-24</button>
+<span style="font-size:.7rem;color:#64748b;margin:0 8px;line-height:28px">|</span>
+<button class="fbtn" onclick="ft2('11-24')">11:00后</button>
+<button class="fbtn" onclick="ft2('12-24')">12:00后</button>
+</div>
+<div class="table-wrap"><table id="t"><thead><tr><th class="sortable" onclick="sortTable(0,'num')"># <span class="sort-arrow">▼</span></th><th>结果</th><th>风险标签</th><th>叙事</th><th>CA</th><th>Symbol</th><th>信号类型</th><th class="sortable" onclick="sortTable(7,'num')">异动市值 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(8,'num')">ATH市值 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(9,'num')">巅峰市值 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(10,'num')">当前市值 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(11,'num')">最高涨幅 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(12,'num')">当前/异动 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(13,'str')">异动时间 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(14,'str')">峰值时间 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(15,'num')">至峰顶 <span class="sort-arrow">▼</span></th><th class="sortable" onclick="sortTable(16,'num')">K线 <span class="sort-arrow">▼</span></th></tr></thead><tbody>
+<tr data-result="成功" data-nar="应用" data-hour="9"><td data-value="1">1</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">FX6cuPhKjQbyAEgwkWxjtcJTpat3LbreT3gf8ojypump</span></td><td><b>$MEM</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="54672.46347277">$54.7K</td><td data-value="204700.0">$204.7K</td><td data-value="289377.76633916324" style="color:#f59e0b">$289.4K</td><td data-value="210630.98498856524" style="color:#06b6d4">$210.6K</td><td class="positive" data-value="429.2934467518366"><b>+429.3%</b></td><td style="color:#10b981" data-value="3.852597296872702">3.85x</td><td class="time-col" data-value="2026-05-18 09:37">2026-05-18 09:37</td><td class="time-col" data-value="2026-05-18 10:15">2026-05-18 10:15</td><td data-value="38">38m</td><td data-value="13">13</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="6"><td data-value="2">2</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">69FVkZNRA3KQK8NeQCWevC7eNfnSeo3rAYtwZkMVpump</span></td><td><b>$memecoins</b></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">new_revival</span></td><td data-value="94993.0029170518">$95.0K</td><td data-value="513977.0">$514.0K</td><td data-value="306073.71723358997" style="color:#f59e0b">$306.1K</td><td data-value="155317.2432261612" style="color:#06b6d4">$155.3K</td><td class="positive" data-value="222.20659189062016"><b>+222.2%</b></td><td style="color:#10b981" data-value="1.6350387760852736">1.64x</td><td class="time-col" data-value="2026-05-18 06:42">2026-05-18 06:42</td><td class="time-col" data-value="2026-05-18 08:15">2026-05-18 08:15</td><td data-value="93">93m</td><td data-value="48">48</td></tr>
+<tr data-result="成功" data-nar="抽象" data-hour="3"><td data-value="3">3</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;margin-right:2px">天花板</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">抽象</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">87MGD7xqhMFccFMKUHjsBwcVfP41zcLNwHDYYfR1pump</span></td><td><b>$WMV</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="94240.9220930126">$94.2K</td><td data-value="103955.0">$104.0K</td><td data-value="237918.712696849" style="color:#f59e0b">$237.9K</td><td data-value="10832.58961137861" style="color:#06b6d4">$10.8K</td><td class="positive" data-value="152.45796349703718"><b>+152.5%</b></td><td style="color:#ef4444" data-value="0.1149457090486361">0.11x</td><td class="time-col" data-value="2026-05-18 03:47">2026-05-18 03:47</td><td class="time-col" data-value="2026-05-18 03:45">2026-05-18 03:45</td><td data-value="0">0m</td><td data-value="52">52</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="1"><td data-value="4">4</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">Cpzvdx6pppc9TNArsGsqgShCsKC9NCCjA2gtzHvUpump</span></td><td><b>$SVMAI</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="58195.711411798504">$58.2K</td><td data-value="1649353.0">$1.65M</td><td data-value="121735.76995894329" style="color:#f59e0b">$121.7K</td><td data-value="33408.22963398553" style="color:#06b6d4">$33.4K</td><td class="positive" data-value="109.18340373490611"><b>+109.2%</b></td><td style="color:#ef4444" data-value="0.5740668654703034">0.57x</td><td class="time-col" data-value="2026-05-18 01:26">2026-05-18 01:26</td><td class="time-col" data-value="2026-05-18 02:00">2026-05-18 02:00</td><td data-value="33">33m</td><td data-value="51">51</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="6"><td data-value="5">5</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">9krrzf5aUpHBE4D2Mc1cmwUN18pkzDEwojWegZgjpump</span></td><td><b>$COMRADES</b></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">new_revival</span></td><td data-value="40185.090114465405">$40.2K</td><td data-value="70160.0">$70.2K</td><td data-value="64320.28073874949" style="color:#f59e0b">$64.3K</td><td data-value="43218.31527518516" style="color:#06b6d4">$43.2K</td><td class="positive" data-value="60.06006346019404"><b>+60.1%</b></td><td style="color:#10b981" data-value="1.0754813576896245">1.08x</td><td class="time-col" data-value="2026-05-18 06:09">2026-05-18 06:09</td><td class="time-col" data-value="2026-05-18 06:50">2026-05-18 06:50</td><td data-value="40">40m</td><td data-value="50">50</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="0"><td data-value="6">6</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">jkAWzPumRhJE2KyqVy4kB7m9KwXBeSEXnFAGoWtpump</span></td><td><b>$CLAUDE</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="96623.1214544275">$96.6K</td><td data-value="6253739.0">$6.25M</td><td data-value="142749.3347538272" style="color:#f59e0b">$142.7K</td><td data-value="99048.55026815158" style="color:#06b6d4">$99.0K</td><td class="positive" data-value="47.73827693111241"><b>+47.7%</b></td><td style="color:#10b981" data-value="1.0251019505188315">1.03x</td><td class="time-col" data-value="2026-05-18 00:01">2026-05-18 00:01</td><td class="time-col" data-value="2026-05-18 00:00">2026-05-18 00:00</td><td data-value="0">0m</td><td data-value="60">60</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="5"><td data-value="7">7</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">5o61DgZrDGbCp5EBeyzLidUFXNVTtbfUGP3nY3s7pump</span></td><td><b>$ELIEN</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="66621.459138551">$66.6K</td><td data-value="996450.0">$996.5K</td><td data-value="90172.52359366721" style="color:#f59e0b">$90.2K</td><td data-value="93091.58260556693" style="color:#06b6d4">$93.1K</td><td class="positive" data-value="35.350568359869825"><b>+35.4%</b></td><td style="color:#10b981" data-value="1.3973212806997617">1.40x</td><td class="time-col" data-value="2026-05-18 05:42">2026-05-18 05:42</td><td class="time-col" data-value="2026-05-18 08:40">2026-05-18 08:40</td><td data-value="178">178m</td><td data-value="40">40</td></tr>
+<tr data-result="成功" data-nar="抽象" data-hour="6"><td data-value="8">8</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;margin-right:2px">天花板</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">抽象</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">DrTKkxmeYXD12yq9oTpg1hvEqsgbzX1gDAknSHEf9Luc</span></td><td><b>$CLICKCLACK</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="148794.881649264">$148.8K</td><td data-value="152957.0">$153.0K</td><td data-value="198809.93002531963" style="color:#f59e0b">$198.8K</td><td data-value="142594.2512778605" style="color:#06b6d4">$142.6K</td><td class="positive" data-value="33.61341991181526"><b>+33.6%</b></td><td style="color:#ef4444" data-value="0.9583276635414147">0.96x</td><td class="time-col" data-value="2026-05-18 06:21">2026-05-18 06:21</td><td class="time-col" data-value="2026-05-18 07:10">2026-05-18 07:10</td><td data-value="48">48m</td><td data-value="46">46</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="3"><td data-value="9">9</td><td><span class="result-badge result-success">成功</span></td><td>-</td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">9iR8Urs95yLeiajX3T6eYK9t4YBcLbrWS8pCKgoPFb7n</span></td><td><b>$PRX</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="333125.384423199">$333.1K</td><td data-value="842281.0">$842.3K</td><td data-value="440946.5966177845" style="color:#f59e0b">$440.9K</td><td data-value="343099.3801050604" style="color:#06b6d4">$343.1K</td><td class="positive" data-value="32.36655542815392"><b>+32.4%</b></td><td style="color:#10b981" data-value="1.02994066543182">1.03x</td><td class="time-col" data-value="2026-05-18 03:23">2026-05-18 03:23</td><td class="time-col" data-value="2026-05-18 03:40">2026-05-18 03:40</td><td data-value="17">17m</td><td data-value="25">25</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="3"><td data-value="10">10</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;margin-right:2px">天花板</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">G1cEcV5JrKEKBnjauXAPwfs7ak4LQGEZJoLTKvvEpump</span></td><td><b>$SACKS</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="65462.0354280292">$65.5K</td><td data-value="86724.0">$86.7K</td><td data-value="85079.23338385306" style="color:#f59e0b">$85.1K</td><td data-value="61081.019508885736" style="color:#06b6d4">$61.1K</td><td class="positive" data-value="29.96728993767932"><b>+30.0%</b></td><td style="color:#ef4444" data-value="0.9330754705303951">0.93x</td><td class="time-col" data-value="2026-05-18 03:57">2026-05-18 03:57</td><td class="time-col" data-value="2026-05-18 05:15">2026-05-18 05:15</td><td data-value="78">78m</td><td data-value="78">78</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="8"><td data-value="11">11</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">BmKwr5kVmsbCfSZJGFC8geWeH1MF5wo6YqJJvFhD6nKz</span></td><td><b>$WMV</b></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">new_revival</span></td><td data-value="78887.3853690498">$78.9K</td><td data-value="350718.0">$350.7K</td><td data-value="97977.68088557632" style="color:#f59e0b">$98.0K</td><td data-value="54358.23863073952" style="color:#06b6d4">$54.4K</td><td class="positive" data-value="24.199427357388736"><b>+24.2%</b></td><td style="color:#ef4444" data-value="0.6890612279319641">0.69x</td><td class="time-col" data-value="2026-05-18 08:58">2026-05-18 08:58</td><td class="time-col" data-value="2026-05-18 09:35">2026-05-18 09:35</td><td data-value="36">36m</td><td data-value="21">21</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="7"><td data-value="12">12</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#64748b22;color:#64748b;border:1px solid #64748b44;margin-right:2px">无量</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">29CWsqH84TykHDDwA6DtETUtXQPuKbVgKCmxtkBsbrrr</span></td><td><b>$BELIEF</b></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">quiet_breakout</span></td><td data-value="265491.184209675">$265.5K</td><td data-value="21381374.0">$21.38M</td><td data-value="328147.7403539232" style="color:#f59e0b">$328.1K</td><td data-value="229248.19726099283" style="color:#06b6d4">$229.2K</td><td class="positive" data-value="23.600239808627464"><b>+23.6%</b></td><td style="color:#ef4444" data-value="0.8634870417389874">0.86x</td><td class="time-col" data-value="2026-05-18 07:37">2026-05-18 07:37</td><td class="time-col" data-value="2026-05-18 07:35">2026-05-18 07:35</td><td data-value="0">0m</td><td data-value="24">24</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="5"><td data-value="13">13</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">5JP1Loni4DtDgvHupQAzcRXQtsWnWWVibdsD4igVpump</span></td><td><b>$AyyLMAO</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="70126.90351836881">$70.1K</td><td data-value="658299.0">$658.3K</td><td data-value="85620.78497911891" style="color:#f59e0b">$85.6K</td><td data-value="53435.304295963666" style="color:#06b6d4">$53.4K</td><td class="positive" data-value="22.094061884097993"><b>+22.1%</b></td><td style="color:#ef4444" data-value="0.761980090593434">0.76x</td><td class="time-col" data-value="2026-05-18 05:32">2026-05-18 05:32</td><td class="time-col" data-value="2026-05-18 05:30">2026-05-18 05:30</td><td data-value="0">0m</td><td data-value="43">43</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="4"><td data-value="14">14</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">9dngMsx3NpLnqBek4SMcrGnj9JmigNz1p6kUugPNpump</span></td><td><b>$SIMULATION</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="41200.44750066879">$41.2K</td><td data-value="111457.0">$111.5K</td><td data-value="49738.403462583774" style="color:#f59e0b">$49.7K</td><td data-value="29857.267695694434" style="color:#06b6d4">$29.9K</td><td class="positive" data-value="20.722968996335254"><b>+20.7%</b></td><td style="color:#ef4444" data-value="0.7246830922215048">0.72x</td><td class="time-col" data-value="2026-05-18 04:44">2026-05-18 04:44</td><td class="time-col" data-value="2026-05-18 04:50">2026-05-18 04:50</td><td data-value="6">6m</td><td data-value="20">20</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="3"><td data-value="15">15</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;margin-right:2px">天花板</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">ALopamF7Ptq7c1JWwskAXcdFJi2qkYfiYugNL4qrpump</span></td><td><b>$loo</b></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">quiet_runup</span></td><td data-value="52410.2773603464">$52.4K</td><td data-value="54372.0">$54.4K</td><td data-value="62107.54850801908" style="color:#f59e0b">$62.1K</td><td data-value="5972.424383543699" style="color:#06b6d4">$6.0K</td><td class="positive" data-value="18.502613678227988"><b>+18.5%</b></td><td style="color:#ef4444" data-value="0.11395521421266955">0.11x</td><td class="time-col" data-value="2026-05-18 03:10">2026-05-18 03:10</td><td class="time-col" data-value="2026-05-18 03:10">2026-05-18 03:10</td><td data-value="0">0m</td><td data-value="84">84</td></tr>
+<tr data-result="成功" data-nar="应用" data-hour="1"><td data-value="16">16</td><td><span class="result-badge result-success">成功</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">CRuFEYSQiL41qS1srJEjqBLdujwAXvVfpn4h71zf4444</span></td><td><b>$FOUR</b></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">new_revival</span></td><td data-value="69967.86696605201">$70.0K</td><td data-value="105044.0">$105.0K</td><td data-value="77503.79130568764" style="color:#f59e0b">$77.5K</td><td data-value="24249.72108077664" style="color:#06b6d4">$24.2K</td><td class="positive" data-value="10.770550348908037"><b>+10.8%</b></td><td style="color:#ef4444" data-value="0.3465836838007718">0.35x</td><td class="time-col" data-value="2026-05-18 01:53">2026-05-18 01:53</td><td class="time-col" data-value="2026-05-18 01:55">2026-05-18 01:55</td><td data-value="2">2m</td><td data-value="92">92</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="6"><td data-value="17">17</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">C6JwgSY7WdpGA6TEBdu6j11E3EQBJGNuSNpW6vrCpump</span></td><td><b>$YUNO</b></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">quiet_runup</span></td><td data-value="47687.009619515">$47.7K</td><td data-value="108508.0">$108.5K</td><td data-value="52270.91043048709" style="color:#f59e0b">$52.3K</td><td data-value="27434.086538058775" style="color:#06b6d4">$27.4K</td><td class="positive" data-value="9.612472762595313"><b>+9.6%</b></td><td style="color:#ef4444" data-value="0.5752947554679942">0.58x</td><td class="time-col" data-value="2026-05-18 06:26">2026-05-18 06:26</td><td class="time-col" data-value="2026-05-18 07:10">2026-05-18 07:10</td><td data-value="44">44m</td><td data-value="45">45</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="3"><td data-value="18">18</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644;margin-right:2px">大市值</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">5Jr9hGmJgxBRjjF8XGcGgQzXUdsbpZNNMpigEv8Wpump</span></td><td><b>$MUSHU</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="706769.70640197">$706.8K</td><td data-value="291986637.0">$291.99M</td><td data-value="746922.2913810788" style="color:#f59e0b">$746.9K</td><td data-value="743236.4106054804" style="color:#06b6d4">$743.2K</td><td class="positive" data-value="5.681141199941631"><b>+5.7%</b></td><td style="color:#10b981" data-value="1.0515963033972628">1.05x</td><td class="time-col" data-value="2026-05-18 03:20">2026-05-18 03:20</td><td class="time-col" data-value="2026-05-18 07:35">2026-05-18 07:35</td><td data-value="255">255m</td><td data-value="59">59</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="9"><td data-value="19">19</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">9R8rrjXxcfQPmLTCLhmVpjr2uesjjkcgkinE6Lwdpump</span></td><td><b>$Dulus</b></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">quiet_runup</span></td><td data-value="51756.2259550518">$51.8K</td><td data-value="111914.0">$111.9K</td><td data-value="54572.45741073345" style="color:#f59e0b">$54.6K</td><td data-value="39505.34708008799" style="color:#06b6d4">$39.5K</td><td class="positive" data-value="5.44133851283406"><b>+5.4%</b></td><td style="color:#ef4444" data-value="0.7632965184593791">0.76x</td><td class="time-col" data-value="2026-05-18 09:15">2026-05-18 09:15</td><td class="time-col" data-value="2026-05-18 09:45">2026-05-18 09:45</td><td data-value="29">29m</td><td data-value="15">15</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="5"><td data-value="20">20</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644;margin-right:2px">大市值</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">HEYKwDJRoSsiLNQ9F9bZFKo7yxum1WbTFCgiHTX5h6tb</span></td><td><b>$HEY</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="607761.59043835">$607.8K</td><td data-value="1190199.0">$1.19M</td><td data-value="637729.735615859" style="color:#f59e0b">$637.7K</td><td data-value="608179.9618158872" style="color:#06b6d4">$608.2K</td><td class="positive" data-value="4.930904757553778"><b>+4.9%</b></td><td style="color:#10b981" data-value="1.0006883807468576">1.00x</td><td class="time-col" data-value="2026-05-18 05:44">2026-05-18 05:44</td><td class="time-col" data-value="2026-05-18 05:55">2026-05-18 05:55</td><td data-value="11">11m</td><td data-value="36">36</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="7"><td data-value="21">21</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">C4j1kRxLhWzHCDEffhJQtEnfR7B1PKRhQHpmWpFzAUSA</span></td><td><b>$RIAL</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="41356.9792352664">$41.4K</td><td data-value="3657518.0">$3.66M</td><td data-value="43154.11679347439" style="color:#f59e0b">$43.2K</td><td data-value="37877.41225459968" style="color:#06b6d4">$37.9K</td><td class="positive" data-value="4.345427522606671"><b>+4.3%</b></td><td style="color:#ef4444" data-value="0.9158650596584292">0.92x</td><td class="time-col" data-value="2026-05-18 07:35">2026-05-18 07:35</td><td class="time-col" data-value="2026-05-18 07:35">2026-05-18 07:35</td><td data-value="0">0m</td><td data-value="18">18</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="3"><td data-value="22">22</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;margin-right:2px">瞬爆</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">8jVcgXXUReoiFCDzDMEhftCvA7HWqLX6rNmZ6AxLpump</span></td><td><b>$stockcoin</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="166325.09828089998">$166.3K</td><td data-value="5310652.0">$5.31M</td><td data-value="171814.73077581415" style="color:#f59e0b">$171.8K</td><td data-value="131635.6540951381" style="color:#06b6d4">$131.6K</td><td class="positive" data-value="3.3005436651797115"><b>+3.3%</b></td><td style="color:#ef4444" data-value="0.7914359014706474">0.79x</td><td class="time-col" data-value="2026-05-18 03:54">2026-05-18 03:54</td><td class="time-col" data-value="2026-05-18 03:50">2026-05-18 03:50</td><td data-value="0">0m</td><td data-value="44">44</td></tr>
+<tr data-result="失败" data-nar="抽象" data-hour="2"><td data-value="23">23</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444;margin-right:2px">天花板</span><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644">抽象</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">9y2VWxWB8JPYbQoPRt7DXpEeqiDubeVZD25adVHBpump</span></td><td><b>$Viltrumite</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="41801.458913266295">$41.8K</td><td data-value="48992.0">$49.0K</td><td data-value="42690.76863102976" style="color:#f59e0b">$42.7K</td><td data-value="31217.773091293897" style="color:#06b6d4">$31.2K</td><td class="positive" data-value="2.127460956826144"><b>+2.1%</b></td><td style="color:#ef4444" data-value="0.7468106114685507">0.75x</td><td class="time-col" data-value="2026-05-18 02:22">2026-05-18 02:22</td><td class="time-col" data-value="2026-05-18 02:30">2026-05-18 02:30</td><td data-value="8">8m</td><td data-value="100">100</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="4"><td data-value="24">24</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98144;margin-right:2px">黄金区间</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">7oXNE1dbpHUp6dn1JF8pRgCtzfCy4P2FuBneWjZHpump</span></td><td><b>$WhiteHouse</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="69358.09482806279">$69.4K</td><td data-value="5029508.0">$5.03M</td><td data-value="70669.86000486584" style="color:#f59e0b">$70.7K</td><td data-value="65495.57399164719" style="color:#06b6d4">$65.5K</td><td class="positive" data-value="1.8912935542057197"><b>+1.9%</b></td><td style="color:#ef4444" data-value="0.9443104536537413">0.94x</td><td class="time-col" data-value="2026-05-18 04:07">2026-05-18 04:07</td><td class="time-col" data-value="2026-05-18 04:05">2026-05-18 04:05</td><td data-value="0">0m</td><td data-value="13">13</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="9"><td data-value="25">25</td><td><span class="result-badge result-fail">失败</span></td><td>-</td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">5LS3ips7jWxfuVHzoMzKzp3cCwjH9zmrtYXmYBVGpump</span></td><td><b>$Oil</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="156506.23231416">$156.5K</td><td data-value="4876538.0">$4.88M</td><td data-value="158097.09526059753" style="color:#f59e0b">$158.1K</td><td data-value="140302.5817751226" style="color:#06b6d4">$140.3K</td><td class="positive" data-value="1.01648536477712"><b>+1.0%</b></td><td style="color:#ef4444" data-value="0.8964664199026191">0.90x</td><td class="time-col" data-value="2026-05-18 09:24">2026-05-18 09:24</td><td class="time-col" data-value="2026-05-18 10:05">2026-05-18 10:05</td><td data-value="41">41m</td><td data-value="14">14</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="1"><td data-value="26">26</td><td><span class="result-badge result-fail">失败</span></td><td>-</td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">4J3PB871SaH2n1jDtxoWtNZUPdDhWvGavN1CKrvEpump</span></td><td><b>$Mira</b></td><td><span class="badge" style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">new_revival</span></td><td data-value="217599.772879764">$217.6K</td><td data-value="487421.0">$487.4K</td><td data-value="219658.03130502996" style="color:#f59e0b">$219.7K</td><td data-value="58169.225635127375" style="color:#06b6d4">$58.2K</td><td class="positive" data-value="0.9458918077103196"><b>+0.9%</b></td><td style="color:#ef4444" data-value="0.26732208800267965">0.27x</td><td class="time-col" data-value="2026-05-18 01:19">2026-05-18 01:19</td><td class="time-col" data-value="2026-05-18 01:15">2026-05-18 01:15</td><td data-value="0">0m</td><td data-value="112">112</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="0"><td data-value="27">27</td><td><span class="result-badge result-fail">失败</span></td><td><span class="badge" style="background:#8b5cf622;color:#8b5cf6;border:1px solid #8b5cf644;margin-right:2px">大市值</span></td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">skDGuSDyKYGbYTWnMCNcPeDd4vHUxAsMNVVxxUfpump</span></td><td><b>$ADA</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="503125.4875959">$503.1K</td><td data-value="3046424.0">$3.05M</td><td data-value="505641.6711880093" style="color:#f59e0b">$505.6K</td><td data-value="331329.68292011187" style="color:#06b6d4">$331.3K</td><td class="positive" data-value="0.5001105398441341"><b>+0.5%</b></td><td style="color:#ef4444" data-value="0.6585428309412721">0.66x</td><td class="time-col" data-value="2026-05-18 00:52">2026-05-18 00:52</td><td class="time-col" data-value="2026-05-18 01:00">2026-05-18 01:00</td><td data-value="7">7m</td><td data-value="98">98</td></tr>
+<tr data-result="失败" data-nar="应用" data-hour="8"><td data-value="28">28</td><td><span class="result-badge result-fail">失败</span></td><td>-</td><td><span class="badge" style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644">应用</span></td><td><span class="ca-link" onclick="copyCA(this)" title="点击复制CA">DTkrpySU8LEQb6S9DUdxAdmv9hyqvgnSQ1YrDHoZpump</span></td><td><b>$ISO</b></td><td><span class="badge" style="background:#ef444422;color:#ef4444;border:1px solid #ef444444">abnormal</span></td><td data-value="228633.24221087">$228.6K</td><td data-value="416582.0">$416.6K</td><td data-value="228633.24221087" style="color:#f59e0b">$228.6K</td><td data-value="211010.48479630426" style="color:#06b6d4">$211.0K</td><td class="negative" data-value="0.0"><b>0.0%</b></td><td style="color:#ef4444" data-value="0.92292128106939">0.92x</td><td class="time-col" data-value="2026-05-18 08:14">2026-05-18 08:14</td><td class="time-col" data-value="2026-05-18 08:10">2026-05-18 08:10</td><td data-value="0">0m</td><td data-value="10">10</td></tr>
+</tbody></table></div>
+<script>
+var sortCol=-1,sortDir=1;
+function fs(t){
+  document.querySelectorAll(".fbtn").forEach(function(b){b.classList.remove("active")});
+  event.target.classList.add("active");
+  document.querySelectorAll("#t tbody tr").forEach(function(r){
+    var show=false;
+    if(t==="all")show=true;
+    else if(t==="成功")show=r.dataset.result==="成功";
+    else if(t==="失败")show=r.dataset.result==="失败";
+    else show=r.dataset.nar===t;
+    r.style.display=show?"":"none";
+  });
+}
+function ft(){
+  var q=document.getElementById("s").value.toLowerCase();
+  document.querySelectorAll("#t tbody tr").forEach(function(r){
+    r.style.display=r.textContent.toLowerCase().includes(q)?"":"none";
+  });
+}
+var timeFilter="all",resultFilter="all";
+function ft2(range){
+  timeFilter=range;
+  document.querySelectorAll(".filter .fbtn").forEach(function(b){b.classList.remove("active")});
+  event.target.classList.add("active");
+  applyFilters();
+}
+function applyFilters(){
+  document.querySelectorAll("#t tbody tr").forEach(function(r){
+    var show=true;
+    var h=parseInt(r.dataset.hour)||0;
+    if(timeFilter!=="all"){
+      var parts=timeFilter.split("-");
+      var lo=parseInt(parts[0]),hi=parseInt(parts[1]);
+      if(h<lo||h>=hi)show=false;
+    }
+    r.style.display=show?"":"none";
+  });
+}
+function fs(t){
+  document.querySelectorAll(".filter .fbtn").forEach(function(b){b.classList.remove("active")});
+  event.target.classList.add("active");
+  if(t==="all"||t==="成功"||t==="失败"){
+    resultFilter=t;
+    document.querySelectorAll("#t tbody tr").forEach(function(r){
+      var show2=true;
+      if(t!=="all"){
+        if(t==="成功")show2=r.dataset.result==="成功";
+        else if(t==="失败")show2=r.dataset.result==="失败";
+      }
+      var h2=parseInt(r.dataset.hour)||0;
+      if(timeFilter!=="all"){
+        var p2=timeFilter.split("-");
+        if(h2<parseInt(p2[0])||h2>=parseInt(p2[1]))show2=false;
+      }
+      r.style.display=show2?"":"none";
+    });
+  }else{
+    document.querySelectorAll("#t tbody tr").forEach(function(r){
+      var show3=r.dataset.nar===t;
+      if(timeFilter!=="all"){
+        var p3=timeFilter.split("-");
+        if((parseInt(r.dataset.hour)||0)<parseInt(p3[0])||(parseInt(r.dataset.hour)||0)>=parseInt(p3[1]))show3=false;
+      }
+      r.style.display=show3?"":"none";
+    });
+  }
+}
+function sortTable(col,type){
+  var ths=document.querySelectorAll("#t thead th");
+  if(sortCol===col){sortDir*=-1}else{sortCol=col;sortDir=-1}
+  ths.forEach(function(th,i){
+    th.classList.remove("asc","desc");
+    if(i===col)th.classList.add(sortDir===1?"asc":"desc");
+    var arrow=th.querySelector(".sort-arrow");
+    if(arrow)arrow.textContent=sortDir===1?"▲":"▼";
+  });
+  var tbody=document.querySelector("#t tbody");
+  var rows=Array.from(tbody.querySelectorAll("tr"));
+  rows.sort(function(a,b){
+    var va=a.cells[col].getAttribute("data-value")||"";
+    var vb=b.cells[col].getAttribute("data-value")||"";
+    if(type==="num"){var na=parseFloat(va)||0,nb=parseFloat(vb)||0;return (na-nb)*sortDir;}
+    return va.localeCompare(vb)*sortDir;
+  });
+  rows.forEach(function(r){tbody.appendChild(r)});
+}
+function copyCA(el){
+  var t=el.textContent.trim();
+  navigator.clipboard.writeText(t).then(function(){
+    el.classList.add("ca-copied");el.title="已复制!";
+    setTimeout(function(){el.classList.remove("ca-copied");el.title="点击复制CA"},1200);
+  }).catch(function(){
+    var ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);
+    el.classList.add("ca-copied");setTimeout(function(){el.classList.remove("ca-copied")},1200);
+  });
+}
+</script>
+<div class="footer">Binance K-line API | Binance Dynamic API for current mcap | Click headers to sort | Entry=信号时刻K线收盘价</div>
+</body></html>

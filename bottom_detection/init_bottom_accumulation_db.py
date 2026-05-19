@@ -96,8 +96,8 @@ def init_bottom_accumulation_tables(conn):
             ON bottom_top100_push_records(snapshot_id);
         CREATE INDEX idx_bottom_top100_push_records_pushed_at
             ON bottom_top100_push_records(pushed_at DESC);
-        CREATE UNIQUE INDEX uq_bottom_top100_push_records_ca
-            ON bottom_top100_push_records(chain, source, address);
+        CREATE UNIQUE INDEX uq_bottom_top100_push_records_signal
+            ON bottom_top100_push_records(chain, source, address, signal_type);
 
         COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动首次推送记录表。每个CA在同一chain/source下只保留首次推送，后续检索明细由bottom_top100_snapshots记录';
         COMMENT ON COLUMN bottom_top100_push_records.id IS '推送记录自增ID';

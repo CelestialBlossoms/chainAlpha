@@ -60,8 +60,9 @@ def ensure_top100_push_records_table() -> None:
                 ON bottom_top100_push_records(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_bottom_top100_push_records_pushed_at
                 ON bottom_top100_push_records(pushed_at DESC);
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_bottom_top100_push_records_ca
-                ON bottom_top100_push_records(chain, source, address);
+            DROP INDEX IF EXISTS uq_bottom_top100_push_records_ca;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_bottom_top100_push_records_signal
+                ON bottom_top100_push_records(chain, source, address, signal_type);
 
             COMMENT ON TABLE bottom_top100_push_records IS 'Top100异动首次推送记录表。每个CA在同一chain/source下只保留首次推送，后续检索明细由bottom_top100_snapshots记录';
             COMMENT ON COLUMN bottom_top100_push_records.id IS '推送记录自增ID';
@@ -149,7 +150,7 @@ def record_top100_push(
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s
             )
-            ON CONFLICT (chain, source, address) DO NOTHING
+            ON CONFLICT (chain, source, address, signal_type) DO NOTHING
             RETURNING id
             """,
             (
@@ -204,6 +205,38 @@ def top100_push_record_exists(
             LIMIT 1
             """,
             (chain, source, address),
+        )
+        return cur.fetchone() is not None
+
+    ensure_top100_push_records_table()
+    return bool(db_op(_op))
+
+
+def top100_signal_push_record_exists(
+    address: str,
+    signal_type: str,
+    *,
+    source: str = "bottom_abnormal",
+    chain: str = "sol",
+) -> bool:
+    address = str(address or "").strip()
+    signal_type = str(signal_type or "").strip()
+    if not address or not signal_type or signal_type == "watch":
+        return False
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM bottom_top100_push_records
+            WHERE chain = %s
+              AND source = %s
+              AND address = %s
+              AND signal_type = %s
+            LIMIT 1
+            """,
+            (chain, source, address, signal_type),
         )
         return cur.fetchone() is not None
 

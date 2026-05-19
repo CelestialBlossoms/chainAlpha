@@ -413,13 +413,7 @@ def fetch_onchain_trading_guides(
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse(
-        request,
-        "index.html",
-        {
-            "stream_key": TG_ALERT_STREAM_KEY,
-        },
-    )
+    return templates.TemplateResponse(request, "onchain_guides.html", {})
 
 
 @app.get("/api/health")
