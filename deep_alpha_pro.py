@@ -18,6 +18,13 @@ from tg_alert_stream import publish_tg_alert
 CHECK_INTERVAL = 0
 TREND_INTERVALS = ["1m"]
 TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "").split(",") if item.strip()]
+TRENCH_SCAN_ENABLED = os.getenv("DEEP_ALPHA_TRENCH_SCAN_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+TRENCH_LAUNCHPAD_PLATFORM = os.getenv("DEEP_ALPHA_TRENCH_LAUNCHPAD_PLATFORM", "Pump.fun")
+TRENCH_MAX_CREATED_MIN = int(os.getenv("DEEP_ALPHA_TRENCH_MAX_CREATED_MIN", "180"))
+TRENCH_MIN_FEE_SOL = float(os.getenv("DEEP_ALPHA_TRENCH_MIN_FEE_SOL", "0.2"))
+TRENCH_MAX_MCAP_USD = float(os.getenv("DEEP_ALPHA_TRENCH_MAX_MCAP_USD", "20000"))
+TRENCH_MIN_UP_PCT = float(os.getenv("DEEP_ALPHA_TRENCH_MIN_UP_PCT", "0.15"))
+TRENCH_LIMIT = int(os.getenv("DEEP_ALPHA_TRENCH_LIMIT", "100"))
 LOW_MCAP_STRICT_USD = 10_000
 MID_MCAP_STRICT_USD = 20_000
 LOW_MCAP_MIN_UP_PCT = 0.30
@@ -68,6 +75,7 @@ REBOUND_LOOKBACK_SCANS = int(os.getenv("REBOUND_LOOKBACK_SCANS", "12"))
 MIN_REBOUND_DRAWDOWN_PCT = float(os.getenv("MIN_REBOUND_DRAWDOWN_PCT", "0.25"))
 MIN_REBOUND_FROM_LOW_PCT = float(os.getenv("MIN_REBOUND_FROM_LOW_PCT", "0.20"))
 SCAN_ROUND = 0
+TRENCH_SCAN_ROUND = 0
 REDIS_KEY_PREFIX = os.getenv("PRICE_OBSERVATION_REDIS_PREFIX", "deep_alpha:price_observation")
 DEFAULT_BUSINESS_REDIS_TTL_SEC = 4 * 60 * 60
 REDIS_STATE_TTL_SEC = int(os.getenv("PRICE_OBSERVATION_REDIS_TTL_SEC", str(DEFAULT_BUSINESS_REDIS_TTL_SEC)))
@@ -602,6 +610,11 @@ def next_scan_round():
     SCAN_ROUND += 1
     return SCAN_ROUND
 
+def next_trench_scan_round():
+    global TRENCH_SCAN_ROUND
+    TRENCH_SCAN_ROUND += 1
+    return TRENCH_SCAN_ROUND
+
 def load_price_observation_state(address):
     client = get_redis_client()
     if client is None:
@@ -798,6 +811,16 @@ def mcap_price_observation_pass(mcap, price_observation):
             f"当前涨跌{change_pct:.1%}，回撤{drop_pct:.1%}"
         ),
     )
+
+def trench_price_observation_pass(price_observation):
+    first_price = safe_float(price_observation.get("first_price"))
+    current_price = safe_float(price_observation.get("current_price"))
+    if first_price <= 0 or current_price <= 0:
+        return False, "战壕价格观察缺少有效价格"
+    total_up_pct = (current_price - first_price) / first_price
+    if total_up_pct < TRENCH_MIN_UP_PCT:
+        return False, f"战壕观察涨幅不足，需要>={TRENCH_MIN_UP_PCT:.0%}，当前{total_up_pct:.1%}"
+    return True, f"战壕观察涨幅{total_up_pct:.1%}"
 
 def nested_value(source, path):
     current = source
@@ -2378,6 +2401,139 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
 # ---------------------------------------------------------------------------
 # 扫描主循环
 # ---------------------------------------------------------------------------
+def iter_trench_tokens(data):
+    for bucket in ("new_creation", "pump", "completed"):
+        for token in data.get(bucket, []) or []:
+            if isinstance(token, dict):
+                token["_trench_bucket"] = bucket
+                yield token
+
+def is_pump_trench_token(token):
+    values = [
+        token.get("launchpad_platform"),
+        token.get("launchpad"),
+        token.get("exchange"),
+    ]
+    return any("pump" in str(value or "").lower() for value in values)
+
+def scan_trenches(chain):
+    if not TRENCH_SCAN_ENABLED:
+        return
+    scan_round = next_trench_scan_round()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} trenches 战壕信号...")
+    output = run_command(
+        f"gmgn-cli market trenches --chain {chain} "
+        f"--launchpad-platform {shell_quote(TRENCH_LAUNCHPAD_PLATFORM)} "
+        f"--max-created {TRENCH_MAX_CREATED_MIN}m --limit {TRENCH_LIMIT} --raw"
+    )
+    if not output:
+        print(f"  No trenches output for {chain}")
+        return
+    try:
+        data = json.loads(output)
+        tokens = list(iter_trench_tokens(data))
+        print(f"  战壕发现 {len(tokens)} 个代币")
+        for t in tokens:
+            addr = t.get("address")
+            if not addr:
+                continue
+            if not is_pump_trench_token(t):
+                continue
+            mcap = calc_mcap(t)
+            if mcap <= 0 or mcap > TRENCH_MAX_MCAP_USD:
+                continue
+            fee_sol = extract_fee_sol(t)
+            if fee_sol < TRENCH_MIN_FEE_SOL:
+                print(f"  [战壕跳过] 手续费过低 {token_observation_label(addr, t.get('symbol'))}: {fee_sol:.3f} SOL<{TRENCH_MIN_FEE_SOL:.3f} SOL")
+                continue
+            age_seconds = token_age_seconds(first_value(t, keys=("created_timestamp", "creation_timestamp", "created_at")))
+            if age_seconds is None or age_seconds > TRENCH_MAX_CREATED_MIN * 60:
+                continue
+
+            trend_price = first_float(t, keys=("price",))
+            if trend_price <= 0:
+                supply = first_float(t, keys=("circulating_supply", "total_supply"))
+                trend_price = mcap / supply if mcap > 0 and supply > 0 else 0
+            holder_count = first_float(t, keys=("holder_count", "holders_count", "holder_num", "holders", "holder"))
+            observation_key = f"trenches:{addr}"
+            price_observation = update_price_observation(
+                observation_key,
+                trend_price,
+                scan_round,
+                symbol=t.get("symbol") or t.get("name"),
+                holder_count=holder_count,
+            )
+            if not price_observation["ready"]:
+                print(
+                    f"  [战壕观察] {token_observation_label(addr, t.get('symbol'))} "
+                    f"{price_observation['count']}/{MIN_PRICE_OBSERVATION_SCANS} "
+                    f"price={trend_price:.12f} mcap=${mcap:,.0f}"
+                )
+                continue
+            if not price_observation["allowed"]:
+                print(
+                    f"  [战壕跳过] 价格观察失败 {token_observation_label(addr, t.get('symbol'))}: "
+                    f"跌幅={price_observation['drop_pct']:.1%}>{MAX_PRICE_DROP_PCT:.0%}"
+                )
+                continue
+            trench_ok, trench_reason = trench_price_observation_pass(price_observation)
+            if not trench_ok:
+                print(f"  [战壕跳过] {token_observation_label(addr, t.get('symbol'))}: {trench_reason}")
+                continue
+
+            existing_candidate = get_candidate_snapshot(addr)
+            s = perform_deep_analysis(chain, addr, t)
+            if not s:
+                continue
+            s["address"] = addr
+            s["chain"] = chain
+            s["trend_interval"] = "trenches"
+            s["source"] = "trenches"
+            s["trench_bucket"] = t.get("_trench_bucket", "")
+            s["trench_reason"] = trench_reason
+            s["price_observation_count"] = price_observation["count"]
+            s["price_observation_change_pct"] = price_observation["change_pct"] * 100
+            s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
+            s["price_observation_reason"] = price_observation["reason"]
+            s["price_observation_change_band_text"] = price_observation.get("change_band_text", "N/A")
+            s["repeat_alert"] = False
+            s["previous_holder_count"] = 0
+            s["holder_count_delta"] = int(price_observation.get("holder_count_delta") or 0)
+            s["db_holder_count_delta"] = 0
+            s["repeat_alert_type"] = "战壕首推"
+            s["rebound_from_low_pct"] = 0
+            s["drawdown_from_alert_pct"] = 0
+            s["local_low_price"] = 0
+            s["mcap_alert_history"] = [safe_float(s["mcap"])]
+            s["mcap_alert_history_text"] = format_mcap_history(s["mcap_alert_history"])
+            s["price_alert_history"] = [safe_float(s.get("price"))]
+            s["alert_sequence_no"] = 1
+            if s.get("is_dumping"):
+                continue
+
+            msg = (
+                f"🟡 *战壕 ${s['symbol']}*\n"
+                f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
+                f"{trench_reason} | 创建: {s['created_time']} | 池: {s['pool_label']}\n"
+                f"结构: {s.get('market_structure')} | 状态: {s['verdict']}\n"
+                f"前排净流: {format_usd_short(s.get('front_holder_netflow'))} | Top100净流: {format_usd_short(s.get('holder_flow_netflow'))}\n"
+                f"叙事: {s.get('narrative') or s.get('narrative_desc') or 'N/A'}\n\n"
+                f"CA: `{addr}`\n"
+                f"https://gmgn.ai/{chain}/token/{addr}"
+            )
+            tg_message_id = upsert_tg_alert(
+                addr,
+                msg,
+                allow_repeat=False,
+                existing_candidate=existing_candidate,
+                stats=s,
+            )
+            save_alpha_candidate(chain, "trenches", addr, s, tg_message_id=tg_message_id)
+            save_price_observation_archive(addr, [observation_archive_entry(s, price_observation)])
+            reset_price_observation(observation_key)
+    except Exception as e:
+        print(f"Trenches Loop Error: {e}")
+
 def scan_pro():
     for chain in CHAINS:
         for interval in TREND_INTERVALS:
@@ -2657,6 +2813,7 @@ def scan_pro():
             except Exception as e:
                 print(f"Loop Error: {e}")
             time.sleep(2)
+        scan_trenches(chain)
 
 if __name__ == "__main__":
     print("深度关联分析机器人已启动...")
