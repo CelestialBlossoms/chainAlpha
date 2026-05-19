@@ -3384,12 +3384,12 @@ def scan_once(
             if launch_ts <= 0:
                 skipped += 1
                 token["_trench"] = True
-                print(f"{token_label(token)} skip open_ts missing (在战壕)")
+                print(f"{token_label(token)} skip open_ts missing (发射时间小于4H)")
                 continue
             open_age_sec = now_ts() - launch_ts
             if open_age_sec < 4 * 3600:
                 skipped += 1
-                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (在战壕)")
+                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
                 continue
             gmgn_ath_mcap = current_token_ath_mcap(info)
             if created_ts > 0 or launch_ts > 0 or gmgn_ath_mcap > 0:
