@@ -1838,13 +1838,24 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         pool_label = f"{pool_label}({pool_count}池)"
     narrative_type = short_text(extra.get("narrative_type"), 80) or "未分类"
     narrative_category = short_text(extra.get("narrative_category"), 20) or "其他"
-    narrative_desc = short_text(extra.get("narrative_desc") or extra.get("narrative"), 220) or "暂无"
+    narrative_desc = short_text(extra.get("narrative_desc") or extra.get("narrative"), 120) or "暂无"
+    signal_label = extra.get("signal_label") or f"{signal_type_text(signal_type)} ({signal_type})"
+    risk_tags = extra.get("risk_tags") if isinstance(extra.get("risk_tags"), list) else []
+    risk_text = " / ".join(str(item) for item in risk_tags) if risk_tags else "无明显风险标签"
+    avoid_reasons = extra.get("avoid_reasons") if isinstance(extra.get("avoid_reasons"), list) else []
+    avoid_text = "；".join(str(item) for item in avoid_reasons) if avoid_reasons else "无硬过滤项"
+    ath_ratio = to_float(extra.get("ath_mcap_ratio"))
+    strategy_profile = str(extra.get("strategy_profile") or "回调观察")
+    strategy_action = str(extra.get("strategy_action") or "等待-5%~-15%回调，不回调不追")
 
     return (
         f"底部异动 | ${symbol}\n"
-        f"类型: {signal_type_text(signal_type)} | 档位: {extra.get('abnormal_rule') or '-'}\n"
+        f"类型: {signal_label} | 档位: {extra.get('abnormal_rule') or '-'}\n"
+        f"策略: {strategy_profile} | {strategy_action}\n"
+        f"观察: 回调{extra.get('entry_watch_zone') or '-5%~-15%'} | 风险线{extra.get('hard_risk_line') or '-35%'} | 持有观察{extra.get('hold_watch_window') or '至少1h'}\n"
+        f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
-        f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)}\n"
+        f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)} | ATH/现值: {ath_ratio:.1f}x\n"
         f"首次异动时间: {format_ts_text(first_ts)}\n"
         f"相对首次异动涨幅: {format_pct_text(extra.get('first_signal_change_pct'))} | 涨幅: {format_pct_text(extra.get('price_change_pct') or extra.get('change_pct'))}\n"
         f"历史涨幅: {format_pct_text(history_gain_pct)} | 币龄: {format_age_text(extra.get('age_sec'))}\n"
@@ -1866,6 +1877,7 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
     extra = extra or {}
     if not extra.get("event_ts"):
         extra = {**extra, "event_ts": now_ts()}
+    extra = enrich_signal_strategy_extra(extra)
     address = str(extra.get("address") or "").strip() or extract_address_from_text(text)
     try:
         tg_text = format_bottom_tg_message(text, extra)
@@ -1926,6 +1938,70 @@ def compute_risk_tags(extra: dict[str, Any]) -> list[str]:
     return tags
 
 
+def compute_strategy_profile(extra: dict[str, Any], risk_tags: list[str] | None = None) -> dict[str, Any]:
+    """Build strategy-facing fields from the data-driven guide."""
+    risk_tags = risk_tags if risk_tags is not None else compute_risk_tags(extra or {})
+    signal_type = str((extra or {}).get("signal_type") or "")
+    mcap = to_float((extra or {}).get("current_mcap", 0))
+    ath = to_float((extra or {}).get("ath_mcap", 0))
+    ath_ratio = ath / max(1, mcap) if ath and mcap else 0.0
+
+    if signal_type == "new_revival" and mcap < 120_000:
+        profile = "优先观察"
+    elif signal_type == "quiet_breakout":
+        profile = "低优先级"
+    elif "瞬爆" in risk_tags:
+        profile = "快峰风险"
+    elif mcap > 500_000:
+        profile = "高市值谨慎"
+    else:
+        profile = "回调观察"
+
+    avoid_reasons: list[str] = []
+    if "瞬爆" in risk_tags:
+        avoid_reasons.append("5m内冲顶不追")
+    if "大市值" in risk_tags:
+        avoid_reasons.append(">$500K拉盘成本高")
+    if "天花板" in risk_tags:
+        avoid_reasons.append("ATH/现值<1.5x")
+    if "无量" in risk_tags:
+        avoid_reasons.append("量能<$10K")
+    if signal_type == "quiet_breakout":
+        avoid_reasons.append("quiet_breakout历史样本弱")
+
+    if profile in {"低优先级", "快峰风险", "高市值谨慎"}:
+        action_hint = "不追第一波，等待回踩和二次放量确认"
+    elif profile == "优先观察":
+        action_hint = "关注-5%~-15%回调区，确认止跌后观察"
+    else:
+        action_hint = "等待-5%~-15%回调，不回调不追"
+
+    return {
+        "signal_label": f"{signal_type_text(signal_type)} ({signal_type})" if signal_type else "未知",
+        "strategy_profile": profile,
+        "strategy_action": action_hint,
+        "entry_watch_zone": "-5%~-15%",
+        "hard_risk_line": "-35%",
+        "hold_watch_window": "至少1h，1-4h较优",
+        "fast_peak_rule": "5m内到峰按瞬爆处理",
+        "ath_mcap_ratio": ath_ratio,
+        "avoid_reasons": avoid_reasons,
+    }
+
+
+def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]:
+    """Attach risk tags and strategy guide fields for TG/plugin consumers."""
+    extra = dict(extra or {})
+    risk_tags = extra.get("risk_tags")
+    if not isinstance(risk_tags, list):
+        risk_tags = compute_risk_tags(extra)
+        if risk_tags:
+            extra["risk_tags"] = risk_tags
+    strategy = compute_strategy_profile(extra, risk_tags)
+    extra.update(strategy)
+    return extra
+
+
 def publish_frontend_signal_update(
     text: str,
     extra: dict[str, Any],
@@ -1941,9 +2017,8 @@ def publish_frontend_signal_update(
     if top100_signal_push_record_exists(address, signal_type, source="bottom_abnormal", chain=CHAIN):
         print(f"{address[:8]} skip frontend push: {signal_type} push already recorded")
         return
-    risk_tags = compute_risk_tags(extra or {})
-    if risk_tags:
-        extra = {**(extra or {}), "risk_tags": risk_tags}
+    extra = enrich_signal_strategy_extra(extra)
+    risk_tags = extra.get("risk_tags") or []
     try:
         inserted = record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
     except Exception as exc:
@@ -2918,8 +2993,10 @@ def check_quiet_runup(
 def quiet_breakout_signal_text(token: dict[str, Any], signal: dict[str, Any]) -> str:
     address = token_address(token)
     trend = token.get("_trend_interval") or "N/A"
+    signal_type = str(signal.get("signal_type") or "quiet_breakout")
+    title = "quiet runup" if signal_type == "quiet_runup" else "quiet breakout"
     return (
-        f"{str(signal.get('source_type') or 'watchlist').title()} quiet breakout | ${token.get('symbol') or 'UNKNOWN'}\n"
+        f"{str(signal.get('source_type') or 'watchlist').title()} {title} | ${token.get('symbol') or 'UNKNOWN'}\n"
         f"来源: {trend} 扫描\n"
         f"CA: {address}\n"
         f"MCap: ${signal.get('current_mcap', 0):,.0f}\n"

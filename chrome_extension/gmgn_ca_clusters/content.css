@@ -426,6 +426,19 @@
   min-width: 92px;
 }
 
+.ca-abnormal-metrics .ca-strategy-metric {
+  grid-column: span 3;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: #111f32;
+}
+
+.ca-abnormal-metrics .ca-strategy-metric b {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.25;
+}
+
 .ca-abnormal-metrics b.ca-history-changes {
   display: flex;
   flex-wrap: wrap;

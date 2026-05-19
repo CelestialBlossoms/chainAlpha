@@ -47,6 +47,10 @@
     poolGood: "\u826f\u597d",
     poolGreat: "\u975e\u5e38\u597d",
     priceChange: "\u6da8\u5e45",
+    signalType: "\u4fe1\u53f7",
+    strategyProfile: "\u7b56\u7565",
+    strategyWatch: "\u89c2\u5bdf",
+    avoidReason: "\u98ce\u9669\u539f\u56e0",
     narrativeCategory: "\u53d9\u4e8b\u7c7b\u578b",
     abnormalHistory: "\u5386\u53f2\u6da8\u5e45",
     topHoldChange: "Top\u6301\u4ed3\u53d8\u5316",
@@ -452,16 +456,22 @@
             const riskTags = Array.isArray(item.risk_tags) ? item.risk_tags : [];
             const narrativeCategory = item.narrative_category || "";
             const TAG_STYLES = {
-              "瞬爆": "background:#92400e;color:#fbbf24;border:1px solid #b45309",
-              "天花板": "background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b",
-              "大市值": "background:#4c1d95;color:#c4b5fd;border:1px solid #6d28d9",
-              "无量": "background:#334155;color:#94a3b8;border:1px solid #475569",
-              "黄金区间": "background:#064e3b;color:#34d399;border:1px solid #065f46",
+              "\u77ac\u7206": "background:#92400e;color:#fbbf24;border:1px solid #b45309",
+              "\u5929\u82b1\u677f": "background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b",
+              "\u5927\u5e02\u503c": "background:#4c1d95;color:#c4b5fd;border:1px solid #6d28d9",
+              "\u65e0\u91cf": "background:#334155;color:#94a3b8;border:1px solid #475569",
+              "\u9ec4\u91d1\u533a\u95f4": "background:#064e3b;color:#34d399;border:1px solid #065f46",
             };
             const riskTagsHtml = riskTags.map(t => {
               const style = TAG_STYLES[t] || "background:#1e293b;color:#94a3b8";
               return `<span class="ca-risk-tag" style="${style}">${t}</span>`;
             }).join("");
+            const strategyProfile = item.strategy_profile || "";
+            const strategyAction = item.strategy_action || "";
+            const strategyWatch = [item.entry_watch_zone ? `\u56de\u8c03${item.entry_watch_zone}` : "", item.hard_risk_line ? `\u98ce\u9669\u7ebf${item.hard_risk_line}` : "", item.hold_watch_window || ""]
+              .filter(Boolean)
+              .join(" / ");
+            const avoidText = Array.isArray(item.avoid_reasons) && item.avoid_reasons.length ? item.avoid_reasons.join("\uff1b") : "";
             return `<div class="${rowClass}">
               <div class="ca-abnormal-token">
                 <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
@@ -478,6 +488,10 @@
               </div>
               <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative)}</div>
               <div class="ca-abnormal-metrics">
+                <span><em>${L.signalType}</em><b>${escapeHtml(item.signal_label || item.signal_type || "-")}</b></span>
+                ${strategyProfile ? `<span class="ca-strategy-metric"><em>${L.strategyProfile}</em><b>${escapeHtml(strategyProfile)} \u00b7 ${escapeHtml(strategyAction)}</b></span>` : ""}
+                ${strategyWatch ? `<span class="ca-strategy-metric"><em>${L.strategyWatch}</em><b>${escapeHtml(strategyWatch)}</b></span>` : ""}
+                ${avoidText ? `<span class="ca-strategy-metric"><em>${L.avoidReason}</em><b class="ca-negative">${escapeHtml(avoidText)}</b></span>` : ""}
                 ${narrativeCategory ? `<span><em>${L.narrativeCategory}</em><b>${escapeHtml(narrativeCategory)}</b></span>` : ""}
                 <span><em>${L.currentMcap}</em><b>${fmtUsd(item.current_mcap)}</b></span>
                 ${isLowWatchlist ? `<span><em>${L.watchlistMcap}</em><b class="ca-priority-text">${fmtUsd(item.watchlist_current_mcap)}</b></span>` : ""}
@@ -676,6 +690,14 @@
       source: item.source || "",
       status: item.status || "",
       signal_type: signalType,
+      signal_label: extra.signal_label || `${signalType}`,
+      strategy_profile: extra.strategy_profile || "",
+      strategy_action: extra.strategy_action || "",
+      entry_watch_zone: extra.entry_watch_zone || "",
+      hard_risk_line: extra.hard_risk_line || "",
+      hold_watch_window: extra.hold_watch_window || "",
+      fast_peak_rule: extra.fast_peak_rule || "",
+      avoid_reasons: Array.isArray(extra.avoid_reasons) ? extra.avoid_reasons : [],
       abnormal_rule: extra.abnormal_rule || "",
       narrative: extra.narrative || extra.narrative_desc || item.text || "",
       narrative_category: extra.narrative_category || "",
