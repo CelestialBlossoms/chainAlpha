@@ -2541,6 +2541,13 @@ def scan_trenches(chain):
                 continue
 
             existing_candidate = get_candidate_snapshot(addr)
+            if existing_candidate:
+                print(
+                    f"  [鎴樺璺宠繃] 宸叉帹閫佽繃 {token_observation_label(addr, t.get('symbol'))} "
+                    f"alert_count={existing_candidate.get('alert_count', 0)}"
+                )
+                reset_price_observation(observation_key)
+                continue
             s = perform_deep_analysis(chain, addr, t)
             if not s:
                 continue
@@ -2587,6 +2594,9 @@ def scan_trenches(chain):
                 existing_candidate=existing_candidate,
                 stats=s,
             )
+            if not tg_message_id:
+                print(f"  [鎴樺璺宠繃] Telegram鏈繑鍥炴秷鎭痠d锛屼笉璁板綍宸叉帹閫? {addr}")
+                continue
             save_alpha_candidate(chain, "trenches", addr, s, tg_message_id=tg_message_id)
             save_price_observation_archive(addr, [observation_archive_entry(s, price_observation)])
             reset_price_observation(observation_key)
@@ -2863,6 +2873,9 @@ def scan_pro():
                             existing_candidate=existing_candidate,
                             stats=s,
                         )
+                        if not tg_message_id:
+                            print(f"  [璺宠繃] Telegram鏈繑鍥炴秷鎭痠d锛屼笉璁板綍宸叉帹閫? {addr}")
+                            continue
                         if should_send_new_token_ca_alert(s, interval):
                             send_new_token_ca_alert(s)
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
