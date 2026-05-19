@@ -35,3 +35,4 @@ sol_token_scanner_state.json
 tool-outputs/
 *.db
 data/
+logs/
