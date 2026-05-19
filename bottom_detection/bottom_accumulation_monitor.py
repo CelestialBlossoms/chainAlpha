@@ -3418,6 +3418,11 @@ def scan_once(
                     pool_liquidity = previous_pool_liquidity
                     pool_mcap_ratio = previous_pool_ratio
                 print(f"{address[:8]} pool check skipped: {pool_unreliable_reason}")
+            # Pool/Mcap ratio filter: skip tokens with liquidity < 7% of mcap
+            if pool_reliable and 0 < pool_mcap_ratio < 0.07:
+                skipped += 1
+                print(f"{token_label(token)} skip pool/mcap={pool_mcap_ratio:.1%} < 7% (流动性不足)")
+                continue
             if (
                 is_watchlist
                 and pool_reliable
