@@ -2580,6 +2580,11 @@ def build_bottom_signal_extra(
         "binance_narrative": compact_narrative(narrative),
         "watchlist_narrative_desc": watchlist_narrative_desc,
         "watchlist_narrative_type": watchlist_narrative_type,
+        # 1m K-line volume data for micro-structure DCB detection
+        "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
+        "vol_1m_early": to_float(summary.get("_1m_vol_early", 0)),
+        "vol_1m_late": to_float(summary.get("_1m_vol_late", 0)),
+        "vol_1m_candles": int(summary.get("_1m_candles", 0) or 0),
     }
 
 
@@ -3036,7 +3041,18 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         return False
     kline_resolution = token_kline_resolution(token)
     candles = fetch_kline(address, kline_resolution, token)
+    # Also fetch 1m K-line for micro-structure volume analysis (DCB vs V-reversal)
+    candles_1m = fetch_kline(address, "1m", token) if kline_resolution != "1m" else candles
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
+    # Add 1m volume ratio to summary for quick verdict
+    if candles_1m and len(candles_1m) >= 6:
+        mid_1m = len(candles_1m) // 2
+        early_vol = sum(to_float(c.get("volume")) for c in candles_1m[:3]) / 3
+        late_vol = sum(to_float(c.get("volume")) for c in candles_1m[-3:]) / 3
+        summary["_1m_vol_ratio"] = late_vol / early_vol if early_vol > 0 else 0
+        summary["_1m_vol_early"] = early_vol
+        summary["_1m_vol_late"] = late_vol
+        summary["_1m_candles"] = len(candles_1m)
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
