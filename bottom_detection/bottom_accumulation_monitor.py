@@ -3083,8 +3083,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             pre_first = to_float(pre_bars[0].get("close"))
             pre_last = to_float(pre_bars[-1].get("close"))
             pre_return = (pre_last - pre_first) / pre_first * 100 if pre_first > 0 else 0
-        if last_body_pct < 2.0 and pre_return < 3.0:
-            print(f"{token_label(token)} skip push: weak kline body={last_body_pct:.1f}% pre_trend={pre_return:.1f}%")
+        # Separate thresholds by resolution: 1m candles have naturally smaller bodies
+        if kline_resolution == "1m":
+            body_max = 0.5
+            trend_min = 1.5
+        else:
+            body_max = 2.0
+            trend_min = 3.0
+        if last_body_pct < body_max and pre_return < trend_min:
+            print(f"{token_label(token)} skip push: weak {kline_resolution} kline body={last_body_pct:.1f}% pre_trend={pre_return:.1f}%")
             notify = False
 
     # Large mcap quiet_breakout filter: 5/7 failures are >$500K
