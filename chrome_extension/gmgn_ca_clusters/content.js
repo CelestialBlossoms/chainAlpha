@@ -835,7 +835,8 @@
     if (!item || item.source !== "bottom_abnormal") return null;
     const extra = item.extra || {};
     const signalType = String(extra.signal_type || "");
-    if (signalType === "watch") return null;
+    if (signalType === "watch" || signalType === "quiet_runup") return null;
+    if (item.status === "db_only") return null;
     const ca = String(extra.address || item.ca || "").trim();
     if (!ca) return null;
     const currentMcap = toNumber(extra.current_mcap);
