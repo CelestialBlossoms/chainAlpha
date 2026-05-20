@@ -31,6 +31,8 @@ MIN_FEE_MCAP_TINY_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_MCAP_TINY_SOL", "0.1
 MIN_FEE_MCAP_LOW_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_MCAP_LOW_SOL", "0.2"))
 MIN_FEE_MCAP_TINY_USD = 10_000
 MIN_FEE_MCAP_LOW_USD = 30_000
+MIN_FEE_HIGH_MCAP_USD = float(os.getenv("DEEP_ALPHA_MIN_FEE_HIGH_MCAP_USD", "50000"))
+MIN_FEE_HIGH_MCAP_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_HIGH_MCAP_SOL", "1.0"))
 MIGRATED_POOL_KEYWORDS = ["raydium", "meteora", "orca", "openbook", "fluxbeam"]
 VOLUME_FEE_GUARD_MIN_MCAP_USD = float(os.getenv("DEEP_ALPHA_VOLUME_FEE_GUARD_MIN_MCAP_USD", "40000"))
 VOLUME_FEE_TIERS = (
@@ -1092,8 +1094,9 @@ def extract_tax_pct(*sources, side):
 def get_min_fee_for_token(stats):
     """Stratified minimum fee based on pool, MCAP, and token age.
 
-    Priority: pool migration > MCAP tier > token age > default.
+    Priority: pool migration > high-MCAP cross-check > MCAP tier > token age > default.
     - Migrated pools (Raydium/Meteora/Orca): >= 2 SOL
+    - MCAP >= $50K but fee < 1 SOL: suspicious mismatch, require >= 1 SOL
     - MCAP < 10K: >= 0.1 SOL, MCAP 10-30K: >= 0.2 SOL
     - New tokens (< 4h) without pool migration: >= 0.2 SOL
     - Old tokens (> 24h): >= 2 SOL
@@ -1101,13 +1104,18 @@ def get_min_fee_for_token(stats):
     """
     pool_label = (stats.get("pool_label") or "").lower()
     mcap = safe_float(stats.get("mcap"))
+    fee_sol = safe_float(stats.get("fee_sol"))
     age_seconds = token_age_seconds(stats.get("created_at"))
 
-    # Pool migration overrides everything — migrated pools need real volume
+    # Pool migration overrides everything
     if any(kw in pool_label for kw in MIGRATED_POOL_KEYWORDS):
         return MIN_FEE_MIGRATED_SOL, f"已迁移至{pool_label}"
 
-    # MCAP-based tiers: tiny MCAP tokens naturally have lower fee
+    # High MCAP + low fee = suspicious mismatch (inflated MCAP or wash trading)
+    if mcap >= MIN_FEE_HIGH_MCAP_USD and fee_sol < MIN_FEE_HIGH_MCAP_SOL:
+        return MIN_FEE_HIGH_MCAP_SOL, f"高市值(${mcap:,.0f})手续费仅{fee_sol:.2f}SOL不匹配"
+
+    # MCAP-based tiers
     if 0 < mcap < MIN_FEE_MCAP_TINY_USD:
         return MIN_FEE_MCAP_TINY_SOL, f"极低市值(${mcap:,.0f}<${MIN_FEE_MCAP_TINY_USD:,.0f})"
     if mcap < MIN_FEE_MCAP_LOW_USD:
@@ -2648,13 +2656,18 @@ TRACK_DEAD_RETURN_PCT = -0.70
 
 def start_tracking(address, chain, symbol, entry_price, entry_mcap,
                    tg_chat_id, tg_message_id, pushed_at,
-                   risk_profile="normal", risk_reasons=None):
+                   circulating_supply=None, risk_profile="normal", risk_reasons=None):
+    # Derive entry_price from MCAP if the gmgn-cli price field is 0 or missing
+    if safe_float(entry_price) <= 0 and safe_float(entry_mcap) > 0:
+        circ_sup = safe_float(circulating_supply)
+        if circ_sup > 0:
+            entry_price = entry_mcap / circ_sup
     track = {
         "address": address,
         "chain": chain,
         "symbol": symbol,
-        "entry_price": entry_price,
-        "entry_mcap": entry_mcap,
+        "entry_price": safe_float(entry_price),
+        "entry_mcap": safe_float(entry_mcap),
         "tg_chat_id": str(tg_chat_id) if tg_chat_id else "",
         "tg_message_id": str(tg_message_id) if tg_message_id else "",
         "pushed_at": pushed_at,
@@ -3354,12 +3367,17 @@ def scan_pro():
                         reset_price_observation(addr)
                         # P3: start post-push 1m K-line tracking
                         if TRACK_ENABLED and not s.get("repeat_alert"):
+                            # Derive price: prefer gmgn price, fall back to trend price, then MCAP/circ_supply
+                            track_price = (safe_float(s.get("price"))
+                                           or safe_float(price_observation.get("current_price"))
+                                           or safe_float(t.get("price")))
                             start_tracking(
                                 address=addr,
                                 chain=chain,
                                 symbol=s.get("symbol") or "UNKNOWN",
-                                entry_price=safe_float(s.get("price")),
+                                entry_price=track_price,
                                 entry_mcap=safe_float(s.get("mcap")),
+                                circulating_supply=s.get("circulating_supply"),
                                 tg_chat_id=TG_CHAT_ID,
                                 tg_message_id=tg_message_id,
                                 pushed_at=int(time.time()),
