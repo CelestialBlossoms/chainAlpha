@@ -31,10 +31,18 @@
     clear: "\u6e05\u7a7a",
     caView: "CA\u5206\u6790",
     abnormalView: "\u5f02\u52a8\u68c0\u6d4b",
+    newTokenView: "\u6253\u65b0\u7b56\u7565\u5e01",
     watchView: "\u5f02\u52a8\u76d1\u63a7",
     abnormalTitle: "\u5e95\u90e8\u5f02\u52a8\u4ee3\u5e01",
     abnormalHint: "\u70b9\u51fb\u4ee3\u5e01\u590d\u5236 CA",
     abnormalEmpty: "\u6682\u65e0\u5f02\u52a8\u4ee3\u5e01\u6570\u636e",
+    newTokenTitle: "\u6253\u65b0\u7b56\u7565\u5e01",
+    newTokenHint: "Deep Alpha 1m \u6253\u65b0\u63a8\u9001",
+    newTokenEmpty: "\u6682\u65e0 1m \u6253\u65b0\u7b56\u7565\u5e01\u6570\u636e",
+    pushTime: "\u63a8\u9001\u65f6\u95f4",
+    feeSol: "\u624b\u7eed\u8d39",
+    buyScore: "\u4e70\u5206",
+    repeat: "\u590d\u63a8",
     currentMcap: "\u5f53\u524d\u5e02\u503c",
     firstAbnormalMcap: "\u9996\u6b21\u5f02\u52a8\u5e02\u503c",
     firstAbnormalTime: "\u9996\u6b21\u5f02\u52a8\u65f6\u95f4",
@@ -106,6 +114,11 @@
     abnormalTimer: 0,
     abnormalLastCount: 0,
     abnormalRequestId: 0,
+    alphaLoading: false,
+    alphaItems: [],
+    alphaError: "",
+    alphaTimer: 0,
+    alphaRequestId: 0,
     dismissedSignals: {},
     serviceMode: "local",
     serviceBaseUrl: "",
@@ -513,11 +526,72 @@
       </div>`;
   }
 
+  function renderAlphaHead() {
+    return `<div class="ca-abnormal-head">
+      <div>
+        <h3>${L.newTokenTitle}</h3>
+        <p>${L.newTokenHint}</p>
+      </div>
+      <button class="ca-cluster-button ca-alpha-refresh" title="${L.refresh}">${L.refresh}</button>
+    </div>`;
+  }
+
+  function renderAlphaContent() {
+    if (STATE.alphaLoading && !STATE.alphaItems.length) {
+      return `<div class="ca-cluster-loading">${L.analyzing} ${L.newTokenView}</div>`;
+    }
+    if (STATE.alphaError) {
+      return `<div class="ca-cluster-error">${escapeHtml(STATE.alphaError)}</div>`;
+    }
+    const items = STATE.alphaItems || [];
+    if (!items.length) {
+      return `<div class="ca-cluster-empty">${L.newTokenEmpty}</div>`;
+    }
+    return `<div class="ca-abnormal-list">
+      ${items.slice(0, 80).map((item) => {
+        const ca = String(item.ca || "");
+        const symbol = item.symbol || "UNKNOWN";
+        const narrative = item.narrative || item.verdict || item.market_structure || "";
+        const repeatBadge = item.repeat_alert ? `<span class="ca-risk-tag ca-alpha-repeat">${L.repeat} #${toNumber(item.alert_no) || 1}</span>` : "";
+        return `<div class="ca-abnormal-row ca-alpha-row">
+          <div class="ca-abnormal-token">
+            <button class="ca-watch-ca" data-ca="${escapeAttr(ca)}" title="${L.copy}">
+              <b>${escapeHtml(symbol)}</b>
+              <span>${escapeHtml(shortCa(ca))}</span>
+            </button>
+            ${repeatBadge}
+            <button class="ca-copy-button ca-copy-ca-button" data-copy="${escapeAttr(ca)}" title="${L.copyCa}">
+              ${STATE.copied === ca ? L.copied : L.copyCa}
+            </button>
+            <button class="ca-dismiss-button" data-source="alpha_new_tokens" data-ca="${escapeAttr(ca)}" data-id="${escapeAttr(item.id)}" title="${L.dismiss}">X</button>
+          </div>
+          <div class="ca-watch-note" title="${escapeAttr(narrative)}">${escapeHtml(narrative || "-")}</div>
+          <div class="ca-abnormal-metrics">
+            <span><em>${L.currentMcap}</em><b>${fmtUsd(item.mcap)}</b></span>
+            <span><em>${L.priceChange}</em><b class="${toNumber(item.price_observation_change_pct) >= 0 ? "ca-positive" : "ca-negative"}">${fmtSignedPct(item.price_observation_change_pct)}</b></span>
+            <span><em>${L.feeSol}</em><b>${toNumber(item.fee_sol).toFixed(2)} SOL</b></span>
+            <span><em>${L.buyScore}</em><b>${toNumber(item.buy_score).toFixed(0)}</b></span>
+            <span><em>${L.liquidity}</em><b>${fmtUsd(item.pool_liquidity)}</b></span>
+            <span><em>${L.poolMcapRatio}</em><b>${renderPoolMcapRatio(item.pool_mcap_ratio)}</b></span>
+            <span><em>${L.tokenAge}</em><b>${escapeHtml(item.created_time || "-")}</b></span>
+            <span><em>${L.signalType}</em><b>${escapeHtml(item.repeat_alert_type || item.verdict || "-")}</b></span>
+            <span><em>${L.pushTime}</em><b>${escapeHtml(fmtTime(item.ts))}</b></span>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+
   function renderWatchView() {
+    const isAlpha = STATE.view === "alpha";
     return `<div class="ca-watch-grid">
+      <div class="ca-bottom-tabs">
+        <button class="ca-view-button ${!isAlpha ? "is-active" : ""}" data-view="abnormal">${L.abnormalTitle}</button>
+        <button class="ca-view-button ${isAlpha ? "is-active" : ""}" data-view="alpha">${L.newTokenView}</button>
+      </div>
       <section class="ca-watch-section">
-        ${renderAbnormalHead()}
-        <div class="ca-abnormal-content">${renderAbnormalContent()}</div>
+        ${isAlpha ? renderAlphaHead() : renderAbnormalHead()}
+        <div class="ca-abnormal-content">${isAlpha ? renderAlphaContent() : renderAbnormalContent()}</div>
       </section>
     </div>`;
   }
@@ -534,8 +608,19 @@
     return true;
   }
 
+  function updateAlphaContent() {
+    const container = panel.querySelector(".ca-abnormal-content");
+    if (STATE.view !== "alpha" || !container) return false;
+    const scrollTop = container.scrollTop;
+    container.innerHTML = renderAlphaContent();
+    attachAbnormalRowHandlers();
+    attachCopyHandlers();
+    attachDismissHandlers();
+    container.scrollTop = scrollTop;
+    return true;
+  }
+
   function render() {
-    STATE.view = "abnormal";
     panel.className = `ca-cluster-panel${STATE.collapsed ? " ca-collapsed" : ""} ca-watch-mode`;
 
     panel.innerHTML = `
@@ -557,13 +642,36 @@
     });
     attachDragHandlers();
     attachResizeHandlers();
+    attachViewTabHandlers();
     attachAbnormalRowHandlers();
     attachCopyHandlers();
     attachDismissHandlers();
+    attachAlphaRefreshHandler();
     startAbnormalAutoRefresh();
-    if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
+    startAlphaAutoRefresh();
+    if (STATE.view === "alpha" && !STATE.alphaItems.length && !STATE.alphaLoading) {
+      loadAlphaNewTokens(false);
+    } else if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
       loadBottomWatchlist(false);
     }
+  }
+
+  function attachViewTabHandlers() {
+    panel.querySelectorAll(".ca-view-button").forEach((button) => {
+      if (button.dataset.viewReady === "1") return;
+      button.dataset.viewReady = "1";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        const view = button.getAttribute("data-view") || "abnormal";
+        if (STATE.view === view) return;
+        STATE.view = view;
+        render();
+      });
+    });
+  }
+
+  function attachAlphaRefreshHandler() {
+    panel.querySelector(".ca-alpha-refresh")?.addEventListener("click", () => loadAlphaNewTokens(true));
   }
 
   function attachCopyHandlers() {
@@ -629,6 +737,11 @@
     if (source === "bottom_abnormal") {
       STATE.abnormalItems = STATE.abnormalItems.filter((item) => !(item.ca === ca && item.id === id));
       updateAbnormalContent();
+      return;
+    }
+    if (source === "alpha_new_tokens") {
+      STATE.alphaItems = STATE.alphaItems.filter((item) => !(item.ca === ca && item.id === id));
+      updateAlphaContent();
       return;
     }
   }
@@ -734,6 +847,35 @@
     };
   }
 
+  function normalizeAlphaNewToken(item) {
+    if (!item || !item.address) return null;
+    const ca = String(item.address || "").trim();
+    if (!ca) return null;
+    return {
+      id: String(item.id || `${ca}:${item.ts || ""}`),
+      ca,
+      ts: toNumber(item.ts),
+      symbol: item.symbol || "UNKNOWN",
+      mcap: toNumber(item.entry_mcap),
+      price: toNumber(item.entry_price),
+      holder_count: toNumber(item.holder_count),
+      fee_sol: toNumber(item.fee_sol),
+      buy_score: toNumber(item.buy_score),
+      pool_liquidity: toNumber(item.pool_liquidity),
+      pool_mcap_ratio: toNumber(item.pool_mcap_ratio),
+      price_observation_change_pct: toNumber(item.price_observation_change_pct),
+      alert_no: toNumber(item.alert_no),
+      repeat_alert: Boolean(item.repeat_alert),
+      repeat_alert_type: item.repeat_alert_type || "",
+      narrative: item.narrative || "",
+      verdict: item.verdict || "",
+      market_structure: item.market_structure || "",
+      pool_label: item.pool_label || "",
+      created_time: item.created_time || "",
+      source: "alpha_new_tokens",
+    };
+  }
+
   async function loadBottomWatchlist(force) {
     if (STATE.abnormalLoading) return;
     if (!force && STATE.abnormalItems.length) return;
@@ -775,6 +917,46 @@
     }
   }
 
+  async function loadAlphaNewTokens(force) {
+    if (STATE.alphaLoading) return;
+    if (!force && STATE.alphaItems.length) return;
+    const hasRows = STATE.alphaItems.length > 0;
+    const requestId = STATE.alphaRequestId + 1;
+    STATE.alphaRequestId = requestId;
+    STATE.alphaLoading = true;
+    STATE.alphaError = "";
+    if (!hasRows) {
+      if (!updateAlphaContent()) render();
+    }
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_ALPHA_NEW_TOKENS", limit: 100 });
+      if (requestId !== STATE.alphaRequestId) return;
+      if (!response || !response.ok) {
+        throw new Error((response && response.error) || "No response from extension background worker.");
+      }
+      STATE.serviceMode = response.mode || STATE.serviceMode;
+      STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
+      const seen = new Set();
+      STATE.alphaItems = (Array.isArray(response.data?.items) ? response.data.items : [])
+        .map(normalizeAlphaNewToken)
+        .sort(compareSignalsDesc)
+        .filter((item) => {
+          if (!item || seen.has(item.ca)) return false;
+          seen.add(item.ca);
+          if (isSignalDismissed(item, "alpha_new_tokens")) return false;
+          return true;
+        });
+    } catch (err) {
+      if (requestId !== STATE.alphaRequestId) return;
+      if (!hasRows) STATE.alphaItems = [];
+      STATE.alphaError = `${L.apiError}: ${err.message || err}`;
+    } finally {
+      if (requestId !== STATE.alphaRequestId) return;
+      STATE.alphaLoading = false;
+      if (!updateAlphaContent()) render();
+    }
+  }
+
   function startAbnormalAutoRefresh() {
     if (STATE.abnormalTimer) return;
     STATE.abnormalTimer = window.setInterval(() => {
@@ -788,6 +970,21 @@
     if (!STATE.abnormalTimer) return;
     window.clearInterval(STATE.abnormalTimer);
     STATE.abnormalTimer = 0;
+  }
+
+  function startAlphaAutoRefresh() {
+    if (STATE.alphaTimer) return;
+    STATE.alphaTimer = window.setInterval(() => {
+      if (STATE.view === "alpha" && !STATE.alphaLoading) {
+        loadAlphaNewTokens(true);
+      }
+    }, 10000);
+  }
+
+  function stopAlphaAutoRefresh() {
+    if (!STATE.alphaTimer) return;
+    window.clearInterval(STATE.alphaTimer);
+    STATE.alphaTimer = 0;
   }
 
   async function copyText(text, rerender = true) {
@@ -817,7 +1014,7 @@
       render();
       return;
     }
-    updateAbnormalContent();
+    if (!updateAbnormalContent()) updateAlphaContent();
   }
 
   function clearPanel() {

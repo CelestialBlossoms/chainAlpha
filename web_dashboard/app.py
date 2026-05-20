@@ -40,6 +40,8 @@ SSE_BLOCK_MS = int(os.getenv("TG_DASHBOARD_SSE_BLOCK_MS", "30000"))
 PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC = float(os.getenv("PLUGIN_BOTTOM_ABNORMAL_CACHE_TTL_SEC", "3"))
 PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD = float(os.getenv("PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD", "300000"))
 _PLUGIN_BOTTOM_ABNORMAL_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
+PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC = float(os.getenv("PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC", "3"))
+_PLUGIN_ALPHA_NEW_TOKEN_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
 app.add_middleware(
@@ -343,6 +345,64 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
     return db_op(_op)
 
 
+def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                extract(epoch from pushed_at)::bigint AS ts,
+                address,
+                chain,
+                symbol,
+                source,
+                trend_interval,
+                alert_no,
+                repeat_alert,
+                repeat_alert_type,
+                entry_mcap,
+                entry_price,
+                holder_count,
+                fee_sol,
+                buy_score,
+                tg_chat_id,
+                tg_message_id,
+                raw_stats,
+                pushed_at
+            FROM alpha_push_events
+            WHERE trend_interval = '1m'
+              AND COALESCE(source, '1m') = '1m'
+            ORDER BY pushed_at DESC, id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        columns = [desc[0] for desc in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            item = {key: json_safe(value) for key, value in zip(columns, row)}
+            raw = item.get("raw_stats") if isinstance(item.get("raw_stats"), dict) else {}
+            item["narrative"] = raw.get("narrative") or raw.get("narrative_desc") or ""
+            item["verdict"] = raw.get("verdict") or ""
+            item["market_structure"] = raw.get("market_structure") or ""
+            item["pool_label"] = raw.get("pool_label") or ""
+            item["pool_liquidity"] = raw.get("pool_liquidity") or 0
+            item["pool_mcap_ratio"] = raw.get("pool_mcap_ratio") or 0
+            item["trade_volume_usd"] = raw.get("trade_volume_usd") or 0
+            item["control_ratio"] = raw.get("control_ratio") or 0
+            item["top10_rate"] = raw.get("top10_rate") or 0
+            item["created_time"] = raw.get("created_time") or ""
+            item["created_at"] = raw.get("created_at") or 0
+            item["price_observation_change_pct"] = raw.get("price_observation_change_pct") or 0
+            item["mcap_alert_history"] = raw.get("mcap_alert_history") or []
+            item["price_alert_history"] = raw.get("price_alert_history") or []
+            rows.append(item)
+        return rows
+
+    return db_op(_op)
+
+
 def fetch_onchain_trading_guides(
     limit: int = 200,
     query: str = "",
@@ -464,6 +524,23 @@ def plugin_bottom_abnormal(request: Request, limit: int = 100):
     items = enrich_bottom_watchlist_highlights(enrich_bottom_abnormal_history(items))
     items = [compact_bottom_abnormal_item(item) for item in items][-limit:]
     _PLUGIN_BOTTOM_ABNORMAL_CACHE.update({"ts": now, "limit": limit, "items": items})
+    return {"items": items, "cached": False}
+
+
+@app.get("/api/plugin/alpha-new-tokens")
+def plugin_alpha_new_tokens(request: Request, limit: int = 100):
+    limit = max(1, min(limit, 300))
+    now = time.monotonic()
+    cache_limit = int(_PLUGIN_ALPHA_NEW_TOKEN_CACHE.get("limit") or 0)
+    cache_ts = float(_PLUGIN_ALPHA_NEW_TOKEN_CACHE.get("ts") or 0)
+    if (
+        limit <= cache_limit
+        and now - cache_ts <= PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC
+        and isinstance(_PLUGIN_ALPHA_NEW_TOKEN_CACHE.get("items"), list)
+    ):
+        return {"items": _PLUGIN_ALPHA_NEW_TOKEN_CACHE["items"][:limit], "cached": True}
+    items = fetch_alpha_new_token_events(limit)
+    _PLUGIN_ALPHA_NEW_TOKEN_CACHE.update({"ts": now, "limit": limit, "items": items})
     return {"items": items, "cached": False}
 
 

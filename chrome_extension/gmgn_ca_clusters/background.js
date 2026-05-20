@@ -67,5 +67,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "GET_ALPHA_NEW_TOKENS") {
+    const limit = Math.max(1, Math.min(Number(message.limit || 100), 200));
+    fetchServiceJson(`/api/plugin/alpha-new-tokens?limit=${encodeURIComponent(limit)}`, { serverOnly: true }).then(sendResponse);
+    return true;
+  }
+
   return false;
 });
