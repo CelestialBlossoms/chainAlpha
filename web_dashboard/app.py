@@ -397,6 +397,9 @@ def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
             item["price_observation_change_pct"] = raw.get("price_observation_change_pct") or 0
             item["mcap_alert_history"] = raw.get("mcap_alert_history") or []
             item["price_alert_history"] = raw.get("price_alert_history") or []
+            item.pop("raw_stats", None)
+            item.pop("tg_chat_id", None)
+            item.pop("tg_message_id", None)
             rows.append(item)
         return rows
 
