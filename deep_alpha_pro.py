@@ -498,6 +498,40 @@ def format_usd_short(value):
         return f"{sign}${value / 1_000:.1f}K"
     return f"{sign}${value:,.0f}"
 
+
+def mcap_risk_profile(mcap):
+    mcap = safe_float(mcap)
+    bands = [
+        (0, 10_000, "<10K", "高风险", 50, 0, 54),
+        (10_000, 20_000, "10-20K", "中高风险", 30, 12, 189),
+        (20_000, 30_000, "20-30K", "高风险", 52, 5, 23),
+        (30_000, 50_000, "30-50K", "中风险", 25, 17, 38),
+        (50_000, 100_000, "50-100K", "低风险", 14, 43, 266),
+        (100_000, float("inf"), ">=100K", "低风险", 0, 38, 114),
+    ]
+    for low, high, label, risk, death_rate, win_rate, median_gain in bands:
+        if low <= mcap < high:
+            return {
+                "mcap_band": label,
+                "mcap_risk_level": risk,
+                "mcap_death_rate": death_rate,
+                "mcap_win_rate": win_rate,
+                "mcap_median_gain": median_gain,
+                "mcap_risk_desc": (
+                    f"市值风险: {label} {risk} | "
+                    f"死亡率{death_rate}% | 胜率{win_rate}% | 中位涨幅+{median_gain}%"
+                ),
+            }
+    return {
+        "mcap_band": "未知",
+        "mcap_risk_level": "未知",
+        "mcap_death_rate": 0,
+        "mcap_win_rate": 0,
+        "mcap_median_gain": 0,
+        "mcap_risk_desc": "市值风险: 未知",
+    }
+
+
 def alert_candidate_redis_key(address):
     return redis_key(ALERT_REDIS_KEY_PREFIX, address)
 
@@ -3174,6 +3208,7 @@ def scan_pro():
                         print(f"  [跳过] 20-30K无SM ${s['symbol']} {addr}: sm={sm_val}")
                         continue
 
+                    s.update(mcap_risk_profile(mcap_val))
                     tracking_risk_profile, tracking_risk_reasons = classify_tracking_risk(s)
                     s["tracking_risk_profile"] = tracking_risk_profile
                     s["tracking_risk_reasons"] = tracking_risk_reasons
@@ -3237,12 +3272,14 @@ def scan_pro():
                         narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
                         trend_market_desc = f"{s.get('trend_market_desc')}\n" if s.get("trend_market_desc") else ""
+                        mcap_risk_line = f"{s.get('mcap_risk_desc')}\n" if s.get("mcap_risk_desc") else ""
                         tracking_risk_line = f"{s.get('tracking_risk_desc')}\n" if s.get("tracking_risk_desc") else ""
 
                         msg = (
                             f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"交易量: {format_usd_short(s.get('trade_volume_usd'))}\n"
+                            f"{mcap_risk_line}"
                             f"{trend_market_desc}"
                             f"{tracking_risk_line}"
                             f"{repeat_line}"
