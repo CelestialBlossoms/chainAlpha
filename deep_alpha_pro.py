@@ -86,6 +86,14 @@ NEW_TOKEN_TG_CHAT_ID = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_CHAT_ID", ALPHA_TG_CHA
 NEW_TOKEN_TG_ENABLED = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 NEW_TOKEN_TG_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_MAX_AGE_SEC", str(NEW_TOKEN_MAX_AGE_SEC)))
 
+# ---------------------------------------------------------------------------
+# Post-push 1m K-line tracking (P3)
+# ---------------------------------------------------------------------------
+TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_TRACK_REDIS_PREFIX", "deep_alpha:track")
+TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_TRACK_REDIS_TTL_SEC", "5400"))  # 90min
+TRACK_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_TRACK_MAX_AGE_SEC", "3600"))       # 60min
+TRACK_ENABLED = os.getenv("DEEP_ALPHA_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
 TG_CHAT_ID = ALPHA_TG_CHAT_ID
@@ -646,6 +654,58 @@ def reset_price_observation(address):
         client.delete(redis_observation_key(address))
     except Exception as exc:
         print(f"  [Redis] 重置观察状态失败 {address[:8]}: {exc}")
+
+# ---------------------------------------------------------------------------
+# Post-push tracking Redis helpers
+# ---------------------------------------------------------------------------
+def track_redis_key(address):
+    return redis_key(TRACK_REDIS_PREFIX, address)
+
+
+def load_track(address):
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(track_redis_key(address))
+        return json.loads(raw) if raw else None
+    except Exception as exc:
+        print(f"  [Track] Redis读取失败 {address[:8]}: {exc}")
+        return None
+
+
+def save_track(address, track):
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.setex(track_redis_key(address), TRACK_REDIS_TTL_SEC,
+                     json.dumps(track, ensure_ascii=False))
+    except Exception as exc:
+        print(f"  [Track] Redis写入失败 {address[:8]}: {exc}")
+
+
+def delete_track(address):
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(track_redis_key(address))
+    except Exception as exc:
+        print(f"  [Track] Redis删除失败 {address[:8]}: {exc}")
+
+
+def scan_track_keys():
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        pattern = redis_key(TRACK_REDIS_PREFIX, "*")
+        return [key.decode() if isinstance(key, bytes) else str(key)
+                for key in client.scan_iter(match=pattern, count=50)]
+    except Exception as exc:
+        print(f"  [Track] scan_keys失败: {exc}")
+        return []
 
 def next_scan_round():
     global SCAN_ROUND
@@ -1540,12 +1600,57 @@ def analyze_wallet_creation_clusters(holders_list):
         "conspiracy_wallet_score": min(conspiracy_score, 100),
     }
 
-# K-line analysis is disabled in deep_alpha_pro.
-# This scanner is now for new-token chip/holder analysis only, so K-line fetching stays disabled here.
+# Heavy 5m K-line health scoring stays disabled here; lightweight 1m filters and post-push tracking are enabled.
+BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
+BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": "binance-web3/1.1 (Skill)"}
+
+
 def parse_kline_rows(raw):
+    """Parse Binance K-line 2D array into dict list."""
+    candles = []
+    for item in (raw or []):
+        if not isinstance(item, list) or len(item) < 6:
+            continue
+        ts = int(item[5] / 1000) if item[5] > 10**10 else int(item[5])
+        candles.append({
+            "ts": ts, "open": float(item[0]), "high": float(item[1]),
+            "low": float(item[2]), "close": float(item[3]), "volume": float(item[4]),
+        })
+    candles.sort(key=lambda c: c["ts"])
+    return candles
+
+
+def fetch_1m_klines(address, limit=12):
+    """Fetch 1-minute K-line from Binance Web3 API."""
+    params = {"address": address, "platform": "solana", "interval": "1min", "limit": limit, "pm": "p"}
+    try:
+        resp = requests.get(BINANCE_KLINE_URL, params=params, headers=BINANCE_HEADERS, timeout=10)
+        if resp.status_code == 200:
+            return parse_kline_rows(resp.json().get("data", []))
+    except Exception:
+        pass
     return []
 
+
+def completed_1m_candles(candles, now_ts=None):
+    if not candles:
+        return []
+    now_ts = int(now_ts or time.time())
+    closed = [c for c in candles if int(safe_float(c.get("ts"))) <= now_ts - 60]
+    if closed:
+        return closed
+    return list(candles[:-1])
+
+
 def fetch_5m_klines(chain, address, lookback_sec):
+    params = {"address": address, "platform": "solana", "interval": "5min",
+              "limit": max(6, lookback_sec // 300), "pm": "p"}
+    try:
+        resp = requests.get(BINANCE_KLINE_URL, params=params, headers=BINANCE_HEADERS, timeout=10)
+        if resp.status_code == 200:
+            return parse_kline_rows(resp.json().get("data", []))
+    except Exception:
+        pass
     return []
 
 def max_drawdown(candles):
@@ -2437,6 +2542,395 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     return stats
 
 # ---------------------------------------------------------------------------
+# Post-push 1m K-line tracking
+# ---------------------------------------------------------------------------
+TRACK_CHECK_INTERVALS = [
+    (900, 60),    # 0-15min: check every ~60s (each scan iteration)
+    (1800, 120),  # 15-30min: check every ~120s
+    (3600, 300),  # 30-60min: check every ~300s
+]
+# Price multiples from entry, not return percentages.
+TRACK_ALERT_MILESTONES = [
+    (5.0, "🚀 5x达成"),
+    (2.0, "💰 已翻倍"),
+    (1.5, "📈 +50%"),
+]
+TRACK_DRAWDOWN_ALERTS = [
+    (-0.40, "⚠️ 高点回落40%"),
+    (-0.20, "🔻 高点回落20%"),
+]
+TRACK_HIGH_RISK_DRAWDOWN_ALERTS = [
+    (-0.30, "⚠️ 高风险回落30%"),
+    (-0.15, "🔻 高风险回落15%"),
+]
+TRACK_PATH_REACHED_PCT = 0.20
+TRACK_PULLBACK_BEFORE_20_PCT = -0.05
+TRACK_DEAD_RETURN_PCT = -0.70
+
+
+def start_tracking(address, chain, symbol, entry_price, entry_mcap,
+                   tg_chat_id, tg_message_id, pushed_at,
+                   risk_profile="normal", risk_reasons=None):
+    track = {
+        "address": address,
+        "chain": chain,
+        "symbol": symbol,
+        "entry_price": entry_price,
+        "entry_mcap": entry_mcap,
+        "tg_chat_id": str(tg_chat_id) if tg_chat_id else "",
+        "tg_message_id": str(tg_message_id) if tg_message_id else "",
+        "pushed_at": pushed_at,
+        "peak_price": entry_price,
+        "peak_time": pushed_at,
+        "trough_price": entry_price,
+        "trough_time": pushed_at,
+        "reached_20": False,
+        "time_to_20_sec": None,
+        "min_before_20_pct": 0.0,
+        "current_return_pct": 0.0,
+        "max_gain_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "drawdown_from_peak_pct": 0.0,
+        "path_class": "未达20%观察",
+        "risk_profile": risk_profile or "normal",
+        "risk_reasons": list(risk_reasons or []),
+        "alerts_fired": [],
+        "last_check_at": 0,
+        "status_line": "\n\n--- 📊 实时1m跟踪 ---",
+        "finalized": False,
+    }
+    save_track(address, track)
+    print(f"  [Track] 开始跟踪 ${symbol} {address[:8]}...")
+
+
+def check_tracked_tokens():
+    if not TRACK_ENABLED:
+        return
+    keys = scan_track_keys()
+    if not keys:
+        return
+    now_ts = int(time.time())
+    print(f"  [Track] 检查 {len(keys)} 个跟踪中的代币...")
+    for key in keys:
+        raw = None
+        client = get_redis_client()
+        if client is not None:
+            try:
+                raw = client.get(key)
+            except Exception:
+                pass
+        if not raw:
+            continue
+        try:
+            track = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+        except Exception:
+            continue
+        if not isinstance(track, dict) or track.get("finalized"):
+            continue
+
+        address = track.get("address", "")
+        age_seconds = now_ts - int(track.get("pushed_at", now_ts))
+        if age_seconds > TRACK_MAX_AGE_SEC:
+            _finalize_track(track, "超时")
+            continue
+
+        if not _should_check(track, age_seconds, now_ts):
+            continue
+
+        candles = completed_1m_candles(fetch_1m_klines(address, limit=32), now_ts=now_ts)
+        if not candles:
+            continue
+
+        track["last_check_at"] = now_ts
+        post = [c for c in candles if c["ts"] >= track["pushed_at"]]
+        if not post:
+            save_track(address, track)
+            continue
+
+        entry = safe_float(track.get("entry_price"))
+        if entry <= 0:
+            _finalize_track(track, "entry_price_missing")
+            continue
+        current = safe_float(post[-1]["close"])
+        peak_so_far = max(c["high"] for c in post)
+        peak_previous = safe_float(track.get("peak_price") or entry)
+        if peak_so_far > peak_previous:
+            track["peak_price"] = peak_so_far
+            track["peak_time"] = max(c["ts"] for c in post if c["high"] == peak_so_far)
+        trough_so_far = min(c["low"] for c in post)
+        trough_previous = safe_float(track.get("trough_price") or entry)
+        if trough_previous <= 0 or trough_so_far < trough_previous:
+            track["trough_price"] = trough_so_far
+            track["trough_time"] = min(c["ts"] for c in post if c["low"] == trough_so_far)
+
+        peak_price = safe_float(track.get("peak_price"))
+        drawdown_from_peak = (current - peak_price) / peak_price if peak_price > 0 else 0
+        gain_from_entry = (current - entry) / entry if entry > 0 else 0
+        current_multiple = current / entry if entry > 0 else 0
+        _update_track_path(track, post, current, gain_from_entry, drawdown_from_peak)
+
+        new_alerts = []
+        for multiple, label in TRACK_ALERT_MILESTONES:
+            alert_key = f"gain_{multiple}"
+            if current_multiple >= multiple and alert_key not in track["alerts_fired"]:
+                new_alerts.append(label)
+                track["alerts_fired"].append(alert_key)
+
+        for threshold, label in track_drawdown_alerts(track):
+            alert_key = f"dd_{abs(threshold)}"
+            if drawdown_from_peak <= threshold and alert_key not in track["alerts_fired"]:
+                new_alerts.append(label)
+                track["alerts_fired"].append(alert_key)
+
+        # Check if below entry
+        if gain_from_entry < 0 and "below_entry" not in track["alerts_fired"]:
+            if drawdown_from_peak <= -0.15:  # Only alert if meaningfully below
+                new_alerts.append("🔴 跌破入场价")
+                track["alerts_fired"].append("below_entry")
+
+        # Build status line
+        age_min = age_seconds / 60
+        peak_gain = (safe_float(track.get("peak_price")) - entry) / entry * 100 if entry > 0 else 0
+        status_line = (
+            f"\n\n--- 📊 实时1m跟踪 ---\n"
+            f"⏱ {age_min:.0f}m | 入场 {format_chain_price(entry)} | "
+            f"现价 {format_chain_price(current)} ({gain_from_entry:+.1%}) | "
+            f"最高 {format_chain_price(track.get('peak_price'))} ({peak_gain:+.0f}%) | "
+            f"回撤 {drawdown_from_peak:.1%} | 路径 {track.get('path_class', '观察')} | "
+            f"风险 {track.get('risk_profile', 'normal')}"
+        )
+        if new_alerts:
+            status_line += "\n" + " | ".join(new_alerts)
+
+        track["status_line"] = status_line
+        if new_alerts:
+            _update_track_message(track, new_alerts)
+
+        # Finalize at 60min
+        if age_seconds >= TRACK_MAX_AGE_SEC:
+            track["finalized"] = True
+            _finalize_track(track, "终检")
+            continue
+
+        save_track(address, track)
+
+
+def _should_check(track, age_seconds, now_ts):
+    last = int(track.get("last_check_at", 0))
+    for max_age, interval in TRACK_CHECK_INTERVALS:
+        if age_seconds <= max_age:
+            return now_ts - last >= interval
+    return now_ts - last >= TRACK_CHECK_INTERVALS[-1][1]
+
+
+def track_drawdown_alerts(track):
+    if str(track.get("risk_profile") or "").lower() == "high":
+        return TRACK_HIGH_RISK_DRAWDOWN_ALERTS
+    return TRACK_DRAWDOWN_ALERTS
+
+
+def _update_track_path(track, post_candles, current, gain_from_entry, drawdown_from_peak):
+    entry = safe_float(track.get("entry_price"))
+    if entry <= 0 or not post_candles:
+        return
+
+    if not track.get("reached_20"):
+        min_low = min(safe_float(c["low"]) for c in post_candles)
+        min_before_pct = (min_low - entry) / entry
+        track["min_before_20_pct"] = min(safe_float(track.get("min_before_20_pct")), min_before_pct)
+        hit_candle = next(
+            (c for c in post_candles if safe_float(c["high"]) >= entry * (1 + TRACK_PATH_REACHED_PCT)),
+            None,
+        )
+        if hit_candle:
+            hit_ts = int(hit_candle["ts"])
+            lows_before_hit = [safe_float(c["low"]) for c in post_candles if int(c["ts"]) <= hit_ts]
+            if lows_before_hit:
+                hit_min_pct = (min(lows_before_hit) - entry) / entry
+                track["min_before_20_pct"] = min(safe_float(track.get("min_before_20_pct")), hit_min_pct)
+            track["reached_20"] = True
+            pushed_at = int(track.get("pushed_at") or hit_ts)
+            track["time_to_20_sec"] = max(0, hit_ts - pushed_at)
+
+    peak_price = safe_float(track.get("peak_price"))
+    trough_price = safe_float(track.get("trough_price"))
+    track["current_return_pct"] = gain_from_entry * 100
+    track["max_gain_pct"] = (peak_price - entry) / entry * 100 if peak_price > 0 else 0
+    track["max_drawdown_pct"] = (trough_price - entry) / entry * 100 if trough_price > 0 else 0
+    track["drawdown_from_peak_pct"] = drawdown_from_peak * 100
+
+    if track.get("reached_20"):
+        if safe_float(track.get("min_before_20_pct")) <= TRACK_PULLBACK_BEFORE_20_PCT:
+            track["path_class"] = "回撤后上涨"
+        else:
+            track["path_class"] = "直接上涨"
+    elif gain_from_entry <= TRACK_DEAD_RETURN_PCT:
+        track["path_class"] = "直接下跌归零"
+    else:
+        track["path_class"] = "未达20%观察"
+
+
+def track_result_snapshot(track, reason):
+    entry = safe_float(track.get("entry_price"))
+    entry_mcap = safe_float(track.get("entry_mcap"))
+    peak = safe_float(track.get("peak_price"))
+    current_return_pct = safe_float(track.get("current_return_pct"))
+    max_gain_pct = safe_float(track.get("max_gain_pct"))
+    return {
+        "reason": reason,
+        "path_class": track.get("path_class", "未达20%观察"),
+        "entry_price": entry,
+        "entry_mcap": entry_mcap,
+        "peak_price": peak,
+        "peak_mcap_est": entry_mcap * peak / entry if entry > 0 and entry_mcap > 0 and peak > 0 else 0,
+        "current_return_pct": current_return_pct,
+        "max_gain_pct": max_gain_pct,
+        "max_drawdown_pct": safe_float(track.get("max_drawdown_pct")),
+        "drawdown_from_peak_pct": safe_float(track.get("drawdown_from_peak_pct")),
+        "reached_20": bool(track.get("reached_20")),
+        "time_to_20_min": safe_float(track.get("time_to_20_sec")) / 60 if track.get("time_to_20_sec") is not None else None,
+        "min_before_20_pct": safe_float(track.get("min_before_20_pct")) * 100,
+        "alerts_fired": list(track.get("alerts_fired") or []),
+        "finalized_at": int(time.time()),
+    }
+
+
+def save_track_result(track, reason):
+    address = track.get("address", "")
+    if not address:
+        return
+    result = track_result_snapshot(track, reason)
+    message_id = None
+    try:
+        message_id_str = str(track.get("tg_message_id") or "").strip()
+        message_id = int(message_id_str) if message_id_str else None
+    except Exception:
+        message_id = None
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE alpha_push_events
+            SET raw_stats = jsonb_set(COALESCE(raw_stats, '{}'::jsonb), '{post_push_track}', %s::jsonb, true)
+            WHERE id = (
+                SELECT id
+                FROM alpha_push_events
+                WHERE address = %s
+                  AND (%s::bigint IS NULL OR tg_message_id = %s::bigint)
+                ORDER BY pushed_at DESC
+                LIMIT 1
+            )
+            """,
+            (Json(result), address, message_id, message_id),
+        )
+        cur.execute(
+            """
+            UPDATE alpha_token_candidates
+            SET raw_stats = jsonb_set(COALESCE(raw_stats, '{}'::jsonb), '{post_push_track}', %s::jsonb, true)
+            WHERE address = %s
+            """,
+            (Json(result), address),
+        )
+
+    try:
+        db_op(_op)
+    except Exception as exc:
+        print(f"  [Track] 保存跟踪结果失败 {address[:8]}: {exc}")
+
+
+def classify_tracking_risk(stats):
+    reasons = []
+    mcap = safe_float(stats.get("mcap"))
+    rug_ratio = safe_float(stats.get("rug_ratio"))
+    upper_wick = safe_float(stats.get("signal_upper_wick_pct"))
+    sm_count = int(safe_float(stats.get("sm_count")))
+    top10_rate = safe_float(stats.get("top10_rate"))
+    vol_ratio_1m = safe_float(stats.get("vol_ratio_1m"))
+
+    if 20000 <= mcap < 30000:
+        reasons.append("20-30K高死亡区")
+    if rug_ratio > 0.8:
+        reasons.append(f"Rug{rug_ratio:.2f}")
+    if upper_wick > 8:
+        reasons.append(f"上影线{upper_wick:.1f}%")
+    if 20000 <= mcap < 50000 and sm_count < 3 and top10_rate > 18:
+        reasons.append(f"弱筹码SM{sm_count}/Top10{top10_rate:.1f}%")
+    if vol_ratio_1m and vol_ratio_1m < 0.6:
+        reasons.append(f"量比{vol_ratio_1m:.2f}x")
+
+    return ("high" if reasons else "normal"), reasons[:4]
+
+
+def _update_track_message(track, new_alerts):
+    if not new_alerts:
+        return
+    try:
+        chat_id = track.get("tg_chat_id", "")
+        message_id_str = track.get("tg_message_id", "")
+        if not chat_id or not message_id_str:
+            return
+        message_id = int(message_id_str)
+
+        addr = track.get("address", "")
+        symbol = track.get("symbol", "")
+        short_status = track["status_line"].split("--- 📊 实时1m跟踪 ---")[-1].strip() if "---" in track["status_line"] else track["status_line"]
+        status_text = (
+            f"📊 *${symbol}* 跟踪更新\n"
+            f"{short_status}\n"
+            f"CA: `{addr}`"
+        )
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        try:
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": status_text,
+                "reply_to_message_id": message_id,
+                "parse_mode": "Markdown",
+            }, timeout=10)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _finalize_track(track, reason):
+    address = track.get("address", "")
+    symbol = track.get("symbol", "")
+    entry = safe_float(track.get("entry_price"))
+    peak = safe_float(track.get("peak_price")) or entry
+    peak_gain = (peak - entry) / entry * 100 if entry > 0 else 0
+    save_track_result(track, reason)
+
+    # Send final summary as reply
+    chat_id = track.get("tg_chat_id", "")
+    message_id_str = track.get("tg_message_id", "")
+    if chat_id and message_id_str:
+        status_line = track.get("status_line", "").split("--- 📊 实时1m跟踪 ---")[-1].strip()
+        final_text = (
+            f"📊 *${symbol}* 跟踪结束 ({reason})\n"
+            f"{status_line}\n"
+            f"路径: {track.get('path_class', '未达20%观察')} | "
+            f"最高: {safe_float(track.get('max_gain_pct')):+.1f}% | "
+            f"最低: {safe_float(track.get('max_drawdown_pct')):+.1f}%\n"
+            f"CA: `{address}`"
+        )
+        try:
+            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": final_text,
+                "reply_to_message_id": int(message_id_str),
+                "parse_mode": "Markdown",
+            }, timeout=10)
+        except Exception:
+            pass
+
+    print(f"  [Track] 结束跟踪 ${symbol} {address[:8]}: {reason} peak={peak_gain:.0f}%")
+    delete_track(address)
+
+
+# ---------------------------------------------------------------------------
 # 扫描主循环
 # ---------------------------------------------------------------------------
 def scan_pro():
@@ -2626,8 +3120,68 @@ def scan_pro():
                     s["alert_sequence_no"] = int((existing_candidate or {}).get("alert_count") or 0) + 1
 
                     
-                    # 警报逻辑：硬过滤后，用可买分数聚合早期信号。
-                    is_candidate = s["buy_score"] >= MIN_BUY_SCORE
+                    # K-line quality filter: use completed 1m candles only.
+                    candles_1m = completed_1m_candles(fetch_1m_klines(addr, limit=7))
+                    if candles_1m and len(candles_1m) >= 3:
+                        last_c = candles_1m[-1]
+                        signal_body_pct = abs(last_c["close"] - last_c["open"]) / last_c["open"] * 100 if last_c["open"] > 0 else 0
+                        # Pre-signal volume vs post-signal volume
+                        pre_vol = sum(c["volume"] for c in candles_1m[:3]) / 3
+                        post_vol = sum(c["volume"] for c in candles_1m[-3:]) / 3
+                        vol_ratio_1m = post_vol / pre_vol if pre_vol > 0 else 0
+                        s["signal_body_pct"] = round(signal_body_pct, 2)
+                        s["vol_ratio_1m"] = round(vol_ratio_1m, 2)
+                        # 1m K-line direction-aware filters
+                        last_is_red = last_c["close"] < last_c["open"]
+                        sm_count_val = int(s.get("sm_count", 0))
+                        upper_wick = (last_c["high"] - max(last_c["open"], last_c["close"])) / last_c["open"] if last_c["open"] > 0 else 0
+
+                        # Large red candle without any SM = confirmed dump (body>10% + SM=0)
+                        # SM>=3 exemption: LVHC (+363%) was red body=10.2% with SM=3
+                        if last_is_red and signal_body_pct > 10 and sm_count_val < 1:
+                            print(f"  [跳过] 1m大阴线+无SM ${s['symbol']} {addr}: body={signal_body_pct:.1f}%, sm={sm_count_val}")
+                            continue
+                        # Moderate red candle without any SM = likely going to zero
+                        if last_is_red and signal_body_pct > 5 and sm_count_val < 1:
+                            print(f"  [跳过] 1m阴线+无SM ${s['symbol']} {addr}: body={signal_body_pct:.1f}%, sm={sm_count_val}")
+                            continue
+                        s["signal_upper_wick_pct"] = round(upper_wick * 100, 2)
+                        # Upper wick alone kills too many winners; only hard-filter when red, weak SM, and volume is fading.
+                        if upper_wick > 0.08 and last_is_red and sm_count_val < 3 and vol_ratio_1m < 1:
+                            print(
+                                f"  [跳过] 上影线+弱承接 ${s['symbol']} {addr}: "
+                                f"wick={upper_wick:.1%}, sm={sm_count_val}, vol_ratio={vol_ratio_1m:.2f}x"
+                            )
+                            continue
+                        if upper_wick > 0.08:
+                            s["kline_upper_wick_risk"] = True
+                        # Extreme volume collapse
+                        if vol_ratio_1m < 0.3:
+                            print(f"  [跳过] 量能崩塌 ${s['symbol']} {addr}: vol_ratio={vol_ratio_1m:.2f}x < 0.3x")
+                            continue
+
+                    # P1: 20-50K MCAP + weak SM (<3) + high Top10 (>20%) = 0% win rate, 57% dead
+                    mcap_val = safe_float(s.get("mcap"))
+                    top10_val = safe_float(s.get("top10_rate"))
+                    sm_val = int(safe_float(s.get("sm_count")))
+                    if 20000 <= mcap_val < 50000 and sm_val < 3 and top10_val > 20:
+                        print(f"  [跳过] 20-50K弱筹码 ${s['symbol']} {addr}: sm={sm_val}, top10={top10_val:.1f}%")
+                        continue
+                    # P2: 20-30K + SM=0 = 0% win rate
+                    if 20000 <= mcap_val < 30000 and sm_val < 1:
+                        print(f"  [跳过] 20-30K无SM ${s['symbol']} {addr}: sm={sm_val}")
+                        continue
+
+                    tracking_risk_profile, tracking_risk_reasons = classify_tracking_risk(s)
+                    s["tracking_risk_profile"] = tracking_risk_profile
+                    s["tracking_risk_reasons"] = tracking_risk_reasons
+                    s["tracking_risk_desc"] = (
+                        f"跟踪风险: {tracking_risk_profile}"
+                        + (f" ({' / '.join(tracking_risk_reasons)})" if tracking_risk_reasons else "")
+                    )
+
+                    # 警报逻辑：硬过滤后直接推送（buy_score 已弃用）
+                    is_candidate = True  # buy_score threshold removed per data analysis
                     if is_candidate:
                         print(
                             f"  [候选] ${s['symbol']} | CA={addr} | "
@@ -2681,12 +3235,14 @@ def scan_pro():
                         narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
 
                         trend_market_desc = f"{s.get('trend_market_desc')}\n" if s.get("trend_market_desc") else ""
+                        tracking_risk_line = f"{s.get('tracking_risk_desc')}\n" if s.get("tracking_risk_desc") else ""
 
                         msg = (
                             f"{alert_icon} *${s['symbol']}*\n"
                             f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
                             f"交易量: {format_usd_short(s.get('trade_volume_usd'))}\n"
                             f"{trend_market_desc}"
+                            f"{tracking_risk_line}"
                             f"{repeat_line}"
                             f"{narrative_line}"
                             f"流动性池: {s['pool_label']}\n"
@@ -2717,10 +3273,29 @@ def scan_pro():
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
+                        # P3: start post-push 1m K-line tracking
+                        if TRACK_ENABLED and not s.get("repeat_alert"):
+                            start_tracking(
+                                address=addr,
+                                chain=chain,
+                                symbol=s.get("symbol") or "UNKNOWN",
+                                entry_price=safe_float(s.get("price")),
+                                entry_mcap=safe_float(s.get("mcap")),
+                                tg_chat_id=TG_CHAT_ID,
+                                tg_message_id=tg_message_id,
+                                pushed_at=int(time.time()),
+                                risk_profile=s.get("tracking_risk_profile", "normal"),
+                                risk_reasons=s.get("tracking_risk_reasons", []),
+                            )
                     
             except Exception as e:
                 print(f"Loop Error: {e}")
             time.sleep(2)
+        # P3: check post-push tracking after each full scan
+        try:
+            check_tracked_tokens()
+        except Exception as exc:
+            print(f"  [Track] check_tracked_tokens error: {exc}")
 
 if __name__ == "__main__":
     print("深度关联分析机器人已启动...")
