@@ -47,8 +47,32 @@
 
 .ca-cluster-title {
   min-width: 0;
+  flex: 1;
   font-weight: 700;
   color: #f8fafc;
+}
+
+.ca-drag-handle {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 5px;
+  background: #202938;
+  color: #94a3b8;
+  cursor: move;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 20px;
+  letter-spacing: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.ca-drag-handle:hover {
+  background: #2b3647;
+  color: #e5e7eb;
 }
 
 .ca-cluster-actions {

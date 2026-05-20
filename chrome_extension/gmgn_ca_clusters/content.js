@@ -633,6 +633,7 @@
 
     panel.innerHTML = `
       <div class="ca-cluster-header">
+        <button class="ca-drag-handle" type="button" title="Drag panel" aria-label="Drag panel">::</button>
         <div class="ca-cluster-title">${L.watchView}</div>
         <div class="ca-cluster-actions">
           <button class="ca-cluster-button ca-cluster-toggle" title="${L.collapse}">${STATE.collapsed ? "+" : "-"}</button>
@@ -1236,18 +1237,21 @@
   }
 
   function attachDragHandlers() {
-    const header = panel.querySelector(".ca-cluster-header");
-    if (!header || header.dataset.dragReady === "1") return;
-    header.dataset.dragReady = "1";
-    header.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button")) return;
+    const dragTargets = panel.querySelectorAll(".ca-cluster-header, .ca-drag-handle");
+    dragTargets.forEach((target) => {
+      if (target.dataset.dragReady === "1") return;
+      target.dataset.dragReady = "1";
+      target.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button:not(.ca-drag-handle)")) return;
+      event.preventDefault();
+      event.stopPropagation();
       const rect = panel.getBoundingClientRect();
       const startX = event.clientX;
       const startY = event.clientY;
       const startLeft = rect.left;
       const startTop = rect.top;
       STATE.dragging = true;
-      header.setPointerCapture(event.pointerId);
+      target.setPointerCapture(event.pointerId);
 
       const onMove = (moveEvent) => {
         if (!STATE.dragging) return;
@@ -1256,14 +1260,15 @@
       const onUp = () => {
         STATE.dragging = false;
         savePanelLayout();
-        header.removeEventListener("pointermove", onMove);
-        header.removeEventListener("pointerup", onUp);
-        header.removeEventListener("pointercancel", onUp);
+        target.removeEventListener("pointermove", onMove);
+        target.removeEventListener("pointerup", onUp);
+        target.removeEventListener("pointercancel", onUp);
       };
 
-      header.addEventListener("pointermove", onMove);
-      header.addEventListener("pointerup", onUp);
-      header.addEventListener("pointercancel", onUp);
+      target.addEventListener("pointermove", onMove);
+      target.addEventListener("pointerup", onUp);
+      target.addEventListener("pointercancel", onUp);
+      });
     });
   }
 
