@@ -30,6 +30,7 @@ from config import TG_BOT_TOKEN, TG_CHAT_ID
 from db_client import db_op
 from binance_narrative import classify_narrative_category, compact_narrative, get_binance_narrative, resolve_cached_or_db_narrative
 from plugin_signal_stream import publish_plugin_signal
+from redis_client import get_redis_client, redis_key
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
     clean_redis_stream_for_ca,
@@ -140,6 +141,13 @@ WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_WATCHLIST_DE
 MIN_POOL_LIQUIDITY_USD = float(os.getenv("BOTTOM_MIN_POOL_LIQUIDITY_USD", str(WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD)))
 USE_AGENT_DECISION = os.getenv("BOTTOM_USE_AGENT_DECISION", "1") != "0"
 EMA_GOLDEN_CROSS_ENABLED = os.getenv("BOTTOM_EMA_GOLDEN_CROSS_ENABLED", "0") == "1"
+POST_PUSH_REDIS_TRACK_ENABLED = os.getenv("BOTTOM_POST_PUSH_REDIS_TRACK_ENABLED", "1") != "0"
+POST_PUSH_REDIS_PREFIX = os.getenv("BOTTOM_POST_PUSH_REDIS_PREFIX", "bottom:post_push")
+POST_PUSH_TRACK_TTL_SEC = int(os.getenv("BOTTOM_POST_PUSH_TRACK_TTL_SEC", str(24 * 3600)))
+POST_PUSH_MIN_PEAK_GAIN_PCT = float(os.getenv("BOTTOM_POST_PUSH_MIN_PEAK_GAIN_PCT", "15"))
+POST_PUSH_DRAWDOWN_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_DRAWDOWN_REPLY_PCT", "20"))
+POST_PUSH_REPLY_COOLDOWN_SEC = int(os.getenv("BOTTOM_POST_PUSH_REPLY_COOLDOWN_SEC", str(60 * 60)))
+POST_PUSH_MAX_REPLIES = int(os.getenv("BOTTOM_POST_PUSH_MAX_REPLIES", "3"))
 
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
@@ -1873,7 +1881,179 @@ def extract_address_from_text(text: str) -> str:
     return match.group(0) if match else ""
 
 
-def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
+def post_push_track_key(address: str) -> str:
+    return redis_key(POST_PUSH_REDIS_PREFIX, address)
+
+
+def register_post_push_track(address: str, extra: dict[str, Any], message_id: int | str | None) -> None:
+    if not POST_PUSH_REDIS_TRACK_ENABLED or not address or not message_id:
+        return
+    if extra.get("post_push_reply"):
+        return
+    signal_type = str(extra.get("signal_type") or "").strip()
+    if not signal_type or signal_type == "watch":
+        return
+    current_mcap = to_float(extra.get("current_mcap"))
+    if current_mcap <= 0:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    now_value = now_ts()
+    key = post_push_track_key(address)
+    payload = {
+        "address": address,
+        "symbol": str(extra.get("symbol") or ""),
+        "signal_type": signal_type,
+        "chat_id": str(TG_CHAT_ID),
+        "message_id": str(message_id),
+        "entry_mcap": str(current_mcap),
+        "peak_mcap": str(max(current_mcap, to_float(extra.get("post_signal_peak_mcap")))),
+        "last_mcap": str(current_mcap),
+        "created_ts": str(now_value),
+        "updated_ts": str(now_value),
+        "last_reply_ts": "0",
+        "reply_count": "0",
+        "last_reply_bucket": "0",
+    }
+    try:
+        client.hset(key, mapping=payload)
+        if POST_PUSH_TRACK_TTL_SEC > 0:
+            client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+    except Exception as exc:
+        print(f"{address[:8]} post-push redis register failed: {exc}")
+
+
+def send_tg_reply(text: str, reply_to_message_id: int, extra: dict[str, Any]) -> int | None:
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        publish_tg_alert(text, "bottom_abnormal_followup", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
+        return None
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TG_CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": True,
+                "reply_to_message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            },
+            timeout=15,
+        )
+        if not resp.ok:
+            print(f"tg reply failed: {resp.status_code} {resp.text[:200]}")
+            publish_tg_alert(text, "bottom_abnormal_followup", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
+            return None
+        payload = resp.json()
+        message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
+        publish_tg_alert(text, "bottom_abnormal_followup", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
+        return int(message_id) if message_id else None
+    except Exception as exc:
+        print(f"tg reply exception: {exc}")
+        publish_tg_alert(text, "bottom_abnormal_followup", status="exception", chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
+        return None
+
+
+def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any], analysis: dict[str, Any]) -> None:
+    if not POST_PUSH_REDIS_TRACK_ENABLED:
+        return
+    address = token_address(token)
+    if not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    key = post_push_track_key(address)
+    try:
+        state = client.hgetall(key)
+    except Exception as exc:
+        print(f"{address[:8]} post-push redis read failed: {exc}")
+        return
+    if not state:
+        return
+
+    current_mcap = to_float(analysis.get("current_mcap")) or to_float(summary.get("mcap")) or calc_mcap(token)
+    if current_mcap <= 0:
+        return
+    entry_mcap = to_float(state.get("entry_mcap"))
+    previous_peak = to_float(state.get("peak_mcap"))
+    peak_mcap = max(previous_peak, current_mcap, entry_mcap)
+    now_value = now_ts()
+    updates = {"last_mcap": str(current_mcap), "peak_mcap": str(peak_mcap), "updated_ts": str(now_value)}
+
+    if entry_mcap <= 0 or peak_mcap <= 0:
+        try:
+            client.hset(key, mapping=updates)
+        except Exception:
+            pass
+        return
+    peak_gain_pct = (peak_mcap / entry_mcap - 1) * 100
+    drawdown_pct = (1 - current_mcap / peak_mcap) * 100 if current_mcap < peak_mcap else 0.0
+    reply_count = to_int(state.get("reply_count"))
+    last_reply_ts = to_int(state.get("last_reply_ts"))
+    last_reply_bucket = to_int(state.get("last_reply_bucket"))
+    bucket = int(drawdown_pct // POST_PUSH_DRAWDOWN_REPLY_PCT) if POST_PUSH_DRAWDOWN_REPLY_PCT > 0 else 0
+    should_reply = (
+        peak_gain_pct >= POST_PUSH_MIN_PEAK_GAIN_PCT
+        and drawdown_pct >= POST_PUSH_DRAWDOWN_REPLY_PCT
+        and bucket > last_reply_bucket
+        and reply_count < POST_PUSH_MAX_REPLIES
+        and (now_value - last_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
+    )
+    if not should_reply:
+        try:
+            client.hset(key, mapping=updates)
+            if POST_PUSH_TRACK_TTL_SEC > 0:
+                client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+        except Exception as exc:
+            print(f"{address[:8]} post-push redis update failed: {exc}")
+        return
+
+    message_id = to_int(state.get("message_id"))
+    if message_id <= 0:
+        return
+    symbol = token.get("symbol") or state.get("symbol") or "UNKNOWN"
+    text = (
+        f"底部异动后回撤观察 | ${symbol}\n"
+        f"首推市值: {format_money_text(entry_mcap)}\n"
+        f"推送后高点: {format_money_text(peak_mcap)} (+{peak_gain_pct:.1f}%)\n"
+        f"当前市值: {format_money_text(current_mcap)}\n"
+        f"高点回撤: {drawdown_pct:.1f}%\n"
+        f"CA: {address}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+    reply_extra = {
+        "post_push_reply": True,
+        "address": address,
+        "symbol": symbol,
+        "signal_type": state.get("signal_type") or analysis.get("signal_type"),
+        "entry_mcap": entry_mcap,
+        "peak_mcap": peak_mcap,
+        "current_mcap": current_mcap,
+        "peak_gain_pct": peak_gain_pct,
+        "drawdown_pct": drawdown_pct,
+        "reply_to_message_id": message_id,
+        "reply_count": reply_count + 1,
+    }
+    sent_message_id = send_tg_reply(text, message_id, reply_extra)
+    if sent_message_id:
+        updates.update(
+            {
+                "last_reply_ts": str(now_value),
+                "reply_count": str(reply_count + 1),
+                "last_reply_bucket": str(bucket),
+                "last_reply_message_id": str(sent_message_id),
+            }
+        )
+    try:
+        client.hset(key, mapping=updates)
+        if POST_PUSH_TRACK_TTL_SEC > 0:
+            client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+    except Exception as exc:
+        print(f"{address[:8]} post-push redis reply update failed: {exc}")
+
+
+def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
     extra = extra or {}
     if not extra.get("event_ts"):
         extra = {**extra, "event_ts": now_ts()}
@@ -1887,7 +2067,7 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         tg_text = text
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         publish_tg_alert(tg_text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
-        return
+        return None
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
@@ -1897,13 +2077,16 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> None:
         if not resp.ok:
             print(f"tg failed: {resp.status_code} {resp.text[:200]}")
             publish_tg_alert(tg_text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
-            return
+            return None
         payload = resp.json()
         message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
         publish_tg_alert(tg_text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
+        register_post_push_track(address, extra, message_id)
+        return int(message_id) if message_id else None
     except Exception as exc:
         print(f"tg exception: {exc}")
         publish_tg_alert(tg_text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
+        return None
 
 
 def compute_risk_tags(extra: dict[str, Any]) -> list[str]:
@@ -3158,6 +3341,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 f"{token_label(token)} previous bottom signal now {analysis.get('signal_type')}, "
                 f"frontend updated mcap ${web_extra.get('current_mcap', 0):,.0f}"
             )
+
+    maybe_reply_post_push_drawdown(token, summary, analysis)
 
     quiet_breakout = check_watchlist_quiet_breakout(token, summary, candles)
     if notify and quiet_breakout:
