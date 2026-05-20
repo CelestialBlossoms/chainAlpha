@@ -141,6 +141,8 @@ def save_alpha_candidate(chain, interval, address, stats, tg_message_id=None):
                 ON alpha_push_events(address, alert_no);
             CREATE INDEX IF NOT EXISTS idx_alpha_push_events_source_interval
                 ON alpha_push_events(source, trend_interval);
+            CREATE INDEX IF NOT EXISTS idx_alpha_push_events_interval_source_recent
+                ON alpha_push_events(trend_interval, COALESCE(source, '1m'), pushed_at DESC, id DESC);
         """)
         cur.execute("""
             INSERT INTO alpha_token_candidates (
@@ -3362,10 +3364,13 @@ def scan_pro():
                         if not tg_message_id:
                             print(f"  [璺宠繃] Telegram鏈繑鍥炴秷鎭痠d锛屼笉璁板綍宸叉帹閫? {addr}")
                             continue
+                        try:
+                            save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
+                        except Exception as exc:
+                            print(f"  [alpha_persist] save failed for {addr}: {exc}")
                         publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):
                             send_new_token_ca_alert(s)
-                        save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
                         # P3: start post-push 1m K-line tracking

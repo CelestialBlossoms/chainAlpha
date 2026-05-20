@@ -97,6 +97,8 @@ def init_tables(conn):
             ON alpha_push_events(address, alert_no);
         CREATE INDEX IF NOT EXISTS idx_alpha_push_events_source_interval
             ON alpha_push_events(source, trend_interval);
+        CREATE INDEX IF NOT EXISTS idx_alpha_push_events_interval_source_recent
+            ON alpha_push_events(trend_interval, COALESCE(source, '1m'), pushed_at DESC, id DESC);
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS onchain_trading_guides (

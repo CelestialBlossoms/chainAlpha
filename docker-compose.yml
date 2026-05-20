@@ -9,7 +9,7 @@ services:
     working_dir: /app
     environment:
       TZ: Asia/Shanghai
-      PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
+      PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "21600"
     volumes:
       - .:/app
       - ./data:/app/data

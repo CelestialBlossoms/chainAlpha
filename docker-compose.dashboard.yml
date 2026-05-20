@@ -16,7 +16,7 @@ services:
       TG_ALERT_STREAM_KEY: chain_alpha:tg_alerts
       TG_ALERT_STREAM_MAX_AGE_SEC: "3600"
       PLUGIN_SIGNAL_STREAM_KEY: chain_alpha:plugin_signals
-      PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "3600"
+      PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "21600"
     ports:
       - "8010:8089"
     command:

@@ -413,6 +413,84 @@ def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
     return db_op(_op)
 
 
+def compact_alpha_new_token_stream_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    normalized = normalize_alert(str(item.get("id") or ""), item)
+    if normalized.get("source") != "alpha_new_tokens":
+        return None
+    extra = normalized.get("extra") if isinstance(normalized.get("extra"), dict) else {}
+    address = str(extra.get("address") or normalized.get("ca") or "").strip()
+    if not address:
+        return None
+    ts = _safe_int(normalized.get("ts") or extra.get("ts"))
+    stream_id = str(normalized.get("id") or "")
+    pushed_at = datetime.fromtimestamp(ts).isoformat() if ts > 0 else ""
+    return {
+        "id": f"stream:{stream_id or address}",
+        "ts": ts,
+        "address": address,
+        "chain": extra.get("chain") or "sol",
+        "symbol": extra.get("symbol") or "UNKNOWN",
+        "source": extra.get("source") or "1m",
+        "trend_interval": extra.get("trend_interval") or "1m",
+        "alert_no": _safe_int(extra.get("alert_no")),
+        "repeat_alert": bool(extra.get("repeat_alert")),
+        "repeat_alert_type": extra.get("repeat_alert_type") or "",
+        "entry_mcap": _safe_float(extra.get("entry_mcap")),
+        "entry_price": _safe_float(extra.get("entry_price")),
+        "holder_count": _safe_int(extra.get("holder_count")),
+        "fee_sol": _safe_float(extra.get("fee_sol")),
+        "buy_score": _safe_int(extra.get("buy_score")),
+        "pushed_at": pushed_at,
+        "narrative": extra.get("narrative") or "",
+        "verdict": extra.get("verdict") or "",
+        "market_structure": extra.get("market_structure") or "",
+        "pool_label": extra.get("pool_label") or "",
+        "pool_liquidity": _safe_float(extra.get("pool_liquidity")),
+        "pool_mcap_ratio": _safe_float(extra.get("pool_mcap_ratio")),
+        "trade_volume_usd": _safe_float(extra.get("trade_volume_usd")),
+        "control_ratio": _safe_float(extra.get("control_ratio")),
+        "top10_rate": _safe_float(extra.get("top10_rate")),
+        "created_time": extra.get("created_time") or "",
+        "created_at": _safe_int(extra.get("created_at")),
+        "price_observation_change_pct": _safe_float(extra.get("price_observation_change_pct")),
+        "mcap_alert_history": extra.get("mcap_alert_history") if isinstance(extra.get("mcap_alert_history"), list) else [],
+        "price_alert_history": extra.get("price_alert_history") if isinstance(extra.get("price_alert_history"), list) else [],
+    }
+
+
+def fetch_alpha_new_token_stream_events(limit: int = 100) -> list[dict[str, Any]]:
+    history_limit = min(1000, max(limit * 3, 200))
+    rows = []
+    for item in read_recent_plugin_signals(history_limit):
+        compact = compact_alpha_new_token_stream_item(item)
+        if compact:
+            rows.append(compact)
+    return sorted(rows, key=_alpha_new_token_sort_key, reverse=True)[:limit]
+
+
+def _alpha_new_token_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    item_id = str(item.get("id") or "")
+    stream_id = item_id.split("stream:", 1)[-1] if item_id.startswith("stream:") else item_id
+    stream_ms = _safe_int(stream_id.split("-", 1)[0]) if "-" in stream_id else 0
+    return (_safe_int(item.get("ts")), stream_ms, item_id)
+
+
+def merge_alpha_new_token_events(
+    db_items: list[dict[str, Any]],
+    stream_items: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in [*db_items, *stream_items]:
+        address = str(item.get("address") or item.get("ca") or "").strip()
+        if not address:
+            continue
+        current = merged.get(address)
+        if current is None or _alpha_new_token_sort_key(item) > _alpha_new_token_sort_key(current):
+            merged[address] = item
+    return sorted(merged.values(), key=_alpha_new_token_sort_key, reverse=True)[:limit]
+
+
 def fetch_onchain_trading_guides(
     limit: int = 200,
     query: str = "",
@@ -549,7 +627,11 @@ def plugin_alpha_new_tokens(request: Request, limit: int = 100):
         and isinstance(_PLUGIN_ALPHA_NEW_TOKEN_CACHE.get("items"), list)
     ):
         return {"items": _PLUGIN_ALPHA_NEW_TOKEN_CACHE["items"][:limit], "cached": True}
-    items = fetch_alpha_new_token_events(limit)
+    items = merge_alpha_new_token_events(
+        fetch_alpha_new_token_events(limit),
+        fetch_alpha_new_token_stream_events(limit),
+        limit,
+    )
     _PLUGIN_ALPHA_NEW_TOKEN_CACHE.update({"ts": now, "limit": limit, "items": items})
     return {"items": items, "cached": False}
 
