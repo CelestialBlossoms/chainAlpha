@@ -391,6 +391,11 @@ def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
             item["pool_label"] = raw.get("pool_label") or ""
             item["pool_liquidity"] = raw.get("pool_liquidity") or 0
             item["pool_mcap_ratio"] = raw.get("pool_mcap_ratio") or 0
+            if not _safe_float(item["pool_mcap_ratio"]):
+                entry_mcap = _safe_float(item.get("entry_mcap"))
+                pool_liquidity = _safe_float(item.get("pool_liquidity"))
+                if entry_mcap > 0 and pool_liquidity > 0:
+                    item["pool_mcap_ratio"] = pool_liquidity / entry_mcap
             item["trade_volume_usd"] = raw.get("trade_volume_usd") or 0
             item["control_ratio"] = raw.get("control_ratio") or 0
             item["top10_rate"] = raw.get("top10_rate") or 0

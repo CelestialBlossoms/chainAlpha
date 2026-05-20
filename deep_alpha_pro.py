@@ -2555,6 +2555,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
     buy_tax_pct = extract_tax_pct(trend_row, info, side="buy")
     sell_tax_pct = extract_tax_pct(trend_row, info, side="sell")
     pool_label, pool_liquidity = extract_pool_label(info, trend_row)
+    pool_mcap_ratio = pool_liquidity / mcap if pool_liquidity > 0 and mcap > 0 else 0.0
     created_at = first_value(
         info,
         trend_row,
@@ -2612,6 +2613,7 @@ def perform_deep_analysis(chain, address, trend_row=None, enforce_dev_risk=True)
         "trend_change1h": trend_snapshot.get("change1h", 0),
         "pool_label": pool_label,
         "pool_liquidity": pool_liquidity,
+        "pool_mcap_ratio": pool_mcap_ratio,
         "price": current_price,
         "created_at": created_at,
         "created_age": format_age(created_at),
