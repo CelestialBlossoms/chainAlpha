@@ -370,7 +370,21 @@ def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
                 buy_score,
                 tg_chat_id,
                 tg_message_id,
-                raw_stats,
+                raw_stats->>'narrative' AS raw_narrative,
+                raw_stats->>'narrative_desc' AS raw_narrative_desc,
+                raw_stats->>'verdict' AS raw_verdict,
+                raw_stats->>'market_structure' AS raw_market_structure,
+                raw_stats->>'pool_label' AS raw_pool_label,
+                raw_stats->>'pool_liquidity' AS raw_pool_liquidity,
+                raw_stats->>'pool_mcap_ratio' AS raw_pool_mcap_ratio,
+                raw_stats->>'trade_volume_usd' AS raw_trade_volume_usd,
+                raw_stats->>'control_ratio' AS raw_control_ratio,
+                raw_stats->>'top10_rate' AS raw_top10_rate,
+                raw_stats->>'created_time' AS raw_created_time,
+                raw_stats->>'created_at' AS raw_created_at,
+                raw_stats->>'price_observation_change_pct' AS raw_price_observation_change_pct,
+                COALESCE(raw_stats->'mcap_alert_history', '[]'::jsonb) AS raw_mcap_alert_history,
+                COALESCE(raw_stats->'price_alert_history', '[]'::jsonb) AS raw_price_alert_history,
                 pushed_at
             FROM alpha_push_events
             WHERE trend_interval = '1m'
@@ -384,27 +398,27 @@ def fetch_alpha_new_token_events(limit: int = 100) -> list[dict[str, Any]]:
         rows = []
         for row in cur.fetchall():
             item = {key: json_safe(value) for key, value in zip(columns, row)}
-            raw = item.get("raw_stats") if isinstance(item.get("raw_stats"), dict) else {}
-            item["narrative"] = raw.get("narrative") or raw.get("narrative_desc") or ""
-            item["verdict"] = raw.get("verdict") or ""
-            item["market_structure"] = raw.get("market_structure") or ""
-            item["pool_label"] = raw.get("pool_label") or ""
-            item["pool_liquidity"] = raw.get("pool_liquidity") or 0
-            item["pool_mcap_ratio"] = raw.get("pool_mcap_ratio") or 0
+            raw_narrative = item.pop("raw_narrative", "")
+            raw_narrative_desc = item.pop("raw_narrative_desc", "")
+            item["narrative"] = raw_narrative or raw_narrative_desc or ""
+            item["verdict"] = item.pop("raw_verdict", "") or ""
+            item["market_structure"] = item.pop("raw_market_structure", "") or ""
+            item["pool_label"] = item.pop("raw_pool_label", "") or ""
+            item["pool_liquidity"] = _safe_float(item.pop("raw_pool_liquidity", 0))
+            item["pool_mcap_ratio"] = _safe_float(item.pop("raw_pool_mcap_ratio", 0))
             if not _safe_float(item["pool_mcap_ratio"]):
                 entry_mcap = _safe_float(item.get("entry_mcap"))
                 pool_liquidity = _safe_float(item.get("pool_liquidity"))
                 if entry_mcap > 0 and pool_liquidity > 0:
                     item["pool_mcap_ratio"] = pool_liquidity / entry_mcap
-            item["trade_volume_usd"] = raw.get("trade_volume_usd") or 0
-            item["control_ratio"] = raw.get("control_ratio") or 0
-            item["top10_rate"] = raw.get("top10_rate") or 0
-            item["created_time"] = raw.get("created_time") or ""
-            item["created_at"] = raw.get("created_at") or 0
-            item["price_observation_change_pct"] = raw.get("price_observation_change_pct") or 0
-            item["mcap_alert_history"] = raw.get("mcap_alert_history") or []
-            item["price_alert_history"] = raw.get("price_alert_history") or []
-            item.pop("raw_stats", None)
+            item["trade_volume_usd"] = _safe_float(item.pop("raw_trade_volume_usd", 0))
+            item["control_ratio"] = _safe_float(item.pop("raw_control_ratio", 0))
+            item["top10_rate"] = _safe_float(item.pop("raw_top10_rate", 0))
+            item["created_time"] = item.pop("raw_created_time", "") or ""
+            item["created_at"] = _safe_int(item.pop("raw_created_at", 0))
+            item["price_observation_change_pct"] = _safe_float(item.pop("raw_price_observation_change_pct", 0))
+            item["mcap_alert_history"] = item.pop("raw_mcap_alert_history", []) or []
+            item["price_alert_history"] = item.pop("raw_price_alert_history", []) or []
             item.pop("tg_chat_id", None)
             item.pop("tg_message_id", None)
             rows.append(item)
