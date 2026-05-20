@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
@@ -15,13 +15,6 @@ from db_client import db_op
 BATCH = "trading_review_notes_2026_05_14"
 
 NOTES = [
-    {
-        "title": "战壕即将打满时的横盘发射观察",
-        "note": "在战壕即将打满的情况下，长时间横盘不动的代币，大概率会发射。",
-        "category": "pattern",
-        "chain": "sol",
-        "tags": ["战壕", "横盘", "即将打满", "发射"],
-    },
     {
         "title": "0.2 黄金支撑线规则",
         "note": "万物皆可 0.2。5M 以上盘子如果实体跌破高点的 0.2 支撑，直接拉黑不看。所谓黄金支撑线可理解为该币阶段高点乘以 0.2。",

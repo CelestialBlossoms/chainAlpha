@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Restore onchain_trading_guides from SQL backup file."""
 import sys, json
 from pathlib import Path
@@ -31,7 +31,6 @@ def main():
         # All 30 original records from SQL backup
         records = [
             (94, '底部异动策略分析：二段启动前放量信号', '二段启动前成交量通常极度萎缩；如果成交量长期萎靡后突然放量，且放量达到市值的 10% 左右，可能是二段启动前的重要信号，需要重点关注。', '交易策略', 'sol', None, None, ['底部异动','二段启动','成交量萎缩','放量','市值10%'], {"topic":"bottom_abnormal_volume_signal","source":"manual_note"}),
-            (63, '战壕即将打满时的横盘发射观察', '在战壕即将打满的情况下，长时间横盘不动的代币，大概率会发射。', '形态观察', 'sol', None, None, ['战壕','横盘','即将打满','发射'], {"batch":"trading_review_notes_2026_05_14","source":"manual_bulk_summary"}),
             (64, '0.2 黄金支撑线规则', '万物皆可 0.2。5M 以上盘子如果实体跌破高点的 0.2 支撑，直接拉黑不看。所谓黄金支撑线可理解为该币阶段高点乘以 0.2。', '风险控制', 'sol', None, None, ['0.2','黄金支撑线','5M','拉黑','风控'], {"batch":"trading_review_notes_2026_05_14","source":"manual_bulk_summary"}),
             (65, '腰斩分批与跌破五倍风控', '深深浅浅的下跌中，可以腰斩买一波，再腰斩补一手；如果跌破五倍区间就割肉，避免无限补仓。', '风险控制', 'sol', None, None, ['腰斩','补仓','五倍','割肉','分批'], {"batch":"trading_review_notes_2026_05_14","source":"manual_bulk_summary"}),
             (66, '跟单有时效性', '跟单有很强时效性，吃到一波就要走，不到点不上。Bonk 台子少上，群里老大没说的不要再加仓，不要 FOMO。', '交易纪律', 'sol', None, None, ['跟单','时效性','FOMO','加仓','纪律'], {"batch":"trading_review_notes_2026_05_14","source":"manual_bulk_summary"}),
