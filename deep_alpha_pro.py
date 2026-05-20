@@ -3193,11 +3193,11 @@ def scan_pro():
                             print(f"  [跳过] 量能崩塌 ${s['symbol']} {addr}: vol_ratio={vol_ratio_1m:.2f}x < 0.3x")
                             continue
 
-                    # P1: 20-50K MCAP + weak SM (<3) + high Top10 (>20%) = 0% win rate, 57% dead
+                    # P1: 20-50K MCAP + weak SM (<3) + high Top10 (>30%) = dangerous concentration
                     mcap_val = safe_float(s.get("mcap"))
                     top10_val = safe_float(s.get("top10_rate"))
                     sm_val = int(safe_float(s.get("sm_count")))
-                    if 20000 <= mcap_val < 50000 and sm_val < 3 and top10_val > 20:
+                    if 20000 <= mcap_val < 50000 and sm_val < 3 and top10_val > 30:
                         print(f"  [跳过] 20-50K弱筹码 ${s['symbol']} {addr}: sm={sm_val}, top10={top10_val:.1f}%")
                         continue
                     # P2: 20-30K + SM=0 = 0% win rate
