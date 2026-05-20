@@ -3056,9 +3056,6 @@ def scan_pro():
                     s["mcap_observation_reason"] = mcap_observation_reason
                     if s["mcap"] > MAX_MCAP_USD:
                         continue
-                    age_seconds = token_age_seconds(s.get("created_at"))
-                    if age_seconds is not None and age_seconds > MAX_TOKEN_AGE_SEC:
-                        continue
                     if s["fee_sol"] < MIN_FEE_SOL:
                         print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{MIN_FEE_SOL:.2f} SOL")
                         continue
