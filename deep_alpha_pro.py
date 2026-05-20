@@ -23,7 +23,15 @@ MID_MCAP_STRICT_USD = 20_000
 LOW_MCAP_MIN_UP_PCT = 0.30
 MID_MCAP_MIN_UP_PCT = 0.10
 HIGH_MCAP_MIN_UP_PCT = float(os.getenv("DEEP_ALPHA_HIGH_MCAP_MIN_UP_PCT", "0.05"))
-MIN_FEE_SOL = 1
+MIN_FEE_SOL = 1  # fallback default, actual threshold is stratified via get_min_fee_for_token()
+MIN_FEE_MIGRATED_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_MIGRATED_SOL", "2"))
+MIN_FEE_NEW_TOKEN_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_NEW_TOKEN_SOL", "0.2"))
+MIN_FEE_OLD_TOKEN_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_OLD_TOKEN_SOL", "2"))
+MIN_FEE_MCAP_TINY_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_MCAP_TINY_SOL", "0.1"))
+MIN_FEE_MCAP_LOW_SOL = float(os.getenv("DEEP_ALPHA_MIN_FEE_MCAP_LOW_SOL", "0.2"))
+MIN_FEE_MCAP_TINY_USD = 10_000
+MIN_FEE_MCAP_LOW_USD = 30_000
+MIGRATED_POOL_KEYWORDS = ["raydium", "meteora", "orca", "openbook", "fluxbeam"]
 VOLUME_FEE_GUARD_MIN_MCAP_USD = float(os.getenv("DEEP_ALPHA_VOLUME_FEE_GUARD_MIN_MCAP_USD", "40000"))
 VOLUME_FEE_TIERS = (
     (1_000_000, float(os.getenv("DEEP_ALPHA_VOLUME_FEE_1M_SOL", "10"))),
@@ -1080,6 +1088,40 @@ def extract_tax_pct(*sources, side):
             "tax_sell_pct",
         )
     return normalize_tax_pct(first_float(*sources, keys=keys))
+
+def get_min_fee_for_token(stats):
+    """Stratified minimum fee based on pool, MCAP, and token age.
+
+    Priority: pool migration > MCAP tier > token age > default.
+    - Migrated pools (Raydium/Meteora/Orca): >= 2 SOL
+    - MCAP < 10K: >= 0.1 SOL, MCAP 10-30K: >= 0.2 SOL
+    - New tokens (< 4h) without pool migration: >= 0.2 SOL
+    - Old tokens (> 24h): >= 2 SOL
+    - Default: >= 1 SOL
+    """
+    pool_label = (stats.get("pool_label") or "").lower()
+    mcap = safe_float(stats.get("mcap"))
+    age_seconds = token_age_seconds(stats.get("created_at"))
+
+    # Pool migration overrides everything — migrated pools need real volume
+    if any(kw in pool_label for kw in MIGRATED_POOL_KEYWORDS):
+        return MIN_FEE_MIGRATED_SOL, f"已迁移至{pool_label}"
+
+    # MCAP-based tiers: tiny MCAP tokens naturally have lower fee
+    if 0 < mcap < MIN_FEE_MCAP_TINY_USD:
+        return MIN_FEE_MCAP_TINY_SOL, f"极低市值(${mcap:,.0f}<${MIN_FEE_MCAP_TINY_USD:,.0f})"
+    if mcap < MIN_FEE_MCAP_LOW_USD:
+        return MIN_FEE_MCAP_LOW_SOL, f"低市值(${mcap:,.0f}<${MIN_FEE_MCAP_LOW_USD:,.0f})"
+
+    # Age-based adjustments
+    if age_seconds is not None:
+        if age_seconds <= 4 * 3600:
+            return MIN_FEE_NEW_TOKEN_SOL, f"新币({age_seconds / 3600:.1f}h)"
+        if age_seconds > 24 * 3600:
+            return MIN_FEE_OLD_TOKEN_SOL, f"老币({age_seconds / 3600:.0f}h)"
+
+    return MIN_FEE_SOL, "默认"
+
 
 def required_volume_fee_sol(mcap_usd, trade_volume_usd):
     mcap_usd = safe_float(mcap_usd)
@@ -3056,8 +3098,9 @@ def scan_pro():
                     s["mcap_observation_reason"] = mcap_observation_reason
                     if s["mcap"] > MAX_MCAP_USD:
                         continue
-                    if s["fee_sol"] < MIN_FEE_SOL:
-                        print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{MIN_FEE_SOL:.2f} SOL")
+                    min_fee, fee_reason = get_min_fee_for_token(s)
+                    if s["fee_sol"] < min_fee:
+                        print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{min_fee:.2f} SOL ({fee_reason})")
                         continue
                     volume_fee_reason = volume_fee_filter_reason(s)
                     if volume_fee_reason:
