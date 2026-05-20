@@ -27,6 +27,14 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 DEEPSEEK_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "45"))
+DEEPSEEK_CLASSIFY_ENABLED = os.getenv("BINANCE_NARRATIVE_DEEPSEEK_CLASSIFY", "1") != "0"
+NARRATIVE_CATEGORIES = {
+    "\u653f\u6cbb",
+    "\u52a8\u7269",
+    "\u5e94\u7528",
+    "\u62bd\u8c61",
+    "\u5176\u4ed6",
+}
 
 TOKEN_SEARCH_URL = "https://web3.binance.com/bapi/defi/v5/public/wallet-direct/buw/wallet/market/token/search/ai"
 TOKEN_META_URL = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/dex/market/token/meta/info/ai"
@@ -194,7 +202,7 @@ def translate_narrative_to_chinese(text: str) -> str:
     return text
 
 
-def classify_narrative_category(desc: Any = "", narrative_type: Any = "", tags: Any = None) -> str:
+def keyword_classify_narrative_category(desc: Any = "", narrative_type: Any = "", tags: Any = None) -> str:
     parts = [str(desc or ""), str(narrative_type or "")]
     if isinstance(tags, list):
         parts.extend(str(item or "") for item in tags)
@@ -207,6 +215,105 @@ def classify_narrative_category(desc: Any = "", narrative_type: Any = "", tags: 
     }
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "其他"
+
+
+def _parse_deepseek_json(content: str) -> dict[str, Any]:
+    text = str(content or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if match:
+        text = match.group(0)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def deepseek_analyze_narrative(
+    desc: Any = "",
+    narrative_type: Any = "",
+    tags: Any = None,
+    *,
+    symbol: str = "",
+    name: str = "",
+) -> dict[str, str]:
+    desc_text = str(desc or "").strip()
+    type_text = str(narrative_type or "").strip()
+    tag_list = tags if isinstance(tags, list) else ([tags] if tags else [])
+    tag_list = [str(item or "").strip() for item in tag_list if str(item or "").strip()]
+    if not DEEPSEEK_CLASSIFY_ENABLED or not DEEPSEEK_API_KEY:
+        return {}
+    if not any([desc_text, type_text, tag_list, symbol, name]):
+        return {}
+
+    prompt = {
+        "symbol": symbol or "",
+        "name": name or "",
+        "narrative_desc": desc_text,
+        "narrative_type": type_text,
+        "tags": tag_list,
+        "allowed_categories": sorted(NARRATIVE_CATEGORIES),
+        "task": (
+            "\u603b\u7ed3\u4ee3\u5e01\u53d9\u4e8b\u5e76\u5f52\u7c7b\u3002"
+            "\u53ea\u8f93\u51faJSON\uff1a"
+            "{\"summary\":\"120\u5b57\u5185\u4e2d\u6587\u53d9\u4e8b\","
+            "\"category\":\"\u653f\u6cbb|\u52a8\u7269|\u5e94\u7528|\u62bd\u8c61|\u5176\u4ed6\"}\u3002"
+            "\u4e0d\u8981\u8f93\u51fa\u4ea4\u6613\u5efa\u8bae\u3002"
+        ),
+    }
+    try:
+        resp = requests.post(
+            f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "\u4f60\u662f\u52a0\u5bc6 meme \u4ee3\u5e01\u53d9\u4e8b\u5206\u7c7b\u5668\u3002"
+                            "\u53ea\u8f93\u51fa\u53ef\u89e3\u6790JSON\uff0c\u4e0d\u8f93\u51fa\u6295\u8d44\u5efa\u8bae\u3002"
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 260,
+            },
+            timeout=DEEPSEEK_TIMEOUT,
+        )
+        if not resp.ok:
+            print(f"deepseek narrative classify http={resp.status_code} {resp.text[:160]}")
+            return {}
+        payload = resp.json()
+        content = (
+            ((payload.get("choices") or [{}])[0].get("message") or {}).get("content")
+            if isinstance(payload, dict) else ""
+        )
+        data = _parse_deepseek_json(content)
+        category = str(data.get("category") or "").strip()
+        summary = str(data.get("summary") or "").strip()
+        if category not in NARRATIVE_CATEGORIES:
+            category = ""
+        result = {}
+        if category:
+            result["narrative_category"] = category
+        if summary:
+            result["narrative_desc"] = summary[:500]
+        return result
+    except Exception as exc:
+        print(f"deepseek narrative classify failed: {exc}")
+        return {}
+
+
+def classify_narrative_category(desc: Any = "", narrative_type: Any = "", tags: Any = None) -> str:
+    analysis = deepseek_analyze_narrative(desc, narrative_type, tags)
+    return analysis.get("narrative_category") or keyword_classify_narrative_category(desc, narrative_type, tags)
 
 
 def _first_topic_match(address: str, symbol: str = "", name: str = "") -> dict[str, Any]:
@@ -312,6 +419,11 @@ def save_token_narrative(address: str, narrative: dict[str, Any]) -> None:
     if not address or not narrative:
         return
     ensure_token_narratives_table()
+    raw_payload = narrative.get("raw") if isinstance(narrative.get("raw"), dict) else {}
+    raw_payload = {
+        **raw_payload,
+        "narrative_category": narrative.get("narrative_category") or "",
+    }
 
     def _op(conn):
         cur = conn.cursor()
@@ -338,7 +450,7 @@ def save_token_narrative(address: str, narrative: dict[str, Any]) -> None:
                 narrative.get("narrative_desc") or "",
                 narrative.get("narrative_type") or "",
                 Json(narrative.get("tags") or []),
-                Json(narrative.get("raw") or {}),
+                Json(raw_payload),
             ),
         )
         cur.execute("SELECT to_regclass('public.bottom_watchlist_tokens')")
@@ -375,6 +487,7 @@ def load_db_narrative(address: str) -> dict[str, Any] | None:
         row = cur.fetchone()
         if not row:
             return None
+        raw = row[5] if isinstance(row[5], dict) else {}
         return {
             "address": address,
             "narrative_desc": row[0] or "",
@@ -382,7 +495,8 @@ def load_db_narrative(address: str) -> dict[str, Any] | None:
             "symbol": row[2],
             "name": row[3],
             "tags": row[4] if isinstance(row[4], list) else [],
-            "raw": row[5] if isinstance(row[5], dict) else {},
+            "raw": raw,
+            "narrative_category": raw.get("narrative_category") or "",
             "source": "db",
         }
 
@@ -452,16 +566,28 @@ def get_binance_narrative(
         desc = f"{topic_name}: {desc}"
     original_desc = desc
     translated_desc = translate_narrative_to_chinese(desc)
+    narrative_analysis = deepseek_analyze_narrative(
+        translated_desc or original_desc,
+        narrative_type,
+        tags,
+        symbol=token_symbol,
+        name=token_name,
+    )
+    final_desc = narrative_analysis.get("narrative_desc") or translated_desc
+    narrative_category = (
+        narrative_analysis.get("narrative_category")
+        or keyword_classify_narrative_category(final_desc, narrative_type, tags)
+    )
 
     result = {
         "address": address,
         "symbol": token_symbol,
         "name": token_name,
-        "narrative_desc": translated_desc[:500],
+        "narrative_desc": final_desc[:500],
         "narrative_desc_original": original_desc[:500],
-        "narrative_translated": translated_desc != original_desc,
+        "narrative_translated": final_desc != original_desc,
         "narrative_type": narrative_type[:180],
-        "narrative_category": classify_narrative_category(translated_desc, narrative_type, tags),
+        "narrative_category": narrative_category,
         "tags": tags,
         "source": "binance_web3",
         "updated_ts": int(time.time()),
