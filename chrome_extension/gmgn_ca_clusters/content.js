@@ -179,7 +179,7 @@
     const raw = Number(value);
     const date = Number.isFinite(raw) ? new Date(raw < 1000000000000 ? raw * 1000 : raw) : new Date(value);
     if (!Number.isFinite(date.getTime())) return "-";
-    return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
   }
 
   function fmtAge(seconds) {
@@ -188,6 +188,16 @@
     if (value < 3600) return `${Math.max(1, Math.round(value / 60))}m`;
     if (value < 86400) return `${(value / 3600).toFixed(1)}h`;
     return `${(value / 86400).toFixed(1)}d`;
+  }
+
+  function fmtTokenAge(createdAt, fallbackText = "") {
+    const raw = Number(createdAt || 0);
+    if (Number.isFinite(raw) && raw > 0) {
+      const ts = raw > 1000000000000 ? raw / 1000 : raw;
+      return fmtAge(Date.now() / 1000 - ts);
+    }
+    const match = String(fallbackText || "").match(/\(([^)]+)\)/);
+    return match ? match[1] : (fallbackText || "-");
   }
 
   function toNumber(value) {
@@ -581,7 +591,7 @@
             <span><em>${L.buyScore}</em><b>${toNumber(item.buy_score).toFixed(0)}</b></span>
             <span><em>${L.liquidity}</em><b>${fmtUsd(item.pool_liquidity)}</b></span>
             <span><em>${L.poolMcapRatio}</em><b>${renderPoolMcapRatio(item.pool_mcap_ratio)}</b></span>
-            <span><em>${L.tokenAge}</em><b>${escapeHtml(item.created_time || "-")}</b></span>
+            <span><em>${L.tokenAge}</em><b>${escapeHtml(fmtTokenAge(item.created_at, item.created_time))}</b></span>
             <span><em>${L.signalType}</em><b>${escapeHtml(item.repeat_alert_type || item.verdict || "-")}</b></span>
             <span><em>${L.pushTime}</em><b>${escapeHtml(fmtTime(item.ts))}</b></span>
           </div>
