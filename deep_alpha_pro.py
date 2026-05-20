@@ -3089,6 +3089,16 @@ def scan_pro():
                     s["address"] = addr
                     s["chain"] = chain
                     s["trend_interval"] = interval
+                    age_seconds = token_age_seconds(s.get("created_at"))
+                    if age_seconds is None:
+                        print(f"  [skip] unknown token age ${s['symbol']} {addr}")
+                        continue
+                    if age_seconds > MAX_TOKEN_AGE_SEC:
+                        print(
+                            f"  [skip] token age >24h ${s['symbol']} {addr}: "
+                            f"{age_seconds / 3600:.1f}h>{MAX_TOKEN_AGE_SEC / 3600:.0f}h"
+                        )
+                        continue
                     if 0 < s["mcap"] < MIN_MCAP_USD:
                         print(f"  [跳过] 市值过低 ${s['symbol']} {addr}: ${s['mcap']:,.0f}<${MIN_MCAP_USD:,.0f}")
                         continue
