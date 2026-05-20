@@ -3374,10 +3374,17 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             runup_text = quiet_breakout_signal_text(token, quiet_runup)
-            publish_frontend_signal_update(runup_text, runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
-            send_tg(runup_text, extra=runup_extra)
+            # quiet_runup: 60-78% dead rate → DB record only, no TG, no frontend
+            record_top100_push(
+                text=runup_text,
+                extra=runup_extra,
+                status="db_only",
+                source="bottom_abnormal",
+                chain=CHAIN,
+            )
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
+                f"(TG blocked) "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )
