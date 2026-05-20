@@ -259,13 +259,6 @@ def is_pool_holder(holder: dict[str, Any]) -> bool:
 
 
 def calc_mcap(row: dict[str, Any]) -> float:
-    price_raw = row.get("price")
-    if isinstance(price_raw, dict):
-        price_raw = price_raw.get("price") or price_raw.get("price_1m") or 0
-    price = to_float(price_raw)
-    circulating_supply = to_float(row.get("circulating_supply"))
-    if price > 0 and circulating_supply > 0:
-        return price * circulating_supply
     for key in ("market_cap", "usd_market_cap", "mcap", "fdv", "fully_diluted_valuation"):
         value = to_float(row.get(key))
         if value > 0:
