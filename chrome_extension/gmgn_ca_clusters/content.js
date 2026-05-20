@@ -121,7 +121,7 @@
     alphaError: "",
     alphaTimer: 0,
     alphaRequestId: 0,
-    pluginEventSource: null,
+    pluginEventPort: null,
     pluginEventReady: false,
     pluginEventFallbackTimer: 0,
     pluginEventLastSignalAt: 0,
@@ -1095,37 +1095,54 @@
   }
 
   async function startPluginEventStream() {
-    if (STATE.pluginEventSource) return;
+    if (STATE.pluginEventPort) return;
     try {
-      const response = await chrome.runtime.sendMessage({ type: "GET_PLUGIN_EVENT_URL" });
-      if (!response || !response.ok || !response.url) {
-        schedulePluginEventFallback();
-        return;
-      }
       const lastId = await getPluginEventLastId();
-      const separator = response.url.includes("?") ? "&" : "?";
-      const streamUrl = lastId ? `${response.url}${separator}last_id=${encodeURIComponent(lastId)}` : response.url;
-      const source = new EventSource(streamUrl);
-      STATE.pluginEventSource = source;
-      source.addEventListener("ready", () => {
-        STATE.pluginEventReady = true;
-      });
-      source.addEventListener("signal", (event) => {
-        STATE.pluginEventReady = true;
-        try {
-          handlePluginSignal(JSON.parse(event.data || "{}"));
-        } catch {}
-      });
-      source.addEventListener("error", () => {
-        STATE.pluginEventReady = false;
-        if (STATE.pluginEventSource) {
-          STATE.pluginEventSource.close();
-          STATE.pluginEventSource = null;
+      const port = chrome.runtime.connect({ name: "PLUGIN_EVENTS" });
+      STATE.pluginEventPort = port;
+      port.onMessage.addListener((message) => {
+        if (!message || !message.type) return;
+        if (message.type === "ready") {
+          STATE.pluginEventReady = true;
+          return;
         }
+        if (message.type === "signal") {
+          STATE.pluginEventReady = true;
+          handlePluginSignal(message.item || {});
+          return;
+        }
+        if (message.type === "error") {
+          STATE.pluginEventReady = false;
+          if (STATE.pluginEventPort) {
+            try {
+              STATE.pluginEventPort.disconnect();
+            } catch {}
+            STATE.pluginEventPort = null;
+          }
+          schedulePluginEventFallback();
+        }
+      });
+      port.onDisconnect.addListener(() => {
+        STATE.pluginEventPort = null;
+        STATE.pluginEventReady = false;
         schedulePluginEventFallback();
       });
+      port.postMessage({ type: "START", lastId });
+      window.setTimeout(() => {
+        if (STATE.pluginEventPort && !STATE.pluginEventReady) {
+          const stalePort = STATE.pluginEventPort;
+          STATE.pluginEventPort = null;
+          try {
+            stalePort.disconnect();
+          } catch {}
+          loadBottomWatchlist(true);
+          loadAlphaNewTokens(true);
+          startPluginEventStream();
+        }
+      }, PLUGIN_EVENT_FALLBACK_MS);
     } catch {
       STATE.pluginEventReady = false;
+      STATE.pluginEventPort = null;
       schedulePluginEventFallback();
     }
   }

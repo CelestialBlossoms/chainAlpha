@@ -11,6 +11,76 @@ function serviceModes(preferredMode, options = {}) {
   return ["server"];
 }
 
+function parseSseBlock(block) {
+  const message = { event: "message", data: "", id: "" };
+  const dataLines = [];
+  for (const rawLine of String(block || "").split(/\r?\n/)) {
+    if (!rawLine || rawLine.startsWith(":")) continue;
+    const index = rawLine.indexOf(":");
+    const field = index >= 0 ? rawLine.slice(0, index) : rawLine;
+    let value = index >= 0 ? rawLine.slice(index + 1) : "";
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") message.event = value;
+    if (field === "id") message.id = value;
+    if (field === "data") dataLines.push(value);
+  }
+  message.data = dataLines.join("\n");
+  return message.data || message.event !== "message" ? message : null;
+}
+
+function safePost(port, message) {
+  try {
+    port.postMessage(message);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function streamPluginEvents(port, lastId, signal) {
+  const mode = await getServiceMode();
+  const baseUrl = SERVICE_URLS[mode];
+  const query = lastId ? `?last_id=${encodeURIComponent(lastId)}` : "";
+  const resp = await fetch(`${baseUrl}/api/plugin/events${query}`, {
+    method: "GET",
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    throw new Error(`plugin event stream HTTP ${resp.status}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\r?\n\r?\n/);
+    buffer = parts.pop() || "";
+    for (const part of parts) {
+      const parsed = parseSseBlock(part);
+      if (!parsed) continue;
+      let payload = {};
+      try {
+        payload = parsed.data ? JSON.parse(parsed.data) : {};
+      } catch {
+        payload = { raw: parsed.data };
+      }
+      if (parsed.id && payload && typeof payload === "object" && !payload.id) {
+        payload.id = parsed.id;
+      }
+      if (parsed.event === "ready") {
+        if (!safePost(port, { type: "ready", data: payload })) return;
+      } else if (parsed.event === "signal") {
+        if (!safePost(port, { type: "signal", item: payload })) return;
+      }
+    }
+  }
+}
+
 async function fetchServiceJson(path, options = {}) {
   const preferredMode = await getServiceMode();
   const modes = serviceModes(preferredMode, options);
@@ -81,4 +151,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   return false;
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "PLUGIN_EVENTS") return;
+  let controller = null;
+  let started = false;
+
+  port.onMessage.addListener((message) => {
+    if (!message || message.type !== "START" || started) return;
+    started = true;
+    controller = new AbortController();
+    streamPluginEvents(port, String(message.lastId || ""), controller.signal)
+      .then(() => {
+        if (controller?.signal.aborted) return;
+        safePost(port, { type: "error", error: "plugin event stream closed" });
+        try {
+          port.disconnect();
+        } catch {}
+      })
+      .catch((err) => {
+        if (controller?.signal.aborted) return;
+        safePost(port, { type: "error", error: err && err.message ? err.message : String(err) });
+        try {
+          port.disconnect();
+        } catch {}
+      });
+  });
+
+  port.onDisconnect.addListener(() => {
+    if (controller) controller.abort();
+  });
 });

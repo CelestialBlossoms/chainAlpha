@@ -46,8 +46,8 @@ _PLUGIN_ALPHA_NEW_TOKEN_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items":
 app = FastAPI(title="Chain Alpha TG Dashboard")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["chrome-extension://*", "http://localhost:*", "http://127.0.0.1:*"],
-    allow_origin_regex=r"chrome-extension://.*|http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=["chrome-extension://*", "https://gmgn.ai", "https://www.gmgn.ai", "http://localhost:*", "http://127.0.0.1:*"],
+    allow_origin_regex=r"chrome-extension://.*|https://([a-z0-9-]+\.)?gmgn\.ai|http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["GET"],
     allow_headers=["*"],
 )
