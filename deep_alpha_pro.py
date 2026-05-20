@@ -10,6 +10,7 @@ from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
 from redis_client import get_redis_client, redis_key
 from binance_narrative import compact_narrative, get_binance_narrative
+from plugin_signal_stream import publish_plugin_signal
 from tg_alert_stream import publish_tg_alert
 
 # ---------------------------------------------------------------------------
@@ -485,6 +486,43 @@ def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSH
     if existing_candidate and not allow_repeat:
         return None
     return send_tg_alert(msg, ca=address, extra={"stats": stats or {}, "address": address})
+
+
+def publish_alpha_new_token_plugin_signal(address, chain, interval, stats, tg_message_id=None):
+    if interval != "1m" or not address or not stats:
+        return None
+    extra = {
+        "address": address,
+        "chain": chain,
+        "symbol": stats.get("symbol") or "UNKNOWN",
+        "source": "1m",
+        "trend_interval": interval,
+        "alert_no": int(safe_float(stats.get("alert_sequence_no"), 1) or 1),
+        "repeat_alert": bool(stats.get("repeat_alert")),
+        "repeat_alert_type": stats.get("repeat_alert_type") or "",
+        "entry_mcap": safe_float(stats.get("mcap")),
+        "entry_price": safe_float(stats.get("price")),
+        "holder_count": int(safe_float(stats.get("holder_count"))),
+        "fee_sol": safe_float(stats.get("fee_sol")),
+        "buy_score": int(safe_float(stats.get("buy_score"))),
+        "narrative": stats.get("narrative") or stats.get("narrative_desc") or "",
+        "verdict": stats.get("verdict") or "",
+        "market_structure": stats.get("market_structure") or "",
+        "pool_label": stats.get("pool_label") or "",
+        "pool_liquidity": safe_float(stats.get("pool_liquidity")),
+        "pool_mcap_ratio": safe_float(stats.get("pool_mcap_ratio")),
+        "trade_volume_usd": safe_float(stats.get("trade_volume_usd")),
+        "control_ratio": safe_float(stats.get("control_ratio")),
+        "top10_rate": safe_float(stats.get("top10_rate")),
+        "created_time": stats.get("created_time") or "",
+        "created_at": stats.get("created_at") or 0,
+        "price_observation_change_pct": safe_float(stats.get("price_observation_change_pct")),
+        "mcap_alert_history": stats.get("mcap_alert_history") or [],
+        "price_alert_history": stats.get("price_alert_history") or [],
+        "tg_message_id": tg_message_id,
+    }
+    title = f"${extra['symbol']} 1m打新 | {format_mcap_short(extra['entry_mcap'])}"
+    return publish_plugin_signal(title, "alpha_new_tokens", ca=address, status="signal", extra=extra)
 
 def format_mcap_short(value):
     value = safe_float(value)
@@ -3363,6 +3401,7 @@ def scan_pro():
                         if should_send_new_token_ca_alert(s, interval):
                             send_new_token_ca_alert(s)
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
+                        publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
                         # P3: start post-push 1m K-line tracking

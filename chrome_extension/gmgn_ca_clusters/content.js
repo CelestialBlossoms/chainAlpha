@@ -119,6 +119,10 @@
     alphaError: "",
     alphaTimer: 0,
     alphaRequestId: 0,
+    pluginEventSource: null,
+    pluginEventReady: false,
+    pluginEventFallbackTimer: 0,
+    pluginEventLastSignalAt: 0,
     dismissedSignals: {},
     serviceMode: "local",
     serviceBaseUrl: "",
@@ -647,8 +651,7 @@
     attachCopyHandlers();
     attachDismissHandlers();
     attachAlphaRefreshHandler();
-    startAbnormalAutoRefresh();
-    startAlphaAutoRefresh();
+    startPluginEventStream();
     if (STATE.view === "alpha" && !STATE.alphaItems.length && !STATE.alphaLoading) {
       loadAlphaNewTokens(false);
     } else if (!STATE.abnormalItems.length && !STATE.abnormalLoading) {
@@ -848,30 +851,31 @@
   }
 
   function normalizeAlphaNewToken(item) {
-    if (!item || !item.address) return null;
-    const ca = String(item.address || "").trim();
+    if (!item) return null;
+    const extra = item.extra || {};
+    const ca = String(item.address || extra.address || item.ca || "").trim();
     if (!ca) return null;
     return {
       id: String(item.id || `${ca}:${item.ts || ""}`),
       ca,
-      ts: toNumber(item.ts),
-      symbol: item.symbol || "UNKNOWN",
-      mcap: toNumber(item.entry_mcap),
-      price: toNumber(item.entry_price),
-      holder_count: toNumber(item.holder_count),
-      fee_sol: toNumber(item.fee_sol),
-      buy_score: toNumber(item.buy_score),
-      pool_liquidity: toNumber(item.pool_liquidity),
-      pool_mcap_ratio: toNumber(item.pool_mcap_ratio),
-      price_observation_change_pct: toNumber(item.price_observation_change_pct),
-      alert_no: toNumber(item.alert_no),
-      repeat_alert: Boolean(item.repeat_alert),
-      repeat_alert_type: item.repeat_alert_type || "",
-      narrative: item.narrative || "",
-      verdict: item.verdict || "",
-      market_structure: item.market_structure || "",
-      pool_label: item.pool_label || "",
-      created_time: item.created_time || "",
+      ts: toNumber(item.ts || extra.ts),
+      symbol: item.symbol || extra.symbol || "UNKNOWN",
+      mcap: toNumber(item.entry_mcap || extra.entry_mcap),
+      price: toNumber(item.entry_price || extra.entry_price),
+      holder_count: toNumber(item.holder_count || extra.holder_count),
+      fee_sol: toNumber(item.fee_sol || extra.fee_sol),
+      buy_score: toNumber(item.buy_score || extra.buy_score),
+      pool_liquidity: toNumber(item.pool_liquidity || extra.pool_liquidity),
+      pool_mcap_ratio: toNumber(item.pool_mcap_ratio || extra.pool_mcap_ratio),
+      price_observation_change_pct: toNumber(item.price_observation_change_pct || extra.price_observation_change_pct),
+      alert_no: toNumber(item.alert_no || extra.alert_no),
+      repeat_alert: Boolean(item.repeat_alert || extra.repeat_alert),
+      repeat_alert_type: item.repeat_alert_type || extra.repeat_alert_type || "",
+      narrative: item.narrative || extra.narrative || "",
+      verdict: item.verdict || extra.verdict || "",
+      market_structure: item.market_structure || extra.market_structure || "",
+      pool_label: item.pool_label || extra.pool_label || "",
+      created_time: item.created_time || extra.created_time || "",
       source: "alpha_new_tokens",
     };
   }
@@ -987,6 +991,75 @@
     STATE.alphaTimer = 0;
   }
 
+  function upsertByCa(items, item) {
+    if (!item || !item.ca) return items;
+    const next = items.filter((existing) => existing.ca !== item.ca);
+    next.unshift(item);
+    return next.sort(compareSignalsDesc).slice(0, 120);
+  }
+
+  function handlePluginSignal(item) {
+    if (!item || !item.source) return;
+    STATE.pluginEventLastSignalAt = Date.now();
+    if (item.source === "bottom_abnormal") {
+      const normalized = normalizeBottomAbnormal(item);
+      if (!normalized || isSignalDismissed(normalized, "bottom_abnormal")) return;
+      STATE.abnormalItems = upsertByCa(STATE.abnormalItems, normalized);
+      updateAbnormalContent();
+      return;
+    }
+    if (item.source === "alpha_new_tokens") {
+      const normalized = normalizeAlphaNewToken(item);
+      if (!normalized || isSignalDismissed(normalized, "alpha_new_tokens")) return;
+      STATE.alphaItems = upsertByCa(STATE.alphaItems, normalized);
+      updateAlphaContent();
+    }
+  }
+
+  function schedulePluginEventFallback() {
+    if (STATE.pluginEventFallbackTimer) return;
+    STATE.pluginEventFallbackTimer = window.setTimeout(() => {
+      STATE.pluginEventFallbackTimer = 0;
+      if (STATE.pluginEventReady) return;
+      loadBottomWatchlist(true);
+      loadAlphaNewTokens(true);
+      startPluginEventStream();
+    }, 30000);
+  }
+
+  async function startPluginEventStream() {
+    if (STATE.pluginEventSource) return;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_PLUGIN_EVENT_URL" });
+      if (!response || !response.ok || !response.url) {
+        schedulePluginEventFallback();
+        return;
+      }
+      const source = new EventSource(response.url);
+      STATE.pluginEventSource = source;
+      source.addEventListener("ready", () => {
+        STATE.pluginEventReady = true;
+      });
+      source.addEventListener("signal", (event) => {
+        STATE.pluginEventReady = true;
+        try {
+          handlePluginSignal(JSON.parse(event.data || "{}"));
+        } catch {}
+      });
+      source.addEventListener("error", () => {
+        STATE.pluginEventReady = false;
+        if (STATE.pluginEventSource) {
+          STATE.pluginEventSource.close();
+          STATE.pluginEventSource = null;
+        }
+        schedulePluginEventFallback();
+      });
+    } catch {
+      STATE.pluginEventReady = false;
+      schedulePluginEventFallback();
+    }
+  }
+
   async function copyText(text, rerender = true) {
     if (!text) return;
     try {
@@ -1033,6 +1106,7 @@
         STATE.serviceMode = response.mode || STATE.serviceMode;
         STATE.serviceBaseUrl = response.baseUrl || STATE.serviceBaseUrl;
         render();
+        startPluginEventStream();
       }
     } catch {}
   }

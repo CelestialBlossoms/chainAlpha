@@ -61,6 +61,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "GET_PLUGIN_EVENT_URL") {
+    getServiceMode()
+      .then((mode) => sendResponse({ ok: true, mode, url: `${SERVICE_URLS[mode]}/api/plugin/events` }))
+      .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }));
+    return true;
+  }
+
   if (message.type === "GET_BOTTOM_ABNORMAL") {
     const limit = Math.max(1, Math.min(Number(message.limit || 100), 200));
     fetchServiceJson(`/api/plugin/bottom-abnormal?limit=${encodeURIComponent(limit)}`, { serverOnly: true }).then(sendResponse);

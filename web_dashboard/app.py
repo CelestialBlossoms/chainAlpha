@@ -30,7 +30,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from redis_client import get_redis_client, get_redis_disabled_reason
 from tg_alert_stream import TG_ALERT_STREAM_KEY, read_recent_tg_alerts
-from plugin_signal_stream import read_recent_plugin_signals
+from plugin_signal_stream import PLUGIN_SIGNAL_STREAM_KEY, read_recent_plugin_signals
 from db_client import db_op
 from ca_analyzer.cluster_api import analyze_ca_clusters
 
@@ -728,5 +728,42 @@ async def events(request: Request, last_id: str = "$"):
                 for stream_id, fields in messages:
                     current_id = stream_id
                     yield sse_message("alert", normalize_alert(stream_id, fields))
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+@app.get("/api/plugin/events")
+async def plugin_events(request: Request, last_id: str = "$"):
+    async def generator():
+        client = get_redis_client()
+        if client is None:
+            yield sse_message("error", {"message": f"redis unavailable: {get_redis_disabled_reason()}"})
+            return
+
+        current_id = last_id or "$"
+        yield sse_message("ready", {"stream": PLUGIN_SIGNAL_STREAM_KEY, "last_id": current_id})
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                rows = await asyncio.to_thread(
+                    client.xread,
+                    {PLUGIN_SIGNAL_STREAM_KEY: current_id},
+                    20,
+                    SSE_BLOCK_MS,
+                )
+            except Exception as exc:
+                yield sse_message("error", {"message": str(exc)})
+                await asyncio.sleep(2)
+                continue
+
+            if not rows:
+                yield ": keepalive\n\n"
+                continue
+
+            for _, messages in rows:
+                for stream_id, fields in messages:
+                    current_id = stream_id
+                    yield sse_message("signal", normalize_alert(stream_id, fields))
 
     return StreamingResponse(generator(), media_type="text/event-stream")
