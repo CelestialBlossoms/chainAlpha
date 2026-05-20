@@ -2996,33 +2996,11 @@ def classify_tracking_risk(stats):
 def _update_track_message(track, new_alerts):
     if not new_alerts:
         return
-    try:
-        chat_id = track.get("tg_chat_id", "")
-        message_id_str = track.get("tg_message_id", "")
-        if not chat_id or not message_id_str:
-            return
-        message_id = int(message_id_str)
-
-        addr = track.get("address", "")
-        symbol = track.get("symbol", "")
-        short_status = track["status_line"].split("--- 📊 实时1m跟踪 ---")[-1].strip() if "---" in track["status_line"] else track["status_line"]
-        status_text = (
-            f"📊 *${symbol}* 跟踪更新\n"
-            f"{short_status}\n"
-            f"CA: `{addr}`"
-        )
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        try:
-            requests.post(url, json={
-                "chat_id": chat_id,
-                "text": status_text,
-                "reply_to_message_id": message_id,
-                "parse_mode": "Markdown",
-            }, timeout=10)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    save_track_result(track, "progress_update")
+    print(
+        f"  [Track] record progress ${track.get('symbol', '')} "
+        f"{str(track.get('address', ''))[:8]}: {', '.join(map(str, new_alerts))}"
+    )
 
 
 def _finalize_track(track, reason):
@@ -3033,31 +3011,7 @@ def _finalize_track(track, reason):
     peak_gain = (peak - entry) / entry * 100 if entry > 0 else 0
     save_track_result(track, reason)
 
-    # Send final summary as reply
-    chat_id = track.get("tg_chat_id", "")
-    message_id_str = track.get("tg_message_id", "")
-    if chat_id and message_id_str:
-        status_line = track.get("status_line", "").split("--- 📊 实时1m跟踪 ---")[-1].strip()
-        final_text = (
-            f"📊 *${symbol}* 跟踪结束 ({reason})\n"
-            f"{status_line}\n"
-            f"路径: {track.get('path_class', '未达20%观察')} | "
-            f"最高: {safe_float(track.get('max_gain_pct')):+.1f}% | "
-            f"最低: {safe_float(track.get('max_drawdown_pct')):+.1f}%\n"
-            f"CA: `{address}`"
-        )
-        try:
-            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-            requests.post(url, json={
-                "chat_id": chat_id,
-                "text": final_text,
-                "reply_to_message_id": int(message_id_str),
-                "parse_mode": "Markdown",
-            }, timeout=10)
-        except Exception:
-            pass
-
-    print(f"  [Track] 结束跟踪 ${symbol} {address[:8]}: {reason} peak={peak_gain:.0f}%")
+    print(f"  [Track] finalize ${symbol} {address[:8]}: {reason} peak={peak_gain:.0f}%")
     delete_track(address)
 
 
