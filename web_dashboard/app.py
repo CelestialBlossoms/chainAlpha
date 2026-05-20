@@ -293,6 +293,7 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
                 ADD COLUMN IF NOT EXISTS last_pool_mcap_ratio NUMERIC DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS narrative_desc TEXT,
                 ADD COLUMN IF NOT EXISTS narrative_type TEXT,
+                ADD COLUMN IF NOT EXISTS narrative_category TEXT,
                 ADD COLUMN IF NOT EXISTS remark TEXT,
                 ADD COLUMN IF NOT EXISTS note TEXT,
                 ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN DEFAULT false,
@@ -308,6 +309,7 @@ def fetch_bottom_watchlist(limit: int = 500) -> list[dict[str, Any]]:
                 symbol,
                 COALESCE(NULLIF(narrative_desc, ''), NULLIF(remark, ''), NULLIF(note, ''), '') AS narrative,
                 COALESCE(NULLIF(narrative_type, ''), source, '') AS token_type,
+                COALESCE(NULLIF(narrative_category, ''), '') AS narrative_category,
                 COALESCE(current_mcap, last_mcap, 0) AS current_mcap,
                 GREATEST(
                     COALESCE(highest_mcap, 0),

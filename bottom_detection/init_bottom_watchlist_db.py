@@ -83,6 +83,8 @@ def init_bottom_watchlist_table(conn):
         ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS narrative_type TEXT;
         ALTER TABLE bottom_watchlist_tokens
+            ADD COLUMN IF NOT EXISTS narrative_category TEXT;
+        ALTER TABLE bottom_watchlist_tokens
             ADD COLUMN IF NOT EXISTS remark TEXT;
 
         COMMENT ON TABLE bottom_watchlist_tokens IS '底部异动重点观察池。每个CA一行，保存当前观察状态，不保存每次异动历史';
@@ -114,6 +116,7 @@ def init_bottom_watchlist_table(conn):
         COMMENT ON COLUMN bottom_watchlist_tokens.last_pool_mcap_ratio IS '最近一次可靠池子流动性与市值比值';
         COMMENT ON COLUMN bottom_watchlist_tokens.narrative_desc IS 'Binance Web3或其他来源识别到的叙事描述';
         COMMENT ON COLUMN bottom_watchlist_tokens.narrative_type IS '叙事分类或标签类型';
+        COMMENT ON COLUMN bottom_watchlist_tokens.narrative_category IS 'DeepSeek或关键词识别出的叙事大类';
 
         CREATE TABLE IF NOT EXISTS bottom_watchlist_delete_audit (
             id BIGSERIAL PRIMARY KEY,

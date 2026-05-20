@@ -407,6 +407,8 @@ def ensure_token_narratives_table() -> None:
                         ADD COLUMN IF NOT EXISTS narrative_desc TEXT;
                     ALTER TABLE bottom_watchlist_tokens
                         ADD COLUMN IF NOT EXISTS narrative_type TEXT;
+                    ALTER TABLE bottom_watchlist_tokens
+                        ADD COLUMN IF NOT EXISTS narrative_category TEXT;
                 END IF;
             END $$;
             """
@@ -459,10 +461,16 @@ def save_token_narrative(address: str, narrative: dict[str, Any]) -> None:
                 """
                 UPDATE bottom_watchlist_tokens
                 SET narrative_desc = COALESCE(NULLIF(%s, ''), narrative_desc),
-                    narrative_type = COALESCE(NULLIF(%s, ''), narrative_type)
+                    narrative_type = COALESCE(NULLIF(%s, ''), narrative_type),
+                    narrative_category = COALESCE(NULLIF(%s, ''), narrative_category)
                 WHERE ca = %s
                 """,
-                (narrative.get("narrative_desc") or "", narrative.get("narrative_type") or "", address),
+                (
+                    narrative.get("narrative_desc") or "",
+                    narrative.get("narrative_type") or "",
+                    narrative.get("narrative_category") or "",
+                    address,
+                ),
             )
 
     db_op(_op)

@@ -608,8 +608,10 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "watchlist_last_pool_mcap_ratio": to_float(row.get("last_pool_mcap_ratio")),
             "watchlist_narrative_desc": row.get("narrative_desc") or "",
             "watchlist_narrative_type": row.get("narrative_type") or "",
+            "watchlist_narrative_category": row.get("narrative_category") or "",
             "narrative_desc": row.get("narrative_desc") or "",
             "narrative_type": row.get("narrative_type") or "",
+            "narrative_category": row.get("narrative_category") or "",
             "symbol": row.get("symbol") or "",
             "blacklisted": bool(row.get("blacklisted")),
         }
@@ -2654,9 +2656,10 @@ def build_bottom_signal_extra(
             narrative = {}
     watchlist_narrative_desc = token.get("watchlist_narrative_desc") or token.get("narrative_desc") or ""
     watchlist_narrative_type = token.get("watchlist_narrative_type") or token.get("narrative_type") or ""
+    watchlist_narrative_category = token.get("watchlist_narrative_category") or token.get("narrative_category") or ""
     narrative_desc = narrative.get("narrative_desc") or watchlist_narrative_desc
     narrative_type = narrative.get("narrative_type") or watchlist_narrative_type
-    narrative_category = narrative.get("narrative_category") or classify_narrative_category(
+    narrative_category = narrative.get("narrative_category") or watchlist_narrative_category or classify_narrative_category(
         narrative_desc,
         narrative_type,
         narrative.get("tags") or [],
@@ -2756,6 +2759,7 @@ def build_bottom_signal_extra(
         "binance_narrative": compact_narrative(narrative),
         "watchlist_narrative_desc": watchlist_narrative_desc,
         "watchlist_narrative_type": watchlist_narrative_type,
+        "watchlist_narrative_category": watchlist_narrative_category,
         # 1m K-line volume data for micro-structure DCB detection
         "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
         "vol_1m_early": to_float(summary.get("_1m_vol_early", 0)),

@@ -60,7 +60,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                    daily_mcap_date, token_created_at, ath_mcap, COALESCE(blacklisted, false),
                    last_pool_liquidity, last_pool_mcap_ratio, fee_sol, symbol,
                    narrative_desc, narrative_type, highest_mcap, current_mcap, gmgn_created_at,
-                   token_launch_at, gmgn_open_at, remark, updated_at
+                   token_launch_at, gmgn_open_at, remark, updated_at, narrative_category
             FROM bottom_watchlist_tokens
             WHERE ca IS NOT NULL
             """
@@ -90,6 +90,7 @@ def fetch_watchlist_records() -> list[dict[str, Any]]:
                 "gmgn_open_at": row[20] if len(row) > 20 else None,
                 "remark": row[21] if len(row) > 21 else None,
                 "updated_at": row[22] if len(row) > 22 else None,
+                "narrative_category": row[23] if len(row) > 23 else None,
             }
             for row in cur.fetchall()
         ]
@@ -234,6 +235,8 @@ def ensure_watchlist_daily_mcap_columns() -> None:
                 ADD COLUMN IF NOT EXISTS narrative_desc TEXT;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS narrative_type TEXT;
+            ALTER TABLE bottom_watchlist_tokens
+                ADD COLUMN IF NOT EXISTS narrative_category TEXT;
             ALTER TABLE bottom_watchlist_tokens
                 ADD COLUMN IF NOT EXISTS remark TEXT;
 
