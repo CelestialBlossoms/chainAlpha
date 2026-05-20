@@ -742,6 +742,18 @@
     panel.addEventListener(
       "click",
       (event) => {
+        const viewButton = event.target.closest(".ca-view-button");
+        if (viewButton && panel.contains(viewButton)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          const view = viewButton.getAttribute("data-view") || "abnormal";
+          if (STATE.view !== view) {
+            STATE.view = view;
+            render();
+          }
+          return;
+        }
         const copyButton = event.target.closest(".ca-copy-button");
         if (copyButton && panel.contains(copyButton)) {
           event.preventDefault();
@@ -763,6 +775,20 @@
       },
       true,
     );
+    panel.addEventListener("wheel", handlePanelWheel, { capture: true, passive: false });
+  }
+
+  function handlePanelWheel(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    const scroller = target?.closest(".ca-abnormal-content") || panel.querySelector(".ca-abnormal-content");
+    if (!scroller || !panel.contains(scroller) || scroller.scrollHeight <= scroller.clientHeight) return;
+    const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
+    const before = scroller.scrollTop;
+    scroller.scrollTop += event.deltaY * multiplier;
+    if (scroller.scrollTop !== before) {
+      event.preventDefault();
+    }
+    event.stopPropagation();
   }
 
   async function analyze(ca, force) {
@@ -1242,32 +1268,35 @@
       if (target.dataset.dragReady === "1") return;
       target.dataset.dragReady = "1";
       target.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button:not(.ca-drag-handle)")) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = panel.getBoundingClientRect();
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const startLeft = rect.left;
-      const startTop = rect.top;
-      STATE.dragging = true;
-      target.setPointerCapture(event.pointerId);
+        if (event.target.closest("button:not(.ca-drag-handle)")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = panel.getBoundingClientRect();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startLeft = rect.left;
+        const startTop = rect.top;
+        STATE.dragging = true;
 
-      const onMove = (moveEvent) => {
-        if (!STATE.dragging) return;
-        applyPanelPosition(startLeft + moveEvent.clientX - startX, startTop + moveEvent.clientY - startY);
-      };
-      const onUp = () => {
-        STATE.dragging = false;
-        savePanelLayout();
-        target.removeEventListener("pointermove", onMove);
-        target.removeEventListener("pointerup", onUp);
-        target.removeEventListener("pointercancel", onUp);
-      };
+        const onMove = (moveEvent) => {
+          if (!STATE.dragging) return;
+          moveEvent.preventDefault();
+          applyPanelPosition(startLeft + moveEvent.clientX - startX, startTop + moveEvent.clientY - startY);
+        };
+        const onUp = () => {
+          if (!STATE.dragging) return;
+          STATE.dragging = false;
+          savePanelLayout();
+          window.removeEventListener("pointermove", onMove, true);
+          window.removeEventListener("pointerup", onUp, true);
+          window.removeEventListener("pointercancel", onUp, true);
+          window.removeEventListener("blur", onUp, true);
+        };
 
-      target.addEventListener("pointermove", onMove);
-      target.addEventListener("pointerup", onUp);
-      target.addEventListener("pointercancel", onUp);
+        window.addEventListener("pointermove", onMove, true);
+        window.addEventListener("pointerup", onUp, true);
+        window.addEventListener("pointercancel", onUp, true);
+        window.addEventListener("blur", onUp, true);
       });
     });
   }
