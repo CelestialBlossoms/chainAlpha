@@ -1932,7 +1932,7 @@ def analyze_top10_holders(holders_list):
     non_pool = [h for h in holders_list if not is_pool_holder(h)]
     buckets = {}
     lines = []
-    for size in (10, 100):
+    for size in (10, 20, 50, 100):
         wallets = non_pool[:size]
         supply = sum(safe_float(h.get("amount_percentage")) * 100 for h in wallets)
         buy_volume = sum(safe_float(h.get("buy_volume_cur")) for h in wallets)
@@ -1964,7 +1964,7 @@ def analyze_top10_holders(holders_list):
             f"卖出进度{buckets[size]['sell_progress']:.1f}% | "
             f"次数{buckets[size]['buy_tx']}/{buckets[size]['sell_tx']}"
         )
-        for size in (10, 100)
+        for size in (10, 20, 50, 100)
     ]
     top10 = buckets[10]
     return {
@@ -3339,8 +3339,6 @@ def scan_pro():
                             f"{s['holder_tag_desc']}\n\n"
                             f"📊 *基础结构*\n"
                             f"{s['rank_bucket_desc']}\n"
-                            f"\n\n"
-                            f"{s.get('bottom_profit_wallet_desc', '')}\n\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
