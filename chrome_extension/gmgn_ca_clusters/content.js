@@ -94,6 +94,8 @@
   };
   const POS_KEY = "ca_cluster_panel_position_v1";
   const LAYOUT_KEY = "ca_cluster_panel_layout_v2";
+  const PLUGIN_EVENT_LAST_ID_KEY = "ca_cluster_plugin_event_last_id_v1";
+  const PLUGIN_EVENT_FALLBACK_MS = 5000;
   const DEFAULT_WIDTH = 336;
   const DEFAULT_HEIGHT = 520;
   const MIN_WIDTH = 280;
@@ -123,6 +125,7 @@
     pluginEventReady: false,
     pluginEventFallbackTimer: 0,
     pluginEventLastSignalAt: 0,
+    pluginEventLastId: "",
     dismissedSignals: {},
     serviceMode: "local",
     serviceBaseUrl: "",
@@ -1001,6 +1004,10 @@
   function handlePluginSignal(item) {
     if (!item || !item.source) return;
     STATE.pluginEventLastSignalAt = Date.now();
+    if (item.id) {
+      STATE.pluginEventLastId = String(item.id);
+      chrome.storage.local.set({ [PLUGIN_EVENT_LAST_ID_KEY]: STATE.pluginEventLastId }).catch(() => {});
+    }
     if (item.source === "bottom_abnormal") {
       const normalized = normalizeBottomAbnormal(item);
       if (!normalized || isSignalDismissed(normalized, "bottom_abnormal")) return;
@@ -1024,7 +1031,18 @@
       loadBottomWatchlist(true);
       loadAlphaNewTokens(true);
       startPluginEventStream();
-    }, 30000);
+    }, PLUGIN_EVENT_FALLBACK_MS);
+  }
+
+  async function getPluginEventLastId() {
+    if (STATE.pluginEventLastId) return STATE.pluginEventLastId;
+    try {
+      const stored = await chrome.storage.local.get(PLUGIN_EVENT_LAST_ID_KEY);
+      STATE.pluginEventLastId = String(stored?.[PLUGIN_EVENT_LAST_ID_KEY] || "");
+    } catch {
+      STATE.pluginEventLastId = "";
+    }
+    return STATE.pluginEventLastId;
   }
 
   async function startPluginEventStream() {
@@ -1035,7 +1053,10 @@
         schedulePluginEventFallback();
         return;
       }
-      const source = new EventSource(response.url);
+      const lastId = await getPluginEventLastId();
+      const separator = response.url.includes("?") ? "&" : "?";
+      const streamUrl = lastId ? `${response.url}${separator}last_id=${encodeURIComponent(lastId)}` : response.url;
+      const source = new EventSource(streamUrl);
       STATE.pluginEventSource = source;
       source.addEventListener("ready", () => {
         STATE.pluginEventReady = true;

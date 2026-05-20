@@ -3398,10 +3398,10 @@ def scan_pro():
                         if not tg_message_id:
                             print(f"  [璺宠繃] Telegram鏈繑鍥炴秷鎭痠d锛屼笉璁板綍宸叉帹閫? {addr}")
                             continue
+                        publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):
                             send_new_token_ca_alert(s)
                         save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
-                        publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
                         reset_price_observation(addr)
                         # P3: start post-push 1m K-line tracking

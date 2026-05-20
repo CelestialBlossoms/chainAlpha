@@ -263,7 +263,9 @@ def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def sse_message(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    event_id = str(data.get("id") or "").strip()
+    id_line = f"id: {event_id}\n" if event_id else ""
+    return f"{id_line}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def json_safe(value: Any) -> Any:

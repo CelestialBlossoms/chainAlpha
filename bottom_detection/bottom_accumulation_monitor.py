@@ -3310,8 +3310,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         else:
             web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
             signal_text = abnormal_signal_text(token, analysis)
-            send_tg(signal_text, extra=web_extra)
             publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id)
+            send_tg(signal_text, extra=web_extra)
     elif notify and should_notify(analysis) and already_notified:
         print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified, skip repeat push")
     elif notify and has_previous_bottom_signal:
@@ -3354,8 +3354,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
             quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
-            send_tg(quiet_text, extra=quiet_extra)
             publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id)
+            send_tg(quiet_text, extra=quiet_extra)
             print(
                 f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
                 f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "
@@ -3374,8 +3374,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             runup_text = quiet_breakout_signal_text(token, quiet_runup)
-            send_tg(runup_text, extra=runup_extra)
             publish_frontend_signal_update(runup_text, runup_extra, status="frontend_update", snapshot_id=runup_snapshot_id)
+            send_tg(runup_text, extra=runup_extra)
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
@@ -3484,7 +3484,6 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             # Always push frontend update for golden cross
             signal_text = ema_crossover_signal_text(token, crossover, current_mcap, pool_liq, pool_rat, crossover_ts)
             if not ema_already:
-                send_tg(signal_text, extra=ema_extra)
                 ema_snapshot_id = save_snapshot(
                     scan_id + "_ema",
                     token,
@@ -3495,6 +3494,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
                 # Push to frontend on first detection
                 publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
+                send_tg(signal_text, extra=ema_extra)
                 print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)} crossover_ts={crossover_ts}")
             else:
                 print(
