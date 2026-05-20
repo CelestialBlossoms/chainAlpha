@@ -179,7 +179,7 @@
     const raw = Number(value);
     const date = Number.isFinite(raw) ? new Date(raw < 1000000000000 ? raw * 1000 : raw) : new Date(value);
     if (!Number.isFinite(date.getTime())) return "-";
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
   }
 
   function fmtAge(seconds) {
