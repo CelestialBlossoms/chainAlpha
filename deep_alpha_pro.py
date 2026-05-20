@@ -380,6 +380,8 @@ def send_new_token_ca_alert(stats):
 def should_send_new_token_ca_alert(stats, interval):
     if interval != "1m" or stats.get("repeat_alert"):
         return False
+    if str(NEW_TOKEN_TG_CHAT_ID or "") == str(ALPHA_TG_CHAT_ID or ""):
+        return False
     age_seconds = token_age_seconds(stats.get("created_at"))
     return age_seconds is not None and age_seconds <= NEW_TOKEN_TG_MAX_AGE_SEC
 
