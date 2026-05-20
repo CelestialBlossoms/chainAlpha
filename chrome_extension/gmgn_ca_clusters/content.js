@@ -272,6 +272,7 @@
   }
 
   const panel = createPanel();
+  attachPanelActionDelegates();
   restorePanelLayout();
 
   function row(label, value) {
@@ -681,30 +682,12 @@
   }
 
   function attachCopyHandlers() {
-    panel.querySelectorAll(".ca-copy-button").forEach((button) => {
-      if (button.dataset.copyReady === "1") return;
-      button.dataset.copyReady = "1";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        copyText(button.getAttribute("data-copy") || "");
-      });
-    });
+    // Copy is handled by a capture-phase panel delegate so dynamically
+    // refreshed signal rows cannot lose their click handler.
   }
 
   function attachAbnormalRowHandlers() {
-    panel.querySelectorAll(".ca-watch-ca").forEach((button) => {
-      if (button.dataset.caReady === "1") return;
-      button.dataset.caReady = "1";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const ca = button.getAttribute("data-ca") || "";
-        if (!ca) return;
-        STATE.ca = ca;
-        copyText(ca, false);
-      });
-    });
+    // CA row clicks are handled by the same panel delegate as copy buttons.
   }
 
   function attachDismissHandlers() {
@@ -750,6 +733,35 @@
       updateAlphaContent();
       return;
     }
+  }
+
+  function attachPanelActionDelegates() {
+    if (panel.dataset.actionDelegatesReady === "1") return;
+    panel.dataset.actionDelegatesReady = "1";
+    panel.addEventListener(
+      "click",
+      (event) => {
+        const copyButton = event.target.closest(".ca-copy-button");
+        if (copyButton && panel.contains(copyButton)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          copyText(copyButton.getAttribute("data-copy") || "");
+          return;
+        }
+        const caButton = event.target.closest(".ca-watch-ca");
+        if (caButton && panel.contains(caButton)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          const ca = caButton.getAttribute("data-ca") || "";
+          if (!ca) return;
+          STATE.ca = ca;
+          copyText(ca, false);
+        }
+      },
+      true,
+    );
   }
 
   async function analyze(ca, force) {
@@ -1083,15 +1095,33 @@
 
   async function copyText(text, rerender = true) {
     if (!text) return;
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
     } catch {
+      copied = false;
+    }
+    if (!copied) {
+      const previousFocus = document.activeElement;
       const input = document.createElement("textarea");
       input.value = text;
-      document.documentElement.appendChild(input);
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.left = "-9999px";
+      input.style.top = "0";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.focus();
       input.select();
-      document.execCommand("copy");
+      input.setSelectionRange(0, input.value.length);
+      copied = document.execCommand("copy");
       input.remove();
+      try {
+        previousFocus?.focus?.();
+      } catch {}
     }
     STATE.copied = text;
     refreshCopiedState(rerender);

@@ -3,7 +3,7 @@
   "name": "Chain Alpha GMGN CA Clusters",
   "version": "0.1.0",
   "description": "Show local Chain Alpha CA cluster analysis on GMGN token pages.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "clipboardWrite"],
   "host_permissions": [
     "https://gmgn.ai/*",
     "https://*.gmgn.ai/*",
