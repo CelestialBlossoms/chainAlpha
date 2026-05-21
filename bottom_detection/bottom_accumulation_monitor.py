@@ -1848,14 +1848,10 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     avoid_reasons = extra.get("avoid_reasons") if isinstance(extra.get("avoid_reasons"), list) else []
     avoid_text = "；".join(str(item) for item in avoid_reasons) if avoid_reasons else "无硬过滤项"
     ath_ratio = to_float(extra.get("ath_mcap_ratio"))
-    strategy_profile = str(extra.get("strategy_profile") or "回调观察")
-    strategy_action = str(extra.get("strategy_action") or "等待-5%~-15%回调，不回调不追")
 
     return (
         f"底部异动 | ${symbol}\n"
         f"类型: {signal_label} | 档位: {extra.get('abnormal_rule') or '-'}\n"
-        f"策略: {strategy_profile} | {strategy_action}\n"
-        f"观察: 回调{extra.get('entry_watch_zone') or '-5%~-15%'} | 风险线{extra.get('hard_risk_line') or '-35%'} | 持有观察{extra.get('hold_watch_window') or '至少1h'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
         f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)} | ATH/现值: {ath_ratio:.1f}x\n"
