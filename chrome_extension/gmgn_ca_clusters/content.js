@@ -96,6 +96,7 @@
   const LAYOUT_KEY = "ca_cluster_panel_layout_v2";
   const PLUGIN_EVENT_LAST_ID_KEY = "ca_cluster_plugin_event_last_id_v1";
   const PLUGIN_EVENT_FALLBACK_MS = 5000;
+  const NOTIFICATION_SOUND_URL = chrome.runtime.getURL("ElevenLabs.mp3");
   const DEFAULT_WIDTH = 336;
   const DEFAULT_HEIGHT = 520;
   const MIN_WIDTH = 280;
@@ -126,6 +127,8 @@
     pluginEventFallbackTimer: 0,
     pluginEventLastSignalAt: 0,
     pluginEventLastId: "",
+    notifiedSignalIds: new Set(),
+    notificationAudio: null,
     dismissedSignals: {},
     serviceMode: "local",
     serviceBaseUrl: "",
@@ -725,6 +728,32 @@
     return Boolean(item && item.ca && item.id && STATE.dismissedSignals[dismissedSignalKey(source, item.ca)] === item.id);
   }
 
+  function signalNotificationKey(source, item) {
+    if (!item || !source) return "";
+    return `${source}:${item.id || item.ca || ""}`;
+  }
+
+  function playNotificationSound() {
+    try {
+      if (!STATE.notificationAudio) {
+        STATE.notificationAudio = new Audio(NOTIFICATION_SOUND_URL);
+        STATE.notificationAudio.preload = "auto";
+      }
+      STATE.notificationAudio.pause();
+      STATE.notificationAudio.currentTime = 0;
+      const playPromise = STATE.notificationAudio.play();
+      if (playPromise?.catch) playPromise.catch(() => {});
+    } catch {}
+  }
+
+  function markSignalSeen(item, source, shouldNotify = false) {
+    const key = signalNotificationKey(source, item);
+    if (!key) return;
+    const isNew = !STATE.notifiedSignalIds.has(key);
+    STATE.notifiedSignalIds.add(key);
+    if (isNew && shouldNotify) playNotificationSound();
+  }
+
   function compareSignalsDesc(a, b) {
     const tsDiff = ((b && b.ts) || 0) - ((a && a.ts) || 0);
     if (tsDiff !== 0) return tsDiff;
@@ -962,6 +991,7 @@
           if (isSignalDismissed(item, "bottom_abnormal")) return false;
           return true;
         });
+      STATE.abnormalItems.forEach((item) => markSignalSeen(item, "bottom_abnormal", hasRows));
       STATE.abnormalLastCount = STATE.abnormalItems.length;
     } catch (err) {
       if (requestId !== STATE.abnormalRequestId) return;
@@ -1003,6 +1033,7 @@
           if (isSignalDismissed(item, "alpha_new_tokens")) return false;
           return true;
         });
+      STATE.alphaItems.forEach((item) => markSignalSeen(item, "alpha_new_tokens", hasRows));
     } catch (err) {
       if (requestId !== STATE.alphaRequestId) return;
       if (!hasRows) STATE.alphaItems = [];
@@ -1061,6 +1092,7 @@
     if (item.source === "bottom_abnormal") {
       const normalized = normalizeBottomAbnormal(item);
       if (!normalized || isSignalDismissed(normalized, "bottom_abnormal")) return;
+      markSignalSeen(normalized, "bottom_abnormal", true);
       STATE.abnormalItems = upsertByCa(STATE.abnormalItems, normalized);
       updateAbnormalContent();
       return;
@@ -1068,6 +1100,7 @@
     if (item.source === "alpha_new_tokens") {
       const normalized = normalizeAlphaNewToken(item);
       if (!normalized || isSignalDismissed(normalized, "alpha_new_tokens")) return;
+      markSignalSeen(normalized, "alpha_new_tokens", true);
       STATE.alphaItems = upsertByCa(STATE.alphaItems, normalized);
       updateAlphaContent();
     }

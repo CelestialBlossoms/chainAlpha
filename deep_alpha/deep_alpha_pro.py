@@ -1751,13 +1751,85 @@ def parse_kline_rows(raw):
     return candles
 
 
+def _kline_table(resolution):
+    return "deep_alpha_kline_1m" if resolution == "1m" else "deep_alpha_kline_5m"
+
+
+def save_deep_alpha_klines(address, resolution, candles, chain="sol"):
+    if not candles:
+        return 0
+    table = _kline_table(resolution)
+    rows = [
+        (chain, address, int(c["ts"]), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume"))
+        for c in candles if int(c.get("ts", 0)) > 0
+    ]
+    if not rows:
+        return 0
+    try:
+        def _op(conn):
+            cur = conn.cursor()
+            cur.executemany(
+                f"INSERT INTO {table} (chain, address, ts, open, high, low, close, volume) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (chain, address, ts) DO UPDATE SET "
+                "open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, "
+                "close=EXCLUDED.close, volume=EXCLUDED.volume, updated_at=NOW()",
+                rows,
+            )
+            return len(rows)
+        return int(db_op(_op) or 0)
+    except Exception:
+        return 0
+
+
+def load_deep_alpha_klines(address, resolution, from_ts=0, to_ts=0, chain="sol"):
+    table = _kline_table(resolution)
+    try:
+        def _op(conn):
+            cur = conn.cursor()
+            if from_ts and to_ts:
+                cur.execute(
+                    f"SELECT ts, open, high, low, close, volume FROM {table} "
+                    "WHERE chain=%s AND address=%s AND ts>=%s AND ts<=%s ORDER BY ts",
+                    (chain, address, from_ts, to_ts),
+                )
+            elif from_ts:
+                cur.execute(
+                    f"SELECT ts, open, high, low, close, volume FROM {table} "
+                    "WHERE chain=%s AND address=%s AND ts>=%s ORDER BY ts",
+                    (chain, address, from_ts),
+                )
+            else:
+                cur.execute(
+                    f"SELECT ts, open, high, low, close, volume FROM {table} "
+                    "WHERE chain=%s AND address=%s ORDER BY ts",
+                    (chain, address),
+                )
+            return [
+                {"ts": int(r[0]), "open": float(r[1] or 0), "high": float(r[2] or 0),
+                 "low": float(r[3] or 0), "close": float(r[4] or 0), "volume": float(r[5] or 0)}
+                for r in cur.fetchall()
+            ]
+        return db_op(_op) or []
+    except Exception:
+        return []
+
+
 def fetch_1m_klines(address, limit=12):
-    """Fetch 1-minute K-line from Binance Web3 API."""
+    """Fetch 1-minute K-line from Binance Web3 API, with DB cache."""
+    # Try cache first
+    cached = load_deep_alpha_klines(address, "1m")
+    if cached:
+        return cached[-limit:]
+
     params = {"address": address, "platform": "solana", "interval": "1min", "limit": limit, "pm": "p"}
     try:
         resp = requests.get(BINANCE_KLINE_URL, params=params, headers=BINANCE_HEADERS, timeout=10)
         if resp.status_code == 200:
-            return parse_kline_rows(resp.json().get("data", []))
+            candles = parse_kline_rows(resp.json().get("data", []))
+            if candles:
+                save_deep_alpha_klines(address, "1m", candles)
+            return candles
     except Exception:
         pass
     return []
@@ -1774,12 +1846,21 @@ def completed_1m_candles(candles, now_ts=None):
 
 
 def fetch_5m_klines(chain, address, lookback_sec):
+    """Fetch 5-minute K-line from Binance Web3 API, with DB cache."""
+    cached = load_deep_alpha_klines(address, "5m")
+    if cached:
+        needed = max(6, lookback_sec // 300)
+        return cached[-needed:]
+
     params = {"address": address, "platform": "solana", "interval": "5min",
               "limit": max(6, lookback_sec // 300), "pm": "p"}
     try:
         resp = requests.get(BINANCE_KLINE_URL, params=params, headers=BINANCE_HEADERS, timeout=10)
         if resp.status_code == 200:
-            return parse_kline_rows(resp.json().get("data", []))
+            candles = parse_kline_rows(resp.json().get("data", []))
+            if candles:
+                save_deep_alpha_klines(address, "5m", candles)
+            return candles
     except Exception:
         pass
     return []

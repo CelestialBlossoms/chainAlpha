@@ -20,6 +20,12 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["ElevenLabs.mp3"],
+      "matches": ["https://gmgn.ai/*", "https://*.gmgn.ai/*"]
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   },

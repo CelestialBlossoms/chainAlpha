@@ -1,40 +1,42 @@
-﻿# Chain Alpha Project Setup and Deployment
+# Chain Alpha Project Setup and Deployment
 
 This document has two versions:
 
-- [涓枃鐗堟湰](#涓枃鐗堟湰)
+- [中文版本](#中文版本)
 - [English Version](#english-version)
 
-## 涓枃鐗堟湰
+## 中文版本
 
-鏈枃妗ｈ鏄?Chain Alpha 鐨勫垵濮嬪寲銆侀厤缃€佽繍琛屻€丏ocker 閮ㄧ讲鍜?Chrome 鎻掍欢浣跨敤鏂瑰紡銆?
-### 1. 鐜鍑嗗
+本文档说明 Chain Alpha 的初始化、配置、运行、Docker 部署和 Chrome 插件使用方式。
 
-寤鸿浣跨敤 Python 3.12銆?
-瀹夎 Python 渚濊禆锛?
+### 1. 环境准备
+
+建议使用 Python 3.12。
+安装 Python 依赖：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe -m pip install -r requirements.txt
 ```
 
-Linux 绀轰緥锛?
+Linux 示例：
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-鏈湴杩愯闇€瑕佸畨瑁?`gmgn-cli`锛?
+本地运行需要安装 `gmgn-cli`：
 ```bash
 npm install -g gmgn-cli
 gmgn-cli --help
 ```
 
-Docker 闀滃儚浼氳嚜鍔ㄥ畨瑁?Node.js 鍜?`gmgn-cli`銆?
-### 2. 椤圭洰閰嶇疆
+Docker 镜像会自动安装 Node.js 和 `gmgn-cli`。
 
-鏁忔劅閰嶇疆涓嶈鍐欏叆浠ｇ爜锛屼篃涓嶈鎻愪氦鍒?Git銆傞」鐩細鑷姩璇诲彇锛?
+### 2. 项目配置
+
+敏感配置不要写入代码，也不要提交到 Git。项目会自动读取：
 - `.env`
 - `gmgn_account_2/.env`
 
-鍒濆鍖栭厤缃枃浠讹細
+初始化配置文件：
 
 ```powershell
 Copy-Item .env.example .env
@@ -42,7 +44,7 @@ New-Item -ItemType Directory -Force gmgn_account_2
 New-Item -ItemType File -Force gmgn_account_2\.env
 ```
 
-`.env` 绀轰緥锛?
+`.env` 示例：
 ```dotenv
 DATABASE_URL=postgresql://user:password@host:5432/chainAlpha
 
@@ -58,35 +60,36 @@ DEEPSEEK_API_KEY=
 GMGN_CLI_ENV_FILE=gmgn_account_2/.env
 ```
 
-`gmgn_account_2/.env` 绀轰緥锛?
+`gmgn_account_2/.env` 示例：
 ```dotenv
 GMGN_API_KEY=your_gmgn_api_key
 ```
 
-### 3. 鏁版嵁搴撳垵濮嬪寲
+### 3. 数据库初始化
 
-椤圭洰浣跨敤 PostgreSQL銆傚厛纭 `.env` 涓殑 `DATABASE_URL` 鍙互杩炴帴銆?
-鍒濆鍖栧熀纭€琛細
+项目使用 PostgreSQL。先确认 `.env` 中的 `DATABASE_URL` 可以连接。
+初始化基础表：
 
 ```powershell
 D:\software\anaconda\envs\py312\python.exe init_db.py
 ```
 
-鍒濆鍖栧簳閮ㄧ洃鎺?watchlist 琛細
+初始化底部监控 watchlist 表：
 
 ```powershell
 D:\software\anaconda\envs\py312\python.exe bottom_detection\init_bottom_watchlist_db.py
 ```
 
-鍒濆鍖栧簳閮?Top100 蹇収鍜?K 绾跨紦瀛樿〃锛?
+初始化底部 Top100 快照和 K 线缓存表：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe bottom_detection\init_bottom_accumulation_db.py
 ```
 
-娉ㄦ剰锛歚bottom_detection/init_bottom_accumulation_db.py` 浼氬垹闄ゅ苟閲嶅缓鐩稿叧蹇収琛ㄣ€傜敓浜х幆澧冩墽琛屽墠瑕佺‘璁よ繖浜涚紦瀛樺拰蹇収鏁版嵁鍙互娓呯┖銆?
-### 4. Redis 閰嶇疆
+注意：`bottom_detection/init_bottom_accumulation_db.py` 会删除并重建相关快照表。生产环境执行前要确认这些缓存和快照数据可以清空。
 
-Redis 鐢ㄤ簬 Telegram 鍛婅娴併€佹彃浠朵俊鍙锋祦鍜岄儴鍒嗙紦瀛樸€?
+### 4. Redis 配置
+
+Redis 用于 Telegram 告警流、插件信号流和部分缓存。
 ```dotenv
 CHAIN_ALPHA_REDIS_HOST=localhost
 CHAIN_ALPHA_REDIS_PORT=6379
@@ -95,94 +98,94 @@ CHAIN_ALPHA_REDIS_DB=0
 CHAIN_ALPHA_REDIS_ENABLED=1
 ```
 
-濡傛灉涓存椂涓嶄娇鐢?Redis锛?
+如果暂时不使用 Redis：
 ```dotenv
 CHAIN_ALPHA_REDIS_ENABLED=0
 ```
 
-### 5. Telegram 閰嶇疆涓庤繍琛?
-Telegram Bot 闇€瑕侀厤缃細
+### 5. Telegram 配置与运行
+Telegram Bot 需要配置：
 
 ```dotenv
 TG_BOT_TOKEN=your_bot_token
 TG_CHAT_ID=your_chat_id
 ```
 
-鍚姩 CA 绛圭爜鍒嗘瀽 Telegram Bot锛?
+启动 CA 筹码分析 Telegram Bot：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe tg_ca_chip_alert_bot.py
 ```
 
-鍚姩搴曢儴 Top100 鐩戞帶骞跺彂閫?Telegram 閫氱煡锛?
+启动底部 Top100 监控并发送 Telegram 通知：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe bottom_detection\bottom_accumulation_monitor.py --watch --notify
 ```
 
-鍚姩 Deep Alpha 涓昏繘绋嬶細
+启动 Deep Alpha 主进程：
 
 ```powershell
 D:\software\anaconda\envs\py312\python.exe -m deep_alpha.deep_alpha_pro
 ```
 
-鍚姩 Web Dashboard锛?
+启动 Web Dashboard：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe -m uvicorn web_dashboard.app:app --host 0.0.0.0 --port 8089
 ```
 
-璁块棶鍦板潃锛?
+访问地址：
 ```text
 http://127.0.0.1:8089
 ```
 
-### 6. Docker 閮ㄧ讲
+### 6. Docker 部署
 
-鏋勫缓闀滃儚锛?
+构建镜像：
 ```bash
 docker compose build
 ```
 
-鍚姩 Deep Alpha 涓绘湇鍔★細
+启动 Deep Alpha 主服务：
 
 ```bash
 docker compose up -d
 ```
 
-鍚姩 Web Dashboard锛?
+启动 Web Dashboard：
 ```bash
 docker compose -f docker-compose.dashboard.yml up -d --build
 ```
 
-榛樿绔彛锛?
+默认端口：
 ```text
 Host 8010 -> Container 8089
 ```
 
-鍚姩 Telegram CA Bot锛?
+启动 Telegram CA Bot：
 ```bash
 docker compose -f docker-compose.tg-ca.yml up -d --build
 ```
 
-鍚姩搴曢儴 Top100 鐩戞帶锛?
+启动底部 Top100 监控：
 ```bash
 docker compose -f docker-compose.bottom-top100.yml up -d --build
 ```
 
-鍚姩 CA Clusters API锛?
+启动 CA Clusters API：
 ```bash
 ```
 
-榛樿绔彛锛?
+默认端口：
 ```text
 Host 8012 -> Container 8089
 ```
 
-鏌ョ湅瀹瑰櫒鐘舵€侊細
+查看容器状态：
 
 ```bash
 docker ps --filter name=chain-alpha
 ```
 
-鏌ョ湅鏃ュ織锛?
+查看日志：
 ```bash
 docker logs -f chain-alpha-robot
 docker logs -f chain-alpha-tg-dashboard
@@ -190,52 +193,54 @@ docker logs -f chain-alpha-tg-ca-bot
 docker logs -f chain-alpha-bottom-top100
 ```
 
-瀹瑰櫒浼氭寕杞藉綋鍓嶉」鐩洰褰曞埌 `/app`锛屽洜姝や細璇诲彇椤圭洰鏍圭洰褰曠殑 `.env` 鍜?`gmgn_account_2/.env`銆?
-### 7. Chrome 鎻掍欢浣跨敤
+容器会挂载当前项目目录到 `/app`，因此会读取项目根目录的 `.env` 和 `gmgn_account_2/.env`。
 
-鎻掍欢鐩綍锛?
+### 7. Chrome 插件使用
+
+插件目录：
 ```text
 chrome_extension/gmgn_ca_clusters
 ```
 
-鐢ㄩ€旓細鍦?GMGN token 椤甸潰灞曠ず Chain Alpha 鐨?CA 绛圭爜鍜岄泦缇ゅ垎鏋愰潰鏉裤€?
-鏈湴璋冭瘯鍚庣锛?
+用途：在 GMGN token 页面展示 Chain Alpha 的 CA 筹码和集群分析面板。
+本地调试后端：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe -m uvicorn web_dashboard.app:app --host 127.0.0.1 --port 8000
 ```
 
-褰撳墠鎻掍欢 `background.js` 榛樿璇锋眰锛?
+当前插件 `background.js` 默认请求：
 ```text
 http://<server-host>:8010
 ```
 
-濡傞渶鏀规垚鏈湴璋冭瘯锛屼慨鏀?`chrome_extension/gmgn_ca_clusters/background.js`锛?
+如需改成本地调试，修改 `chrome_extension/gmgn_ca_clusters/background.js`：
 ```js
 const SERVICE_URLS = {
   server: "http://127.0.0.1:8000",
 };
 ```
 
-鍔犺浇鎻掍欢锛?
-1. 鎵撳紑 Chrome銆?2. 璁块棶 `chrome://extensions`銆?3. 鎵撳紑鈥滃紑鍙戣€呮ā寮忊€濄€?4. 鐐瑰嚮鈥滃姞杞藉凡瑙ｅ帇鐨勬墿灞曠▼搴忊€濄€?5. 閫夋嫨 `D:\github\chainAlpha\chrome_extension\gmgn_ca_clusters`銆?6. 鎵撳紑 GMGN token 椤甸潰锛屽彸涓婅浼氬嚭鐜?`CA Clusters` 闈㈡澘銆?
-淇敼鎻掍欢浠ｇ爜鍚庯紝闇€瑕佸湪 `chrome://extensions` 鍒锋柊鎻掍欢锛岀劧鍚庡埛鏂?GMGN 椤甸潰銆?
-### 8. 甯歌妫€鏌?
-妫€鏌ョ幆澧冨彉閲忔槸鍚﹁璇诲彇锛?
+加载插件：
+1. 打开 Chrome。2. 访问 `chrome://extensions`。3. 打开"开发者模式"。4. 点击"加载已解压的扩展程序"。5. 选择 `D:\github\chainAlpha\chrome_extension\gmgn_ca_clusters`。6. 打开 GMGN token 页面，右上角会出现 `CA Clusters` 面板。
+修改插件代码后，需要在 `chrome://extensions` 刷新插件，然后刷新 GMGN 页面。
+
+### 8. 常见检查
+检查环境变量是否被读取：
 ```powershell
 D:\software\anaconda\envs\py312\python.exe -c "import config, redis_client; print(config.DB_CONFIG['host']); print(redis_client.REDIS_HOST); print(bool(config.GMGN_API_KEY))"
 ```
 
-妫€鏌?Dashboard锛?
+检查 Dashboard：
 ```bash
 curl http://127.0.0.1:8089/
 ```
 
-妫€鏌ユ晱鎰熸枃浠舵槸鍚﹁ Git 蹇界暐锛?
+检查敏感文件是否被 Git 忽略：
 ```bash
 git check-ignore -v .env gmgn_account_2/.env gmgn_account_2/gmgn_private_2.pem
 ```
 
-鎻愪氦鍓嶆壂鎻忔晱鎰熷€硷細
+提交前扫描敏感值：
 
 ```bash
 git grep -n -E "postgresql://[^ ]*@|GMGN_API_KEY=|TG_BOT_TOKEN=|sk-[A-Za-z0-9]{20,}"
@@ -479,7 +484,7 @@ Load the extension:
 1. Open Chrome.
 2. Go to `chrome://extensions`.
 3. Enable Developer mode.
-4. Click 鈥淟oad unpacked鈥?
+4. Click "Load unpacked".
 5. Select `D:\github\chainAlpha\chrome_extension\gmgn_ca_clusters`.
 6. Open a GMGN token page. The `CA Clusters` panel appears in the upper-right corner.
 
@@ -510,4 +515,3 @@ Scan for sensitive values before committing:
 ```bash
 git grep -n -E "postgresql://[^ ]*@|GMGN_API_KEY=|TG_BOT_TOKEN=|sk-[A-Za-z0-9]{20,}"
 ```
-

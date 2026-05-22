@@ -134,7 +134,75 @@ def init_tables(conn):
         COMMENT ON COLUMN onchain_trading_guides.metadata IS '扩展结构化信息';
         COMMENT ON COLUMN onchain_trading_guides.is_archived IS '是否归档';
     """)
-    print("Initialized alpha_signals, alpha_token_candidates, and onchain_trading_guides")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS deep_alpha_kline_1m (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_kline_1m_addr_ts
+            ON deep_alpha_kline_1m(address, ts);
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_kline_1m_updated
+            ON deep_alpha_kline_1m(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS deep_alpha_kline_5m (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_kline_5m_addr_ts
+            ON deep_alpha_kline_5m(address, ts);
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_kline_5m_updated
+            ON deep_alpha_kline_5m(updated_at DESC);
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alpha_abnormal_analysis (
+            ca TEXT PRIMARY KEY,
+            create_at TIMESTAMPTZ,
+            added_at TIMESTAMPTZ DEFAULT now(),
+            last_seen_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ DEFAULT now(),
+            source TEXT DEFAULT 'auto_ath_mcap',
+            peak_mcap NUMERIC DEFAULT 0,
+            last_mcap NUMERIC DEFAULT 0,
+            highest_mcap NUMERIC DEFAULT 0,
+            current_mcap NUMERIC DEFAULT 0,
+            gmgn_created_at BIGINT DEFAULT 0,
+            gmgn_open_at BIGINT DEFAULT 0,
+            note TEXT,
+            remark TEXT,
+            symbol TEXT,
+            fee_sol NUMERIC DEFAULT 0,
+            token_created_at BIGINT DEFAULT 0,
+            token_launch_at BIGINT DEFAULT 0,
+            daily_mcap_date DATE,
+            daily_mcap_threshold NUMERIC DEFAULT 1000000,
+            daily_mcap_notified_date DATE,
+            daily_mcap_notified_at TIMESTAMPTZ,
+            ath_mcap NUMERIC DEFAULT 0,
+            blacklisted BOOLEAN DEFAULT false,
+            last_pool_liquidity NUMERIC DEFAULT 0,
+            last_pool_mcap_ratio NUMERIC DEFAULT 0,
+            narrative_desc TEXT,
+            narrative_type TEXT,
+            narrative_category TEXT
+        );
+    """)
+    print("Initialized alpha_signals, alpha_token_candidates, deep_alpha_kline_1m, deep_alpha_kline_5m, alpha_abnormal_analysis, and onchain_trading_guides")
 
 
 if __name__ == "__main__":
