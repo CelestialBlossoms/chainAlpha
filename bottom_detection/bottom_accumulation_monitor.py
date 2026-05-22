@@ -649,6 +649,77 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
     return tokens
 
 
+def fetch_alpha_abnormal_tokens() -> list[dict[str, Any]]:
+    """Read CA list from alpha_abnormal_analysis table (same structure as bottom_watchlist_tokens)."""
+    try:
+        def _op(conn):
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT ca, create_at, added_at, last_seen_at, updated_at,
+                       source, peak_mcap, last_mcap, highest_mcap, current_mcap,
+                       gmgn_created_at, gmgn_open_at, note, remark, symbol,
+                       fee_sol, token_created_at, token_launch_at,
+                       daily_mcap_date, daily_mcap_threshold,
+                       daily_mcap_notified_date, daily_mcap_notified_at,
+                       ath_mcap, blacklisted, last_pool_liquidity,
+                       last_pool_mcap_ratio, narrative_desc, narrative_type, narrative_category
+                FROM alpha_abnormal_analysis
+                ORDER BY added_at DESC
+                """
+            )
+            return cur.fetchall()
+        rows = db_op(_op) or []
+    except Exception as exc:
+        print(f"alpha_abnormal_analysis query failed: {exc}")
+        return []
+    tokens = []
+    for row in rows:
+        ca = row[0]
+        address = str(ca).strip()
+        if not valid_sol_ca(address):
+            continue
+        token = {
+            "address": address,
+            "source": "alpha_abnormal",
+            "alpha_abnormal_source": row[5],
+            "alpha_abnormal_peak_mcap": to_float(row[6]),
+            "alpha_abnormal_last_mcap": to_float(row[7]),
+            "alpha_abnormal_last_pool_liquidity": to_float(row[24]),
+            "alpha_abnormal_last_pool_mcap_ratio": to_float(row[25]),
+            "alpha_abnormal_narrative_desc": row[26] or "",
+            "alpha_abnormal_narrative_type": row[27] or "",
+            "alpha_abnormal_narrative_category": row[28] or "",
+            "narrative_desc": row[26] or "",
+            "narrative_type": row[27] or "",
+            "narrative_category": row[28] or "",
+            "symbol": row[14] or "",
+            "blacklisted": bool(row[23]),
+        }
+        if row[15]:
+            token["fee_sol"] = row[15]
+        if row[16]:
+            token["token_created_at"] = row[16]
+        if row[17]:
+            token["token_launch_at"] = row[17]
+        if row[11]:
+            token["gmgn_created_at"] = row[11]
+        if row[12]:
+            token["gmgn_open_at"] = row[12]
+        if row[1]:
+            created_ts = int(row[1].timestamp()) if isinstance(row[1], datetime) else parse_timestamp(row[1])
+            token["alpha_abnormal_create_at"] = created_ts
+            token["created_at"] = created_ts
+        if row[2]:
+            token["alpha_abnormal_added_at"] = int(row[2].timestamp()) if isinstance(row[2], datetime) else parse_timestamp(row[2])
+        if row[18]:
+            token["alpha_abnormal_daily_mcap_date"] = str(row[18])
+        if row[4]:
+            token["alpha_abnormal_updated_at"] = int(row[4].timestamp()) if isinstance(row[4], datetime) else parse_timestamp(row[4])
+        tokens.append(token)
+    return tokens
+
+
 def merge_token_sources(*token_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged = []
     by_address = {}
@@ -3930,6 +4001,7 @@ def scan_once(
     active_intervals = tuple(intervals or TREND_INTERVALS)
     trending_tokens = fetch_trending_tokens(active_intervals)
     watchlist_tokens = fetch_watchlist_tokens() if include_watchlist else []
+    alpha_abnormal_tokens = fetch_alpha_abnormal_tokens()
     prefiltered_trending = []
     prefiltered_skipped = 0
     for token in trending_tokens:
@@ -3938,7 +4010,7 @@ def scan_once(
             prefiltered_skipped += 1
             continue
         prefiltered_trending.append(token)
-    tokens = merge_token_sources(prefiltered_trending, watchlist_tokens)
+    tokens = merge_token_sources(prefiltered_trending, watchlist_tokens, alpha_abnormal_tokens)
     dedupe_skipped = 0
     if recent_seen is not None:
         prune_recent_seen(recent_seen, recent_seen_ttl_sec)
@@ -3962,6 +4034,7 @@ def scan_once(
         f"intervals={','.join(active_intervals)} "
         f"trending={len(trending_tokens)} prefiltered={len(prefiltered_trending)} "
         f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} "
+        f"alpha_abnormal={len(alpha_abnormal_tokens)} "
         f"dedupe_skip={dedupe_skipped} merged={len(tokens)}"
     )
     processed = 0
