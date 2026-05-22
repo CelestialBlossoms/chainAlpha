@@ -1903,6 +1903,20 @@ def refresh_post_push_track_ttl(client: Any, key: str, state: dict[str, Any]) ->
     return True
 
 
+def post_push_track_age_sec(state: dict[str, Any], now_value: int | None = None) -> int:
+    signal_ts = to_int((state or {}).get("signal_ts")) or to_int((state or {}).get("created_ts"))
+    if signal_ts <= 0:
+        return 0
+    return max(0, int(now_value or now_ts()) - signal_ts)
+
+
+def post_push_track_within_window(state: dict[str, Any], now_value: int | None = None) -> bool:
+    if POST_PUSH_TRACK_TTL_SEC <= 0:
+        return True
+    age_sec = post_push_track_age_sec(state, now_value)
+    return 0 < age_sec <= POST_PUSH_TRACK_TTL_SEC
+
+
 def register_post_push_track(address: str, extra: dict[str, Any], message_id: int | str | None) -> None:
     if not POST_PUSH_REDIS_TRACK_ENABLED or not address or not message_id:
         return
@@ -1918,6 +1932,7 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
     if client is None:
         return
     now_value = now_ts()
+    signal_ts = to_int(extra.get("event_ts")) or now_value
     key = post_push_track_key(address)
     payload = {
         "address": address,
@@ -1928,6 +1943,7 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
         "entry_mcap": str(current_mcap),
         "peak_mcap": str(max(current_mcap, to_float(extra.get("post_signal_peak_mcap")))),
         "last_mcap": str(current_mcap),
+        "signal_ts": str(signal_ts),
         "created_ts": str(now_value),
         "updated_ts": str(now_value),
         "last_reply_ts": "0",
@@ -2098,6 +2114,7 @@ def _post_push_entry_dd_text(
     entry_mcap: float,
     current_mcap: float,
     entry_loss_pct: float,
+    elapsed_hours: float,
     pool_liquidity: float,
     pool_mcap_ratio: float,
     candles: list[dict[str, float]],
@@ -2117,6 +2134,7 @@ def _post_push_entry_dd_text(
         f"(目标 {POST_PUSH_ENTRY_DD_MIN_PCT:.0f}%-{POST_PUSH_ENTRY_DD_MAX_PCT:.0f}%)\n"
         f"池子流动性: {format_money_text(pool_liquidity)} | 池/市值: {pool_mcap_ratio:.1%}\n"
         f"近5根{kline_interval} K线: {kline_change:+.1f}% | 量: {recent_volume:,.0f}\n"
+        f"异动至当前: {elapsed_hours:.2f}小时\n"
         f"CA: {address}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
@@ -2139,6 +2157,7 @@ def send_post_push_entry_drawdown_alert(
     entry_loss_pct = (1 - current_mcap / entry_mcap) * 100
     if entry_loss_pct < POST_PUSH_ENTRY_DD_MIN_PCT or entry_loss_pct > POST_PUSH_ENTRY_DD_MAX_PCT:
         return None
+    elapsed_hours = post_push_track_age_sec(state) / 3600
     message_id = to_int(state.get("message_id"))
     if message_id <= 0:
         return None
@@ -2149,6 +2168,7 @@ def send_post_push_entry_drawdown_alert(
         entry_mcap=entry_mcap,
         current_mcap=current_mcap,
         entry_loss_pct=entry_loss_pct,
+        elapsed_hours=elapsed_hours,
         pool_liquidity=pool_liquidity,
         pool_mcap_ratio=pool_mcap_ratio,
         candles=candles,
@@ -2164,6 +2184,8 @@ def send_post_push_entry_drawdown_alert(
         "entry_mcap": entry_mcap,
         "current_mcap": current_mcap,
         "entry_loss_pct": entry_loss_pct,
+        "elapsed_hours": elapsed_hours,
+        "signal_ts": to_int(state.get("signal_ts")) or to_int(state.get("created_ts")),
         "pool_liquidity": pool_liquidity,
         "pool_total_liquidity": pool_liquidity,
         "pool_mcap_ratio": pool_mcap_ratio,
@@ -2189,6 +2211,9 @@ def scan_post_push_entry_drawdowns_once() -> None:
         try:
             state = client.hgetall(key)
             if not state or to_int(state.get("dd_alert_sent")):
+                continue
+            if not post_push_track_within_window(state):
+                client.delete(key)
                 continue
             address = str(state.get("address") or "").strip() or str(key).split(":")[-1]
             if not valid_sol_ca(address):
@@ -2261,6 +2286,12 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         return
     if not state:
         return
+    if not post_push_track_within_window(state):
+        try:
+            client.delete(key)
+        except Exception:
+            pass
+        return
 
     current_mcap = to_float(analysis.get("current_mcap")) or to_float(summary.get("mcap")) or calc_mcap(token)
     if current_mcap <= 0:
@@ -2277,47 +2308,17 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         except Exception:
             pass
         return
-    peak_gain_pct = (peak_mcap / entry_mcap - 1) * 100
-    drawdown_pct = (1 - current_mcap / peak_mcap) * 100 if current_mcap < peak_mcap else 0.0
     entry_loss_pct = (1 - current_mcap / entry_mcap) * 100 if current_mcap < entry_mcap else 0.0
-    reply_count = to_int(state.get("reply_count"))
-    last_reply_ts = to_int(state.get("last_reply_ts"))
-    last_reply_bucket = to_int(state.get("last_reply_bucket"))
-    gain_reply_count = to_int(state.get("gain_reply_count"))
-    last_gain_reply_ts = to_int(state.get("last_gain_reply_ts"))
-    last_gain_bucket = to_int(state.get("last_gain_bucket"))
     loss_reply_count = to_int(state.get("loss_reply_count"))
     last_loss_reply_ts = to_int(state.get("last_loss_reply_ts"))
     last_loss_bucket = to_int(state.get("last_loss_bucket"))
     dd_alert_sent = to_int(state.get("dd_alert_sent"))
 
-    gain_bucket = int(peak_gain_pct // POST_PUSH_GAIN_REPLY_PCT) if POST_PUSH_GAIN_REPLY_PCT > 0 else 0
-    drawdown_bucket = int(drawdown_pct // POST_PUSH_DRAWDOWN_REPLY_PCT) if POST_PUSH_DRAWDOWN_REPLY_PCT > 0 else 0
     loss_bucket = int(entry_loss_pct // POST_PUSH_LOSS_REPLY_PCT) if POST_PUSH_LOSS_REPLY_PCT > 0 else 0
     reply_kind = ""
     bucket = 0
     if (
-        POST_PUSH_GAIN_REPLY_PCT > 0
-        and peak_gain_pct >= POST_PUSH_GAIN_REPLY_PCT
-        and current_mcap >= entry_mcap
-        and gain_bucket > last_gain_bucket
-        and gain_reply_count < POST_PUSH_MAX_REPLIES
-        and (now_value - last_gain_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
-    ):
-        reply_kind = "gain"
-        bucket = gain_bucket
-    elif (
-        peak_gain_pct >= POST_PUSH_MIN_PEAK_GAIN_PCT
-        and drawdown_pct >= POST_PUSH_DRAWDOWN_REPLY_PCT
-        and drawdown_bucket > last_reply_bucket
-        and reply_count < POST_PUSH_MAX_REPLIES
-        and (now_value - last_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
-    ):
-        reply_kind = "drawdown"
-        bucket = drawdown_bucket
-    elif (
         POST_PUSH_LOSS_REPLY_PCT > 0
-        and peak_gain_pct < POST_PUSH_MIN_PEAK_GAIN_PCT
         and entry_loss_pct >= POST_PUSH_LOSS_REPLY_PCT
         and entry_loss_pct <= POST_PUSH_ENTRY_DD_MAX_PCT
         and not dd_alert_sent
@@ -2373,6 +2374,7 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         except Exception as exc:
             print(f"{address[:8]} post-push redis entry-dd update failed: {exc}")
         return
+    return
     symbol = token.get("symbol") or state.get("symbol") or "UNKNOWN"
     title_map = {
         "entry_drawdown": "底部异动回撤区间触发",
