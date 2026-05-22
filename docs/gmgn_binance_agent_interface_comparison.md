@@ -333,7 +333,7 @@ Binance：
 已实现方向：
 
 - `binance_narrative.py`：负责 Binance 叙事获取、Redis 缓存、数据库落库。
-- `deep_alpha_pro.py`：推送前补 `narrative_desc/narrative_type`。
+- `deep_alpha/deep_alpha_pro.py`：推送前补 `narrative_desc/narrative_type`。
 - `bottom_accumulation_monitor.py`：底部异动、EMA、每日 1M 前端消息带叙事。
 - `web_dashboard`：优先显示结构化 `narrative_desc`。
 
@@ -360,4 +360,3 @@ Binance 是热度、搜索、社交叙事和聚合标签的补充源。
 历史判断：PostgreSQL + Redis
 展示推送：结构化 JSON -> Redis Stream -> 前端/TG
 ```
-

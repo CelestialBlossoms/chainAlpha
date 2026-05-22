@@ -15,7 +15,8 @@ services:
       - ./data:/app/data
     command:
       - python
-      - deep_alpha_pro.py
+      - -m
+      - deep_alpha.deep_alpha_pro
     logging:
       driver: json-file
       options:

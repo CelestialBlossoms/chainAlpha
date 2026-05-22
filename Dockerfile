@@ -26,4 +26,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/data
 
 ENTRYPOINT ["sh", "/app/entrypoint.sh"]
-CMD ["python", "deep_alpha_pro.py"]
+CMD ["python", "-m", "deep_alpha.deep_alpha_pro"]

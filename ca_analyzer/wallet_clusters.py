@@ -2,9 +2,7 @@
 Wallet cluster analysis — detect bundler groups, axiom bot clusters,
 and distinguish natural trading from organized distribution.
 
-Usage:
-    D:/software/anaconda/envs/py312/python.exe scripts/analyze_wallet_clusters.py <CA>
-    D:/software/anaconda/envs/py312/python.exe scripts/analyze_wallet_clusters.py <CA> --chain sol
+Used by ca_analyzer.cluster_api for the dashboard cluster-analysis API.
 """
 import argparse, json, shutil, subprocess, sys, time
 from collections import Counter, defaultdict

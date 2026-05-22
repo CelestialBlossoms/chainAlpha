@@ -9,7 +9,7 @@ import requests
 
 from config import GMGN_API_KEY, TG_BOT_TOKEN, TG_CHAT_ID
 from tg_alert_stream import publish_tg_alert
-from deep_alpha_pro import (
+from deep_alpha.deep_alpha_pro import (
     CHAINS,
     format_chain_price,
     format_pnl_pct,

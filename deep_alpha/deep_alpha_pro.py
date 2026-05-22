@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 import requests
 from datetime import datetime
@@ -12,6 +13,10 @@ from redis_client import get_redis_client, redis_key
 from binance_narrative import compact_narrative, get_binance_narrative
 from plugin_signal_stream import publish_plugin_signal
 from tg_alert_stream import publish_tg_alert
+
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
 
 # ---------------------------------------------------------------------------
 # 配置

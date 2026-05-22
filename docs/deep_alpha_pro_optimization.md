@@ -41,7 +41,7 @@
 
 ### P0: 1m K线方向感知过滤
 
-**位置**: `deep_alpha_pro.py:2963-2983`
+**位置**: `deep_alpha/deep_alpha_pro.py:2963-2983`
 
 **问题**: 原有 `body > 15%` 无差别杀死大阳线和大阴线，会误杀 Top20 中 7 个大奖（含 WOMBLE +1471%）。
 
@@ -63,7 +63,7 @@
 
 ### P1: 20-50K 弱筹码过滤
 
-**位置**: `deep_alpha_pro.py:2985-2991`
+**位置**: `deep_alpha/deep_alpha_pro.py:2985-2991`
 
 **问题**: 20-50K 区间中，SM<3 且 Top10>20% 的组合胜率 0%，死率 57%。
 
@@ -79,7 +79,7 @@ if 20000 <= mcap < 50000 and sm_count < 3 and top10_rate > 20:
 
 ### P2: 20-30K 无 SM 过滤
 
-**位置**: `deep_alpha_pro.py:2992-2995`
+**位置**: `deep_alpha/deep_alpha_pro.py:2992-2995`
 
 **问题**: 20-30K + SM=0 的子集 100% 死亡。
 
@@ -95,7 +95,7 @@ if 20000 <= mcap < 30000 and sm_count < 1:
 
 ### P3: 推送后 1m K线持续跟踪
 
-**位置**: `deep_alpha_pro.py:2554-2757`, Redis 函数 `661-708`, 配置 `88-103`
+**位置**: `deep_alpha/deep_alpha_pro.py:2554-2757`, Redis 函数 `661-708`, 配置 `88-103`
 
 **问题**: 推送后无跟踪，冲高回落盘（48.5%）用户不知道何时退出。
 
@@ -199,9 +199,5 @@ GMGN 热门榜 (top 100, 1m)
 
 | 文件 | 作用 |
 |------|------|
-| `deep_alpha_pro.py` | 主策略文件（所有改动在此） |
-| `scripts/analyze_alpha_20pct_paths.py` | 回测脚本：拉取 1m K线计算 20% 路径 |
-| `scripts/generate_alpha_1m_push_html.py` | 生成 HTML 报告 |
-| `scripts/_analyze_winners_losers.py` | 一次性分析脚本：盈利 vs 亏损特征对比 |
-| `gmgn_outputs/alpha_1m_push_balance_analysis_20260520.csv` | 回测数据（66条推送） |
-| `gmgn_outputs/alpha_1m_push_20pct_paths_20260520.csv` | 20% 路径分类数据 |
+| `deep_alpha/deep_alpha_pro.py` | 主策略文件（所有改动在此） |
+| `web_dashboard/app.py` | Deep Alpha 1m 推送表现 API / 页面 |
