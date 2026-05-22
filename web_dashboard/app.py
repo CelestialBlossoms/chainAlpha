@@ -8,15 +8,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import requests
 import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +44,20 @@ PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD = float(os.getenv("PLUGIN_BOTTOM_WATC
 _PLUGIN_BOTTOM_ABNORMAL_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
 PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC = float(os.getenv("PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC", "3"))
 _PLUGIN_ALPHA_NEW_TOKEN_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
+PUSH_CA_METRIC_CACHE_TTL_SEC = float(os.getenv("PUSH_CA_METRIC_CACHE_TTL_SEC", "60"))
+PUSH_CA_MAX_WORKERS = int(os.getenv("PUSH_CA_MAX_WORKERS", "6"))
+BINANCE_SOL_CHAIN_ID = os.getenv("BINANCE_SOL_CHAIN_ID", "CT_501")
+BINANCE_WEB3_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
+BINANCE_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info/ai"
+BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
+BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USER_AGENT}
+_PUSH_CA_METRIC_CACHE: dict[str, dict[str, Any]] = {}
+_DASHBOARD_KLINE_CACHE_TABLE_READY = False
+
+try:
+    REPORT_TZ = ZoneInfo(os.getenv("REPORT_TZ") or os.getenv("TZ") or "Asia/Shanghai")
+except Exception:
+    REPORT_TZ = ZoneInfo("Asia/Shanghai")
 
 app = FastAPI(title="Chain Alpha TG Dashboard")
 app.add_middleware(
@@ -507,6 +523,593 @@ def merge_alpha_new_token_events(
     return sorted(merged.values(), key=_alpha_new_token_sort_key, reverse=True)[:limit]
 
 
+def _to_ts(value: Any) -> int:
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    try:
+        ts = int(float(value))
+        return ts // 1000 if ts > 10_000_000_000 else ts
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_dashboard_time(ts: Any) -> str:
+    value = _to_ts(ts)
+    if value <= 0:
+        return ""
+    return datetime.fromtimestamp(value, REPORT_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _push_ca_day_window(day_text: str = "") -> tuple[str, int, int, datetime, datetime]:
+    text = str(day_text or "").strip()
+    try:
+        day = date.fromisoformat(text) if text else datetime.now(REPORT_TZ).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    start_dt = datetime(day.year, day.month, day.day, tzinfo=REPORT_TZ)
+    end_dt = start_dt + timedelta(days=1)
+    return day.isoformat(), int(start_dt.timestamp()), int(end_dt.timestamp()), start_dt, end_dt
+
+
+def _pct_change(value: float, base: float) -> float:
+    return (value / base - 1) * 100 if value > 0 and base > 0 else 0.0
+
+
+def _fetch_binance_dynamic(address: str) -> dict[str, Any]:
+    try:
+        resp = requests.get(
+            BINANCE_DYNAMIC_URL,
+            params={"chainId": BINANCE_SOL_CHAIN_ID, "contractAddress": address},
+            headers=BINANCE_HEADERS,
+            timeout=12,
+        )
+        if not resp.ok:
+            return {}
+        data = resp.json().get("data") or {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "price": _safe_float(data.get("price")),
+            "market_cap": _safe_float(data.get("marketCap")),
+            "holders": _safe_int(data.get("holders")),
+            "volume_5m": _safe_float(data.get("volume5m")),
+            "volume_1h": _safe_float(data.get("volume1h")),
+            "symbol": data.get("symbol") or "",
+        }
+    except Exception:
+        return {}
+
+
+def _parse_binance_kline(raw: Any) -> list[dict[str, float]]:
+    candles = []
+    for item in raw or []:
+        if not isinstance(item, list) or len(item) < 6:
+            continue
+        try:
+            ts = int(item[5] / 1000) if item[5] > 10**10 else int(item[5])
+            candles.append(
+                {
+                    "ts": ts,
+                    "open": float(item[0]),
+                    "high": float(item[1]),
+                    "low": float(item[2]),
+                    "close": float(item[3]),
+                    "volume": float(item[4]),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    candles.sort(key=lambda candle: int(candle["ts"]))
+    return candles
+
+
+def _fetch_binance_kline_range(address: str, from_ts: int, to_ts: int, interval: str = "1min") -> list[dict[str, float]]:
+    params = {
+        "address": address,
+        "platform": "solana",
+        "interval": interval,
+        "pm": "p",
+        "from": max(0, int(from_ts)) * 1000,
+        "to": max(0, int(to_ts)) * 1000,
+    }
+    try:
+        resp = requests.get(BINANCE_KLINE_URL, params=params, headers=BINANCE_HEADERS, timeout=25)
+        if not resp.ok:
+            return []
+        return _parse_binance_kline(resp.json().get("data"))
+    except Exception:
+        return []
+
+
+def _kline_resolution_seconds(resolution: str) -> int:
+    return {
+        "1m": 60,
+        "1min": 60,
+        "5m": 300,
+        "5min": 300,
+        "15m": 900,
+        "15min": 900,
+        "1h": 3600,
+    }.get(str(resolution or "").lower(), 60)
+
+
+def _binance_interval(resolution: str) -> str:
+    return {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "1h": "1h",
+    }.get(str(resolution or "").lower(), resolution or "1min")
+
+
+def ensure_dashboard_kline_cache_table() -> None:
+    global _DASHBOARD_KLINE_CACHE_TABLE_READY
+    if _DASHBOARD_KLINE_CACHE_TABLE_READY:
+        return
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bottom_kline_cache (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
+                ON bottom_kline_cache(address, resolution, ts);
+            """
+        )
+
+    db_op(_op)
+    _DASHBOARD_KLINE_CACHE_TABLE_READY = True
+
+
+def load_dashboard_kline_cache(address: str, resolution: str, from_ts: int, to_ts: int) -> list[dict[str, float]]:
+    if not address:
+        return []
+    ensure_dashboard_kline_cache_table()
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, volume, amount
+            FROM bottom_kline_cache
+            WHERE chain=%s
+              AND address=%s
+              AND resolution=%s
+              AND ts >= %s
+              AND ts <= %s
+            ORDER BY ts ASC
+            """,
+            ("sol", address, resolution, int(from_ts), int(to_ts)),
+        )
+        return [
+            {
+                "ts": int(row[0]),
+                "open": _safe_float(row[1]),
+                "high": _safe_float(row[2]),
+                "low": _safe_float(row[3]),
+                "close": _safe_float(row[4]),
+                "volume": _safe_float(row[5]),
+                "amount": _safe_float(row[6]),
+            }
+            for row in cur.fetchall()
+        ]
+
+    return db_op(_op) or []
+
+
+def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
+    if not address or not candles:
+        return 0
+    ensure_dashboard_kline_cache_table()
+
+    def _op(conn):
+        cur = conn.cursor()
+        rows = [
+            (
+                "sol",
+                address,
+                resolution,
+                _to_ts(candle.get("ts")),
+                candle.get("open"),
+                candle.get("high"),
+                candle.get("low"),
+                candle.get("close"),
+                candle.get("volume"),
+                candle.get("amount"),
+            )
+            for candle in candles
+            if _to_ts(candle.get("ts")) > 0
+        ]
+        if not rows:
+            return 0
+        cur.executemany(
+            """
+            INSERT INTO bottom_kline_cache (
+                chain, address, resolution, ts, open, high, low, close, volume, amount
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (chain, address, resolution, ts) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                updated_at = NOW()
+            """,
+            rows,
+        )
+        return len(rows)
+
+    return int(db_op(_op) or 0)
+
+
+def fetch_dashboard_kline_range(address: str, from_ts: int, to_ts: int, resolution: str = "1m") -> tuple[list[dict[str, float]], str]:
+    """Read DB K-line cache first, then fetch missing/recent candles from Binance Web3."""
+    if not address or from_ts <= 0 or to_ts <= 0:
+        return [], "no_address"
+    step = _kline_resolution_seconds(resolution)
+    cached = load_dashboard_kline_cache(address, resolution, from_ts, to_ts)
+    latest_cached_ts = max((_to_ts(candle.get("ts")) for candle in cached), default=0)
+    earliest_cached_ts = min((_to_ts(candle.get("ts")) for candle in cached), default=0)
+    fresh: list[dict[str, float]] = []
+
+    cache_has_start = bool(cached and earliest_cached_ts <= from_ts + step * 2)
+    cache_is_recent = bool(cached and latest_cached_ts >= to_ts - step * 2)
+    if not cache_has_start or not cache_is_recent:
+        fetch_from = from_ts if latest_cached_ts <= 0 else max(from_ts, latest_cached_ts - step * 2)
+        if not cache_has_start:
+            fetch_from = from_ts
+        fresh = _fetch_binance_kline_range(
+            address,
+            fetch_from,
+            to_ts,
+            interval=_binance_interval(resolution),
+        )
+        save_dashboard_kline_cache(address, resolution, fresh)
+        cached = load_dashboard_kline_cache(address, resolution, from_ts, to_ts)
+
+    seen = set()
+    merged = []
+    for candle in sorted([*cached, *fresh], key=lambda item: _to_ts(item.get("ts"))):
+        ts = _to_ts(candle.get("ts"))
+        if ts <= 0 or ts in seen or ts < from_ts or ts > to_ts:
+            continue
+        seen.add(ts)
+        merged.append(candle)
+
+    if fresh and cached:
+        return merged, "db_cache+binance_kline"
+    if cached:
+        return merged, "db_cache"
+    if fresh:
+        return merged, "binance_kline"
+    return [], "empty"
+
+
+def _push_metric_cache_key(item: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(item.get("source_key") or ""),
+            str(item.get("id") or ""),
+            str(item.get("address") or ""),
+            str(item.get("pushed_ts") or 0),
+            str(round(_safe_float(item.get("signal_mcap")), 6)),
+        ]
+    )
+
+
+def enrich_push_ca_item(item: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
+    address = str(item.get("address") or "").strip()
+    pushed_ts = _to_ts(item.get("pushed_ts"))
+    signal_mcap = _safe_float(item.get("signal_mcap"))
+    entry_price = _safe_float(item.get("entry_price"))
+    cached_key = _push_metric_cache_key(item)
+    now = time.time()
+    cached = _PUSH_CA_METRIC_CACHE.get(cached_key)
+    if (
+        not refresh
+        and cached
+        and now - float(cached.get("cached_at") or 0) <= PUSH_CA_METRIC_CACHE_TTL_SEC
+    ):
+        return {**item, **cached.get("metrics", {})}
+
+    dynamic = _fetch_binance_dynamic(address) if address else {}
+    current_price = _safe_float(dynamic.get("price"))
+    dynamic_mcap = _safe_float(dynamic.get("market_cap"))
+    candles: list[dict[str, float]] = []
+    post: list[dict[str, float]] = []
+    kline_source = ""
+    if address and pushed_ts > 0:
+        candles, kline_source = fetch_dashboard_kline_range(address, max(0, pushed_ts - 120), int(now), resolution="1m")
+        post = [candle for candle in candles if int(candle.get("ts") or 0) + 60 > pushed_ts]
+
+    entry_price_used = entry_price
+    if entry_price_used <= 0 and post:
+        first = post[0]
+        entry_price_used = _safe_float(first.get("open")) or _safe_float(first.get("close"))
+
+    peak_price = 0.0
+    peak_ts = 0
+    current_kline_price = 0.0
+    volume_usd = 0.0
+    if post:
+        peak_candle = max(post, key=lambda candle: _safe_float(candle.get("high")))
+        peak_price = _safe_float(peak_candle.get("high"))
+        peak_ts = _to_ts(peak_candle.get("ts"))
+        current_kline_price = _safe_float(post[-1].get("close"))
+        volume_usd = sum(_safe_float(candle.get("volume")) for candle in post)
+
+    if current_price <= 0:
+        current_price = current_kline_price
+
+    peak_gain_pct = _pct_change(peak_price, entry_price_used)
+    current_gain_pct = _pct_change(current_price, entry_price_used)
+    peak_mcap = signal_mcap * (1 + peak_gain_pct / 100) if signal_mcap > 0 and peak_gain_pct else 0.0
+    kline_current_mcap = signal_mcap * (1 + current_gain_pct / 100) if signal_mcap > 0 and current_gain_pct else 0.0
+    current_mcap = dynamic_mcap or kline_current_mcap or signal_mcap
+    if peak_mcap <= 0 and signal_mcap > 0:
+        peak_mcap = max(signal_mcap, current_mcap)
+        peak_gain_pct = _pct_change(peak_mcap, signal_mcap)
+
+    current_drop_pct = ((signal_mcap - current_mcap) / signal_mcap * 100) if signal_mcap > 0 and current_mcap > 0 else 0.0
+    current_vs_signal_pct = -current_drop_pct
+    metrics = {
+        "signal_mcap": signal_mcap,
+        "post_peak_mcap": peak_mcap,
+        "post_peak_gain_pct": peak_gain_pct,
+        "current_mcap": current_mcap,
+        "current_drop_pct": current_drop_pct,
+        "current_vs_signal_pct": current_vs_signal_pct,
+        "entry_price_used": entry_price_used,
+        "current_price": current_price,
+        "post_peak_price": peak_price,
+        "post_peak_ts": peak_ts,
+        "post_peak_time": _format_dashboard_time(peak_ts),
+        "post_volume_usd": volume_usd,
+        "kline_candles": len(post),
+        "metrics_source": (
+            f"binance_dynamic+{kline_source}" if post and dynamic_mcap
+            else (kline_source if post else ("binance_dynamic" if dynamic_mcap else "fallback"))
+        ),
+        "refreshed_at": _format_dashboard_time(int(now)),
+    }
+    _PUSH_CA_METRIC_CACHE[cached_key] = {"cached_at": now, "metrics": metrics}
+    return {**item, **metrics}
+
+
+def enrich_push_ca_items(items: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    max_workers = max(1, min(PUSH_CA_MAX_WORKERS, len(items)))
+    enriched: list[dict[str, Any] | None] = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(enrich_push_ca_item, item, refresh): index
+            for index, item in enumerate(items)
+        }
+        for future in as_completed(future_map):
+            index = future_map[future]
+            try:
+                enriched[index] = future.result()
+            except Exception as exc:
+                fallback = dict(items[index])
+                fallback["metrics_error"] = str(exc)
+                fallback["current_mcap"] = fallback.get("signal_mcap") or 0
+                fallback["post_peak_mcap"] = fallback.get("signal_mcap") or 0
+                enriched[index] = fallback
+    return [item for item in enriched if item is not None]
+
+
+def fetch_bottom_push_ca_items(limit: int = 50, q: str = "", day: str = "") -> tuple[str, list[dict[str, Any]]]:
+    day_iso, start_ts, end_ts, _, _ = _push_ca_day_window(day)
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('public.bottom_top100_push_records')")
+        if not cur.fetchone()[0]:
+            return []
+        cur.execute(
+            """
+            ALTER TABLE bottom_top100_push_records
+                ADD COLUMN IF NOT EXISTS snapshot_id BIGINT,
+                ADD COLUMN IF NOT EXISTS liquidity NUMERIC DEFAULT 0;
+            """
+        )
+        where = [
+            "COALESCE(NULLIF(event_ts, 0), extract(epoch from pushed_at)::bigint) >= %s",
+            "COALESCE(NULLIF(event_ts, 0), extract(epoch from pushed_at)::bigint) < %s",
+        ]
+        params: list[Any] = [start_ts, end_ts]
+        query = str(q or "").strip()
+        if query:
+            like = f"%{query}%"
+            where.append(
+                """
+                (
+                    address ILIKE %s OR symbol ILIKE %s OR signal_type ILIKE %s
+                    OR abnormal_rule ILIKE %s OR COALESCE(extra->>'narrative_desc', '') ILIKE %s
+                )
+                """
+            )
+            params.extend([like, like, like, like, like])
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT
+                id,
+                address,
+                COALESCE(chain, 'sol') AS chain,
+                COALESCE(symbol, '') AS symbol,
+                COALESCE(source, 'bottom_abnormal') AS source,
+                COALESCE(signal_type, '') AS signal_type,
+                COALESCE(abnormal_rule, '') AS abnormal_rule,
+                COALESCE(trend_interval, '') AS trend_interval,
+                COALESCE(current_mcap, 0) AS signal_mcap,
+                COALESCE(first_signal_mcap, 0) AS first_signal_mcap,
+                COALESCE(price_change_pct, 0) AS price_change_pct,
+                COALESCE(max_abnormal_mcap, 0) AS max_abnormal_mcap,
+                COALESCE(ath_mcap, 0) AS ath_mcap,
+                COALESCE(liquidity, pool_total_liquidity, 0) AS liquidity,
+                COALESCE(pool_mcap_ratio, 0) AS pool_mcap_ratio,
+                COALESCE(NULLIF(event_ts, 0), extract(epoch from pushed_at)::bigint) AS pushed_ts,
+                pushed_at,
+                COALESCE(extra, '{{}}'::jsonb) AS extra,
+                COALESCE(text, '') AS text
+            FROM bottom_top100_push_records
+            WHERE {' AND '.join(where)}
+            ORDER BY COALESCE(NULLIF(event_ts, 0), extract(epoch from pushed_at)::bigint) DESC, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        columns = [desc[0] for desc in cur.description]
+        return [
+            {key: json_safe(value) for key, value in zip(columns, row)}
+            for row in cur.fetchall()
+        ]
+
+    rows = db_op(_op) or []
+    items = []
+    for row in rows:
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        pushed_ts = _to_ts(row.get("pushed_ts"))
+        address = str(row.get("address") or "").strip()
+        if not address:
+            continue
+        items.append(
+            {
+                "id": row.get("id"),
+                "source_key": "bottom_push",
+                "source_label": "底部推送",
+                "address": address,
+                "chain": row.get("chain") or "sol",
+                "symbol": row.get("symbol") or extra.get("symbol") or "UNKNOWN",
+                "signal_type": row.get("signal_type") or "",
+                "signal_label": row.get("abnormal_rule") or row.get("signal_type") or "",
+                "trend_interval": row.get("trend_interval") or "",
+                "signal_mcap": _safe_float(row.get("signal_mcap")),
+                "first_signal_mcap": _safe_float(row.get("first_signal_mcap")),
+                "price_change_pct": _safe_float(row.get("price_change_pct")),
+                "raw_peak_hint_mcap": max(_safe_float(row.get("max_abnormal_mcap")), _safe_float(row.get("ath_mcap"))),
+                "liquidity": _safe_float(row.get("liquidity")),
+                "pool_mcap_ratio": _safe_float(row.get("pool_mcap_ratio")),
+                "pushed_ts": pushed_ts,
+                "pushed_time": _format_dashboard_time(pushed_ts),
+                "narrative": extra.get("narrative_desc") or extra.get("narrative") or row.get("text") or "",
+            }
+        )
+    return day_iso, items
+
+
+def fetch_deep_alpha_1m_ca_items(limit: int = 50, q: str = "", day: str = "") -> tuple[str, list[dict[str, Any]]]:
+    day_iso, _, _, start_dt, end_dt = _push_ca_day_window(day)
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('public.alpha_push_events')")
+        if not cur.fetchone()[0]:
+            return []
+        where = [
+            "trend_interval = '1m'",
+            "COALESCE(source, '1m') = '1m'",
+            "pushed_at >= %s",
+            "pushed_at < %s",
+        ]
+        params: list[Any] = [start_dt, end_dt]
+        query = str(q or "").strip()
+        if query:
+            like = f"%{query}%"
+            where.append(
+                """
+                (
+                    address ILIKE %s OR symbol ILIKE %s OR repeat_alert_type ILIKE %s
+                    OR COALESCE(raw_stats->>'narrative_desc', raw_stats->>'narrative', '') ILIKE %s
+                )
+                """
+            )
+            params.extend([like, like, like, like])
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT
+                id,
+                address,
+                COALESCE(chain, 'sol') AS chain,
+                COALESCE(symbol, '') AS symbol,
+                COALESCE(source, '1m') AS source,
+                COALESCE(trend_interval, '1m') AS trend_interval,
+                COALESCE(alert_no, 1) AS alert_no,
+                COALESCE(repeat_alert, false) AS repeat_alert,
+                COALESCE(repeat_alert_type, '') AS repeat_alert_type,
+                COALESCE(entry_mcap, 0) AS signal_mcap,
+                COALESCE(entry_price, 0) AS entry_price,
+                COALESCE(holder_count, 0) AS holder_count,
+                COALESCE(fee_sol, 0) AS fee_sol,
+                COALESCE(buy_score, 0) AS buy_score,
+                COALESCE(raw_stats, '{{}}'::jsonb) AS raw_stats,
+                extract(epoch from pushed_at)::bigint AS pushed_ts,
+                pushed_at
+            FROM alpha_push_events
+            WHERE {' AND '.join(where)}
+            ORDER BY pushed_at DESC, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        columns = [desc[0] for desc in cur.description]
+        return [
+            {key: json_safe(value) for key, value in zip(columns, row)}
+            for row in cur.fetchall()
+        ]
+
+    rows = db_op(_op) or []
+    items = []
+    for row in rows:
+        raw = row.get("raw_stats") if isinstance(row.get("raw_stats"), dict) else {}
+        narrative_obj = raw.get("binance_narrative") if isinstance(raw.get("binance_narrative"), dict) else {}
+        pushed_ts = _to_ts(row.get("pushed_ts"))
+        address = str(row.get("address") or "").strip()
+        if not address:
+            continue
+        repeat_alert = bool(row.get("repeat_alert"))
+        items.append(
+            {
+                "id": row.get("id"),
+                "source_key": "deep_alpha_1m",
+                "source_label": "Deep Alpha Pro 1m",
+                "address": address,
+                "chain": row.get("chain") or "sol",
+                "symbol": row.get("symbol") or raw.get("symbol") or "UNKNOWN",
+                "signal_type": "repeat" if repeat_alert else "first",
+                "signal_label": row.get("repeat_alert_type") or ("复推" if repeat_alert else "首推"),
+                "trend_interval": row.get("trend_interval") or "1m",
+                "alert_no": _safe_int(row.get("alert_no")),
+                "signal_mcap": _safe_float(row.get("signal_mcap")),
+                "entry_price": _safe_float(row.get("entry_price")),
+                "holder_count": _safe_int(row.get("holder_count")),
+                "fee_sol": _safe_float(row.get("fee_sol")),
+                "buy_score": _safe_int(row.get("buy_score")),
+                "pushed_ts": pushed_ts,
+                "pushed_time": _format_dashboard_time(pushed_ts),
+                "narrative": raw.get("narrative_desc") or raw.get("narrative") or narrative_obj.get("narrative_desc") or "",
+            }
+        )
+    return day_iso, items
+
+
 def fetch_onchain_trading_guides(
     limit: int = 200,
     query: str = "",
@@ -596,6 +1199,34 @@ def onchain_guides(request: Request):
     return templates.TemplateResponse(request, "onchain_guides.html", {})
 
 
+@app.get("/bottom-push-ca", response_class=HTMLResponse)
+def bottom_push_ca_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "push_ca_table.html",
+        {
+            "page_title": "底部推送 CA",
+            "page_desc": "今日 bottom_top100_push_records 推送后的市值表现，默认显示最近 50 条。",
+            "api_path": "/api/push-ca/bottom",
+            "source_label": "底部推送",
+        },
+    )
+
+
+@app.get("/deep-alpha-1m-ca", response_class=HTMLResponse)
+def deep_alpha_1m_ca_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "push_ca_table.html",
+        {
+            "page_title": "Deep Alpha Pro 1m 打新 CA",
+            "page_desc": "今日 deep_alpha_pro 1m 推送后的市值表现，默认显示最近 50 条。",
+            "api_path": "/api/push-ca/deep-alpha-1m",
+            "source_label": "Deep Alpha Pro 1m",
+        },
+    )
+
+
 @app.get("/api/recent")
 def recent(request: Request, limit: int = 100):
     limit = max(1, min(limit, 500))
@@ -650,6 +1281,63 @@ def plugin_alpha_new_tokens(request: Request, limit: int = 100):
     )
     _PLUGIN_ALPHA_NEW_TOKEN_CACHE.update({"ts": now, "limit": limit, "items": items})
     return {"items": items, "cached": False}
+
+
+def _sort_push_ca_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
+    key = str(sort or "time_desc")
+    sorters = {
+        "time_desc": (lambda item: _to_ts(item.get("pushed_ts")), True),
+        "time_asc": (lambda item: _to_ts(item.get("pushed_ts")), False),
+        "peak_gain_desc": (lambda item: _safe_float(item.get("post_peak_gain_pct")), True),
+        "current_drop_desc": (lambda item: _safe_float(item.get("current_drop_pct")), True),
+        "current_mcap_desc": (lambda item: _safe_float(item.get("current_mcap")), True),
+    }
+    getter, reverse = sorters.get(key, sorters["time_desc"])
+    return sorted(items, key=getter, reverse=reverse)
+
+
+@app.get("/api/push-ca/bottom")
+def bottom_push_ca_api(
+    request: Request,
+    limit: int = 50,
+    q: str = "",
+    date: str = "",
+    sort: str = "time_desc",
+    refresh: bool = False,
+):
+    limit = max(1, min(limit, 200))
+    day_iso, items = fetch_bottom_push_ca_items(limit=limit, q=q.strip(), day=date.strip())
+    items = enrich_push_ca_items(items, refresh=refresh)
+    return {
+        "items": _sort_push_ca_items(items, sort),
+        "count": len(items),
+        "date": day_iso,
+        "limit": limit,
+        "source": "bottom_push",
+        "refreshed": refresh,
+    }
+
+
+@app.get("/api/push-ca/deep-alpha-1m")
+def deep_alpha_1m_ca_api(
+    request: Request,
+    limit: int = 50,
+    q: str = "",
+    date: str = "",
+    sort: str = "time_desc",
+    refresh: bool = False,
+):
+    limit = max(1, min(limit, 200))
+    day_iso, items = fetch_deep_alpha_1m_ca_items(limit=limit, q=q.strip(), day=date.strip())
+    items = enrich_push_ca_items(items, refresh=refresh)
+    return {
+        "items": _sort_push_ca_items(items, sort),
+        "count": len(items),
+        "date": day_iso,
+        "limit": limit,
+        "source": "deep_alpha_1m",
+        "refreshed": refresh,
+    }
 
 
 @app.get("/api/plugin/health")

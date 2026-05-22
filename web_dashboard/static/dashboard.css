@@ -884,6 +884,55 @@ h1 {
   flex-wrap: wrap;
 }
 
+.push-controls {
+  align-items: center;
+}
+
+.date-input {
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: white;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.push-table {
+  min-width: 1320px;
+}
+
+.push-token {
+  min-width: 150px;
+}
+
+.push-token small {
+  display: block;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.push-sub {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ca-full {
+  display: inline-block;
+  max-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 1300px) {

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }}</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div class="page">
+    <div class="wrap">
+      <header class="topbar">
+        <div>
+          <h1>{{ page_title }}</h1>
+          <p class="desc">{{ page_desc }}</p>
+        </div>
+        <div class="nav-actions">
+          <a class="mini-link" href="/bottom-push-ca">底部推送 CA</a>
+          <a class="mini-link" href="/deep-alpha-1m-ca">Deep Alpha 1m</a>
+          <a class="mini-link" href="/onchain-guides">链上交易指南</a>
+          <button id="refresh-btn" class="mini-btn" type="button">刷新市值/K线</button>
+        </div>
+      </header>
+
+      <section class="controls push-controls">
+        <input id="push-query" class="search" type="search" placeholder="搜索完整 CA / Symbol / 信号">
+        <input id="push-date" class="date-input" type="date">
+        <select id="push-sort" class="sort-select">
+          <option value="time_desc">推送时间新到旧</option>
+          <option value="time_asc">推送时间旧到新</option>
+          <option value="peak_gain_desc">异动后涨幅高到低</option>
+          <option value="current_drop_desc">当前跌幅高到低</option>
+          <option value="current_mcap_desc">当前市值高到低</option>
+        </select>
+        <div id="push-summary" class="watch-summary">加载中</div>
+      </section>
+
+      <section class="watchlist-table-wrap card">
+        <table class="watchlist-table push-table">
+          <thead>
+            <tr>
+              <th>Token / 信号</th>
+              <th>推送时间</th>
+              <th>信号推送市值</th>
+              <th>异动后最高市值</th>
+              <th>异动后涨幅</th>
+              <th>当前市值</th>
+              <th>推送到当前跌幅</th>
+              <th>完整 CA 地址</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="push-rows"></tbody>
+        </table>
+      </section>
+
+      <div id="push-empty" class="empty" hidden>今日暂无 CA 数据</div>
+    </div>
+  </div>
+
+  <script>
+    const API_PATH = {{ api_path | tojson }};
+    const SOURCE_LABEL = {{ source_label | tojson }};
+    const rowsEl = document.querySelector("#push-rows");
+    const emptyEl = document.querySelector("#push-empty");
+    const queryEl = document.querySelector("#push-query");
+    const dateEl = document.querySelector("#push-date");
+    const sortEl = document.querySelector("#push-sort");
+    const summaryEl = document.querySelector("#push-summary");
+    const refreshBtn = document.querySelector("#refresh-btn");
+    const state = { items: [], date: "", loading: false };
+    let loadTimer = 0;
+
+    function safeNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function htmlEscape(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formatCap(value) {
+      const n = safeNum(value);
+      const sign = n < 0 ? "-" : "";
+      const amount = Math.abs(n);
+      if (amount >= 1000000000) return `${sign}$${(amount / 1000000000).toFixed(2)}B`;
+      if (amount >= 1000000) return `${sign}$${(amount / 1000000).toFixed(2)}M`;
+      if (amount >= 1000) return `${sign}$${(amount / 1000).toFixed(1)}K`;
+      return `${sign}$${Math.round(amount)}`;
+    }
+
+    function formatPct(value) {
+      const n = safeNum(value);
+      return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+    }
+
+    function formatDrop(value) {
+      const n = safeNum(value);
+      if (Math.abs(n) < 0.05) return "0.0%";
+      return n > 0 ? `跌${n.toFixed(1)}%` : `涨${Math.abs(n).toFixed(1)}%`;
+    }
+
+    function dropClass(value) {
+      return safeNum(value) > 0 ? "red-text" : "green-text";
+    }
+
+    function gmgnUrl(item) {
+      return item && item.address ? `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}` : "https://gmgn.ai/";
+    }
+
+    function binanceUrl(item) {
+      return item && item.address ? `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV` : "https://web3.binance.com/zh-CN";
+    }
+
+    async function copyText(text) {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+    }
+
+    function localSorted(items) {
+      const sorters = {
+        time_desc: (a, b) => safeNum(b.pushed_ts) - safeNum(a.pushed_ts),
+        time_asc: (a, b) => safeNum(a.pushed_ts) - safeNum(b.pushed_ts),
+        peak_gain_desc: (a, b) => safeNum(b.post_peak_gain_pct) - safeNum(a.post_peak_gain_pct),
+        current_drop_desc: (a, b) => safeNum(b.current_drop_pct) - safeNum(a.current_drop_pct),
+        current_mcap_desc: (a, b) => safeNum(b.current_mcap) - safeNum(a.current_mcap),
+      };
+      return [...items].sort(sorters[sortEl.value] || sorters.time_desc);
+    }
+
+    function render() {
+      const rows = localSorted(state.items);
+      emptyEl.hidden = rows.length > 0;
+      const latestRefresh = rows.map((item) => item.refreshed_at).filter(Boolean).sort().at(-1) || "-";
+      summaryEl.textContent = `${state.date || "今日"} | ${rows.length} 条 ${SOURCE_LABEL} | 默认最多 50 条 | 更新 ${latestRefresh}`;
+      rowsEl.innerHTML = rows.map((item) => {
+        const ca = item.address || "";
+        const peakGain = safeNum(item.post_peak_gain_pct);
+        const peakClass = peakGain >= 0 ? "green-text" : "red-text";
+        const narrative = item.narrative || "";
+        return `
+          <tr data-ca="${htmlEscape(ca)}">
+            <td>
+              <div class="watch-token push-token">
+                <b>${item.symbol ? "$" + htmlEscape(item.symbol) : "UNKNOWN"}</b>
+                <span>${htmlEscape(item.signal_label || item.signal_type || "-")}</span>
+                ${narrative ? `<small title="${htmlEscape(narrative)}">${htmlEscape(narrative)}</small>` : ""}
+              </div>
+            </td>
+            <td>${htmlEscape(item.pushed_time || "-")}</td>
+            <td><b>${formatCap(item.signal_mcap)}</b></td>
+            <td>
+              <b>${formatCap(item.post_peak_mcap)}</b>
+              <div class="push-sub">${htmlEscape(item.post_peak_time || "")}</div>
+            </td>
+            <td><b class="${peakClass}">${formatPct(item.post_peak_gain_pct)}</b></td>
+            <td>
+              <b>${formatCap(item.current_mcap)}</b>
+              <div class="push-sub">${htmlEscape(item.metrics_source || "-")}</div>
+            </td>
+            <td><b class="${dropClass(item.current_drop_pct)}">${formatDrop(item.current_drop_pct)}</b></td>
+            <td><code class="ca-full">${htmlEscape(ca)}</code></td>
+            <td>
+              <div class="card-actions">
+                <button class="mini-btn copy-btn" type="button" data-ca="${htmlEscape(ca)}">复制</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
+                <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function loadPushes(refresh = false) {
+      if (state.loading) return;
+      state.loading = true;
+      summaryEl.textContent = refresh ? "正在调用 Binance Web3 更新市值和 1m K线..." : "加载中";
+      const params = new URLSearchParams({
+        limit: "50",
+        sort: sortEl.value,
+        refresh: refresh ? "true" : "false",
+      });
+      const query = queryEl.value.trim();
+      const selectedDate = dateEl.value.trim();
+      if (query) params.set("q", query);
+      if (selectedDate) params.set("date", selectedDate);
+      try {
+        const resp = await fetch(`${API_PATH}?${params.toString()}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        state.items = data.items || [];
+        state.date = data.date || selectedDate || "";
+        if (!dateEl.value && state.date) dateEl.value = state.date;
+        render();
+      } catch (err) {
+        summaryEl.textContent = `加载失败: ${err.message}`;
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function scheduleLoad() {
+      window.clearTimeout(loadTimer);
+      loadTimer = window.setTimeout(() => loadPushes(false), 300);
+    }
+
+    rowsEl.addEventListener("click", (event) => {
+      const btn = event.target.closest(".copy-btn");
+      if (!btn) return;
+      copyText(btn.dataset.ca || "");
+    });
+    queryEl.addEventListener("input", scheduleLoad);
+    dateEl.addEventListener("change", () => loadPushes(false));
+    sortEl.addEventListener("change", () => {
+      render();
+      loadPushes(false);
+    });
+    refreshBtn.addEventListener("click", () => loadPushes(true));
+
+    loadPushes(false);
+  </script>
+</body>
+</html>
