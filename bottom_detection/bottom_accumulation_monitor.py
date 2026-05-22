@@ -143,11 +143,23 @@ USE_AGENT_DECISION = os.getenv("BOTTOM_USE_AGENT_DECISION", "1") != "0"
 EMA_GOLDEN_CROSS_ENABLED = os.getenv("BOTTOM_EMA_GOLDEN_CROSS_ENABLED", "0") == "1"
 POST_PUSH_REDIS_TRACK_ENABLED = os.getenv("BOTTOM_POST_PUSH_REDIS_TRACK_ENABLED", "1") != "0"
 POST_PUSH_REDIS_PREFIX = os.getenv("BOTTOM_POST_PUSH_REDIS_PREFIX", "bottom:post_push")
-POST_PUSH_TRACK_TTL_SEC = int(os.getenv("BOTTOM_POST_PUSH_TRACK_TTL_SEC", str(24 * 3600)))
+POST_PUSH_TRACK_TTL_SEC = int(os.getenv("BOTTOM_POST_PUSH_TRACK_TTL_SEC", str(4 * 3600)))
+POST_PUSH_POLL_INTERVAL_SEC = int(os.getenv("BOTTOM_POST_PUSH_POLL_INTERVAL_SEC", "60"))
+POST_PUSH_ENTRY_DD_MIN_PCT = float(os.getenv("BOTTOM_POST_PUSH_ENTRY_DD_MIN_PCT", "30"))
+POST_PUSH_ENTRY_DD_MAX_PCT = float(os.getenv("BOTTOM_POST_PUSH_ENTRY_DD_MAX_PCT", "50"))
+POST_PUSH_KLINE_INTERVAL = os.getenv("BOTTOM_POST_PUSH_KLINE_INTERVAL", "1min")
 POST_PUSH_MIN_PEAK_GAIN_PCT = float(os.getenv("BOTTOM_POST_PUSH_MIN_PEAK_GAIN_PCT", "15"))
+POST_PUSH_GAIN_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_GAIN_REPLY_PCT", str(POST_PUSH_MIN_PEAK_GAIN_PCT)))
+POST_PUSH_LOSS_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_LOSS_REPLY_PCT", str(POST_PUSH_ENTRY_DD_MIN_PCT)))
 POST_PUSH_DRAWDOWN_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_DRAWDOWN_REPLY_PCT", "20"))
 POST_PUSH_REPLY_COOLDOWN_SEC = int(os.getenv("BOTTOM_POST_PUSH_REPLY_COOLDOWN_SEC", str(60 * 60)))
 POST_PUSH_MAX_REPLIES = int(os.getenv("BOTTOM_POST_PUSH_MAX_REPLIES", "3"))
+BINANCE_SOL_CHAIN_ID = os.getenv("BINANCE_SOL_CHAIN_ID", "CT_501")
+BINANCE_WEB3_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
+BINANCE_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info/ai"
+BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
+BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USER_AGENT}
+_POST_PUSH_MONITOR_STARTED = False
 
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
@@ -1876,6 +1888,21 @@ def post_push_track_key(address: str) -> str:
     return redis_key(POST_PUSH_REDIS_PREFIX, address)
 
 
+def refresh_post_push_track_ttl(client: Any, key: str, state: dict[str, Any]) -> bool:
+    if POST_PUSH_TRACK_TTL_SEC <= 0:
+        return True
+    created_ts = to_int((state or {}).get("created_ts"))
+    if created_ts <= 0:
+        client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+        return True
+    remaining = created_ts + POST_PUSH_TRACK_TTL_SEC - now_ts()
+    if remaining <= 0:
+        client.delete(key)
+        return False
+    client.expire(key, int(remaining))
+    return True
+
+
 def register_post_push_track(address: str, extra: dict[str, Any], message_id: int | str | None) -> None:
     if not POST_PUSH_REDIS_TRACK_ENABLED or not address or not message_id:
         return
@@ -1906,11 +1933,19 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
         "last_reply_ts": "0",
         "reply_count": "0",
         "last_reply_bucket": "0",
+        "last_gain_reply_ts": "0",
+        "gain_reply_count": "0",
+        "last_gain_bucket": "0",
+        "last_loss_reply_ts": "0",
+        "loss_reply_count": "0",
+        "last_loss_bucket": "0",
+        "dd_alert_sent": "0",
+        "dd_alert_ts": "0",
+        "dd_alert_message_id": "0",
     }
     try:
         client.hset(key, mapping=payload)
-        if POST_PUSH_TRACK_TTL_SEC > 0:
-            client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+        refresh_post_push_track_ttl(client, key, payload)
     except Exception as exc:
         print(f"{address[:8]} post-push redis register failed: {exc}")
 
@@ -1943,6 +1978,270 @@ def send_tg_reply(text: str, reply_to_message_id: int, extra: dict[str, Any]) ->
         print(f"tg reply exception: {exc}")
         publish_tg_alert(text, "bottom_abnormal_followup", status="exception", chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
         return None
+
+
+def _first_number_by_keys(payload: Any, keys: tuple[str, ...]) -> float:
+    if isinstance(payload, dict):
+        for key in keys:
+            if key in payload:
+                value = to_float(payload.get(key))
+                if value > 0:
+                    return value
+        for value in payload.values():
+            found = _first_number_by_keys(value, keys)
+            if found > 0:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _first_number_by_keys(item, keys)
+            if found > 0:
+                return found
+    return 0.0
+
+
+def fetch_binance_dynamic_metrics(address: str) -> dict[str, Any]:
+    if not address:
+        return {}
+    try:
+        resp = requests.get(
+            BINANCE_DYNAMIC_URL,
+            params={"chainId": BINANCE_SOL_CHAIN_ID, "contractAddress": address},
+            headers=BINANCE_HEADERS,
+            timeout=12,
+        )
+        if not resp.ok:
+            return {}
+        data = resp.json().get("data") or {}
+        if not isinstance(data, dict):
+            return {}
+        market_cap = _first_number_by_keys(data, ("marketCap", "market_cap", "mcap", "fdv"))
+        liquidity = _first_number_by_keys(
+            data,
+            ("liquidity", "liquidityUsd", "liquidity_usd", "poolLiquidity", "pool_liquidity", "totalLiquidity"),
+        )
+        price = _first_number_by_keys(data, ("price", "tokenPrice", "priceUsd", "price_usd"))
+        return {
+            "price": price,
+            "market_cap": market_cap,
+            "pool_liquidity": liquidity,
+            "pool_mcap_ratio": liquidity / market_cap if liquidity > 0 and market_cap > 0 else 0.0,
+            "holders": to_int(data.get("holders") or data.get("holderCount")),
+            "volume_5m": to_float(data.get("volume5m")),
+            "volume_1h": to_float(data.get("volume1h")),
+            "symbol": data.get("symbol") or "",
+        }
+    except Exception as exc:
+        print(f"{address[:8]} binance dynamic fetch failed: {exc}")
+        return {}
+
+
+def parse_binance_kline_rows(raw: Any) -> list[dict[str, float]]:
+    candles: list[dict[str, float]] = []
+    for item in raw or []:
+        try:
+            if isinstance(item, list) and len(item) >= 6:
+                ts = int(item[5] / 1000) if to_float(item[5]) > 10_000_000_000 else int(item[5])
+                candles.append(
+                    {
+                        "ts": ts,
+                        "open": float(item[0]),
+                        "high": float(item[1]),
+                        "low": float(item[2]),
+                        "close": float(item[3]),
+                        "volume": float(item[4]),
+                    }
+                )
+            elif isinstance(item, dict):
+                ts = to_int(item.get("time") or item.get("timestamp") or item.get("t"))
+                ts = ts // 1000 if ts > 10_000_000_000 else ts
+                close = to_float(item.get("close") or item.get("c"))
+                if ts > 0 and close > 0:
+                    candles.append(
+                        {
+                            "ts": ts,
+                            "open": to_float(item.get("open") or item.get("o"), close),
+                            "high": to_float(item.get("high") or item.get("h"), close),
+                            "low": to_float(item.get("low") or item.get("l"), close),
+                            "close": close,
+                            "volume": to_float(item.get("volume") or item.get("v")),
+                        }
+                    )
+        except (TypeError, ValueError):
+            continue
+    candles.sort(key=lambda candle: int(candle["ts"]))
+    return candles
+
+
+def fetch_binance_kline(address: str, interval: str = "5min", limit: int = 24) -> list[dict[str, float]]:
+    if not address:
+        return []
+    try:
+        resp = requests.get(
+            BINANCE_KLINE_URL,
+            params={"address": address, "platform": "solana", "interval": interval, "limit": limit, "pm": "p"},
+            headers=BINANCE_HEADERS,
+            timeout=15,
+        )
+        if not resp.ok:
+            return []
+        return parse_binance_kline_rows(resp.json().get("data"))
+    except Exception as exc:
+        print(f"{address[:8]} binance kline fetch failed: {exc}")
+        return []
+
+
+def _post_push_entry_dd_text(
+    *,
+    address: str,
+    symbol: str,
+    signal_type: str,
+    entry_mcap: float,
+    current_mcap: float,
+    entry_loss_pct: float,
+    pool_liquidity: float,
+    pool_mcap_ratio: float,
+    candles: list[dict[str, float]],
+    kline_interval: str,
+) -> str:
+    recent = candles[-5:] if candles else []
+    recent_volume = sum(to_float(candle.get("volume")) for candle in recent)
+    last_close = to_float(recent[-1].get("close")) if recent else 0.0
+    first_open = to_float(recent[0].get("open")) if recent else 0.0
+    kline_change = (last_close / first_open - 1) * 100 if first_open > 0 and last_close > 0 else 0.0
+    return (
+        f"底部异动回撤区间触发 | ${symbol or 'UNKNOWN'}\n"
+        f"信号类型: {signal_type or 'unknown'}\n"
+        f"首推市值: {format_money_text(entry_mcap)}\n"
+        f"当前市值: {format_money_text(current_mcap)}\n"
+        f"相对首推回撤: -{entry_loss_pct:.1f}% "
+        f"(目标 {POST_PUSH_ENTRY_DD_MIN_PCT:.0f}%-{POST_PUSH_ENTRY_DD_MAX_PCT:.0f}%)\n"
+        f"池子流动性: {format_money_text(pool_liquidity)} | 池/市值: {pool_mcap_ratio:.1%}\n"
+        f"近5根{kline_interval} K线: {kline_change:+.1f}% | 量: {recent_volume:,.0f}\n"
+        f"CA: {address}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def send_post_push_entry_drawdown_alert(
+    address: str,
+    state: dict[str, Any],
+    current_mcap: float,
+    pool_liquidity: float,
+    pool_mcap_ratio: float,
+    candles: list[dict[str, float]],
+    *,
+    source: str,
+    kline_interval: str = POST_PUSH_KLINE_INTERVAL,
+) -> int | None:
+    entry_mcap = to_float(state.get("entry_mcap"))
+    if entry_mcap <= 0 or current_mcap <= 0:
+        return None
+    entry_loss_pct = (1 - current_mcap / entry_mcap) * 100
+    if entry_loss_pct < POST_PUSH_ENTRY_DD_MIN_PCT or entry_loss_pct > POST_PUSH_ENTRY_DD_MAX_PCT:
+        return None
+    message_id = to_int(state.get("message_id"))
+    if message_id <= 0:
+        return None
+    text = _post_push_entry_dd_text(
+        address=address,
+        symbol=str(state.get("symbol") or "UNKNOWN"),
+        signal_type=str(state.get("signal_type") or ""),
+        entry_mcap=entry_mcap,
+        current_mcap=current_mcap,
+        entry_loss_pct=entry_loss_pct,
+        pool_liquidity=pool_liquidity,
+        pool_mcap_ratio=pool_mcap_ratio,
+        candles=candles,
+        kline_interval=kline_interval,
+    )
+    extra = {
+        "post_push_reply": True,
+        "post_push_reply_kind": "entry_drawdown",
+        "source": source,
+        "address": address,
+        "symbol": state.get("symbol") or "UNKNOWN",
+        "signal_type": state.get("signal_type") or "",
+        "entry_mcap": entry_mcap,
+        "current_mcap": current_mcap,
+        "entry_loss_pct": entry_loss_pct,
+        "pool_liquidity": pool_liquidity,
+        "pool_total_liquidity": pool_liquidity,
+        "pool_mcap_ratio": pool_mcap_ratio,
+        "kline_interval": kline_interval,
+        "reply_to_message_id": message_id,
+    }
+    return send_tg_reply(text, message_id, extra)
+
+
+def scan_post_push_entry_drawdowns_once() -> None:
+    if not POST_PUSH_REDIS_TRACK_ENABLED:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    pattern = post_push_track_key("*")
+    try:
+        keys = list(client.scan_iter(match=pattern, count=100))
+    except Exception as exc:
+        print(f"post-push redis scan failed: {exc}")
+        return
+    for key in keys:
+        try:
+            state = client.hgetall(key)
+            if not state or to_int(state.get("dd_alert_sent")):
+                continue
+            address = str(state.get("address") or "").strip() or str(key).split(":")[-1]
+            if not valid_sol_ca(address):
+                continue
+            dynamic = fetch_binance_dynamic_metrics(address)
+            current_mcap = to_float(dynamic.get("market_cap"))
+            if current_mcap <= 0:
+                continue
+            pool_liquidity = to_float(dynamic.get("pool_liquidity"))
+            pool_mcap_ratio = to_float(dynamic.get("pool_mcap_ratio"))
+            candles = fetch_binance_kline(address, interval=POST_PUSH_KLINE_INTERVAL, limit=24)
+            sent_message_id = send_post_push_entry_drawdown_alert(
+                address,
+                state,
+                current_mcap,
+                pool_liquidity,
+                pool_mcap_ratio,
+                candles,
+                source="redis_poll",
+                kline_interval=POST_PUSH_KLINE_INTERVAL,
+            )
+            updates = {
+                "last_mcap": str(current_mcap),
+                "updated_ts": str(now_ts()),
+                "last_binance_pool_liquidity": str(pool_liquidity),
+                "last_binance_pool_mcap_ratio": str(pool_mcap_ratio),
+            }
+            if sent_message_id:
+                updates.update(
+                    {
+                        "dd_alert_sent": "1",
+                        "dd_alert_ts": str(now_ts()),
+                        "dd_alert_message_id": str(sent_message_id),
+                    }
+                )
+            client.hset(key, mapping=updates)
+            refresh_post_push_track_ttl(client, key, state)
+        except Exception as exc:
+            print(f"post-push redis poll item failed: {exc}")
+
+
+def post_push_entry_drawdown_monitor_loop() -> None:
+    while True:
+        scan_post_push_entry_drawdowns_once()
+        time.sleep(max(10, POST_PUSH_POLL_INTERVAL_SEC))
+
+
+def start_post_push_entry_drawdown_monitor() -> None:
+    global _POST_PUSH_MONITOR_STARTED
+    if _POST_PUSH_MONITOR_STARTED or not POST_PUSH_REDIS_TRACK_ENABLED:
+        return
+    _POST_PUSH_MONITOR_STARTED = True
+    threading.Thread(target=post_push_entry_drawdown_monitor_loop, daemon=True).start()
 
 
 def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any], analysis: dict[str, Any]) -> None:
@@ -1980,22 +2279,59 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         return
     peak_gain_pct = (peak_mcap / entry_mcap - 1) * 100
     drawdown_pct = (1 - current_mcap / peak_mcap) * 100 if current_mcap < peak_mcap else 0.0
+    entry_loss_pct = (1 - current_mcap / entry_mcap) * 100 if current_mcap < entry_mcap else 0.0
     reply_count = to_int(state.get("reply_count"))
     last_reply_ts = to_int(state.get("last_reply_ts"))
     last_reply_bucket = to_int(state.get("last_reply_bucket"))
-    bucket = int(drawdown_pct // POST_PUSH_DRAWDOWN_REPLY_PCT) if POST_PUSH_DRAWDOWN_REPLY_PCT > 0 else 0
-    should_reply = (
+    gain_reply_count = to_int(state.get("gain_reply_count"))
+    last_gain_reply_ts = to_int(state.get("last_gain_reply_ts"))
+    last_gain_bucket = to_int(state.get("last_gain_bucket"))
+    loss_reply_count = to_int(state.get("loss_reply_count"))
+    last_loss_reply_ts = to_int(state.get("last_loss_reply_ts"))
+    last_loss_bucket = to_int(state.get("last_loss_bucket"))
+    dd_alert_sent = to_int(state.get("dd_alert_sent"))
+
+    gain_bucket = int(peak_gain_pct // POST_PUSH_GAIN_REPLY_PCT) if POST_PUSH_GAIN_REPLY_PCT > 0 else 0
+    drawdown_bucket = int(drawdown_pct // POST_PUSH_DRAWDOWN_REPLY_PCT) if POST_PUSH_DRAWDOWN_REPLY_PCT > 0 else 0
+    loss_bucket = int(entry_loss_pct // POST_PUSH_LOSS_REPLY_PCT) if POST_PUSH_LOSS_REPLY_PCT > 0 else 0
+    reply_kind = ""
+    bucket = 0
+    if (
+        POST_PUSH_GAIN_REPLY_PCT > 0
+        and peak_gain_pct >= POST_PUSH_GAIN_REPLY_PCT
+        and current_mcap >= entry_mcap
+        and gain_bucket > last_gain_bucket
+        and gain_reply_count < POST_PUSH_MAX_REPLIES
+        and (now_value - last_gain_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
+    ):
+        reply_kind = "gain"
+        bucket = gain_bucket
+    elif (
         peak_gain_pct >= POST_PUSH_MIN_PEAK_GAIN_PCT
         and drawdown_pct >= POST_PUSH_DRAWDOWN_REPLY_PCT
-        and bucket > last_reply_bucket
+        and drawdown_bucket > last_reply_bucket
         and reply_count < POST_PUSH_MAX_REPLIES
         and (now_value - last_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
-    )
-    if not should_reply:
+    ):
+        reply_kind = "drawdown"
+        bucket = drawdown_bucket
+    elif (
+        POST_PUSH_LOSS_REPLY_PCT > 0
+        and peak_gain_pct < POST_PUSH_MIN_PEAK_GAIN_PCT
+        and entry_loss_pct >= POST_PUSH_LOSS_REPLY_PCT
+        and entry_loss_pct <= POST_PUSH_ENTRY_DD_MAX_PCT
+        and not dd_alert_sent
+        and loss_bucket > last_loss_bucket
+        and loss_reply_count < POST_PUSH_MAX_REPLIES
+        and (now_value - last_loss_reply_ts) >= POST_PUSH_REPLY_COOLDOWN_SEC
+    ):
+        reply_kind = "entry_drawdown"
+        bucket = loss_bucket
+
+    if not reply_kind:
         try:
             client.hset(key, mapping=updates)
-            if POST_PUSH_TRACK_TTL_SEC > 0:
-                client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+            refresh_post_push_track_ttl(client, key, state)
         except Exception as exc:
             print(f"{address[:8]} post-push redis update failed: {exc}")
         return
@@ -2003,18 +2339,60 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
     message_id = to_int(state.get("message_id"))
     if message_id <= 0:
         return
+    if reply_kind == "entry_drawdown":
+        dynamic = fetch_binance_dynamic_metrics(address)
+        binance_mcap = to_float(dynamic.get("market_cap")) or current_mcap
+        pool_liquidity = to_float(dynamic.get("pool_liquidity")) or to_float(summary.get("pool", {}).get("total_liquidity"))
+        pool_mcap_ratio = to_float(dynamic.get("pool_mcap_ratio")) or to_float(summary.get("pool", {}).get("liquidity_mcap_ratio"))
+        candles = fetch_binance_kline(address, interval=POST_PUSH_KLINE_INTERVAL, limit=24)
+        sent_message_id = send_post_push_entry_drawdown_alert(
+            address,
+            state,
+            binance_mcap,
+            pool_liquidity,
+            pool_mcap_ratio,
+            candles,
+            source="scan_followup",
+            kline_interval=POST_PUSH_KLINE_INTERVAL,
+        )
+        if sent_message_id:
+            updates.update(
+                {
+                    "last_loss_reply_ts": str(now_value),
+                    "loss_reply_count": str(loss_reply_count + 1),
+                    "last_loss_bucket": str(bucket),
+                    "last_loss_reply_message_id": str(sent_message_id),
+                    "dd_alert_sent": "1",
+                    "dd_alert_ts": str(now_value),
+                    "dd_alert_message_id": str(sent_message_id),
+                }
+            )
+        try:
+            client.hset(key, mapping=updates)
+            refresh_post_push_track_ttl(client, key, state)
+        except Exception as exc:
+            print(f"{address[:8]} post-push redis entry-dd update failed: {exc}")
+        return
     symbol = token.get("symbol") or state.get("symbol") or "UNKNOWN"
+    title_map = {
+        "entry_drawdown": "底部异动回撤区间触发",
+        "gain": "底部异动后盈利跟踪",
+        "drawdown": "底部异动后高点回撤观察",
+        "loss": "底部异动后未盈利回撤观察",
+    }
     text = (
-        f"底部异动后回撤观察 | ${symbol}\n"
+        f"{title_map.get(reply_kind, '底部异动后跟踪')} | ${symbol}\n"
         f"首推市值: {format_money_text(entry_mcap)}\n"
         f"推送后高点: {format_money_text(peak_mcap)} (+{peak_gain_pct:.1f}%)\n"
         f"当前市值: {format_money_text(current_mcap)}\n"
-        f"高点回撤: {drawdown_pct:.1f}%\n"
+        f"相对首推: {format_pct_text((current_mcap / entry_mcap - 1) * 100)}\n"
+        f"高点回撤: {drawdown_pct:.1f}% | 入场下跌: {entry_loss_pct:.1f}%\n"
         f"CA: {address}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
     reply_extra = {
         "post_push_reply": True,
+        "post_push_reply_kind": reply_kind,
         "address": address,
         "symbol": symbol,
         "signal_type": state.get("signal_type") or analysis.get("signal_type"),
@@ -2023,23 +2401,47 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         "current_mcap": current_mcap,
         "peak_gain_pct": peak_gain_pct,
         "drawdown_pct": drawdown_pct,
+        "entry_loss_pct": entry_loss_pct,
         "reply_to_message_id": message_id,
-        "reply_count": reply_count + 1,
+        "reply_count": reply_count + 1 if reply_kind == "drawdown" else reply_count,
+        "gain_reply_count": gain_reply_count + 1 if reply_kind == "gain" else gain_reply_count,
+        "loss_reply_count": loss_reply_count + 1 if reply_kind in {"loss", "entry_drawdown"} else loss_reply_count,
     }
     sent_message_id = send_tg_reply(text, message_id, reply_extra)
     if sent_message_id:
-        updates.update(
-            {
-                "last_reply_ts": str(now_value),
-                "reply_count": str(reply_count + 1),
-                "last_reply_bucket": str(bucket),
-                "last_reply_message_id": str(sent_message_id),
-            }
-        )
+        if reply_kind == "gain":
+            updates.update(
+                {
+                    "last_gain_reply_ts": str(now_value),
+                    "gain_reply_count": str(gain_reply_count + 1),
+                    "last_gain_bucket": str(bucket),
+                    "last_gain_reply_message_id": str(sent_message_id),
+                }
+            )
+        elif reply_kind in {"loss", "entry_drawdown"}:
+            updates.update(
+                {
+                    "last_loss_reply_ts": str(now_value),
+                    "loss_reply_count": str(loss_reply_count + 1),
+                    "last_loss_bucket": str(bucket),
+                    "last_loss_reply_message_id": str(sent_message_id),
+                    "dd_alert_sent": "1",
+                    "dd_alert_ts": str(now_value),
+                    "dd_alert_message_id": str(sent_message_id),
+                }
+            )
+        else:
+            updates.update(
+                {
+                    "last_reply_ts": str(now_value),
+                    "reply_count": str(reply_count + 1),
+                    "last_reply_bucket": str(bucket),
+                    "last_reply_message_id": str(sent_message_id),
+                }
+            )
     try:
         client.hset(key, mapping=updates)
-        if POST_PUSH_TRACK_TTL_SEC > 0:
-            client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+        refresh_post_push_track_ttl(client, key, state)
     except Exception as exc:
         print(f"{address[:8]} post-push redis reply update failed: {exc}")
 
@@ -2223,7 +2625,6 @@ def publish_frontend_signal_update(
 
 QUICK_VERDICT_BARS = int(os.getenv("BOTTOM_QUICK_VERDICT_BARS", "6"))
 QUICK_VERDICT_DELAY_SEC = int(os.getenv("BOTTOM_QUICK_VERDICT_DELAY_SEC", "600"))
-BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 
 
 def _send_quick_verdict(address: str, extra: dict[str, Any]) -> None:
@@ -4009,6 +4410,8 @@ def main() -> None:
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
     cleanup_stale_watchlist_tokens()
+    if args.notify:
+        start_post_push_entry_drawdown_monitor()
     if args.once or not args.watch:
         scan_once(args)
         return
