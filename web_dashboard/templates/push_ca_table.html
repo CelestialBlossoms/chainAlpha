@@ -45,6 +45,8 @@
               <th>异动后最高市值</th>
               <th>异动后涨幅</th>
               <th>当前市值</th>
+              <th>池子</th>
+              <th>池/市</th>
               <th>推送到当前跌幅</th>
               <th>完整 CA 地址</th>
               <th>操作</th>
@@ -103,6 +105,13 @@
       const n = safeNum(value);
       if (Math.abs(n) < 0.05) return "0.0%";
       return n > 0 ? `跌${n.toFixed(1)}%` : `涨${Math.abs(n).toFixed(1)}%`;
+    }
+
+    function formatRatio(value) {
+      const n = safeNum(value);
+      if (!n) return "-";
+      const pct = Math.abs(n) <= 1 ? n * 100 : n;
+      return `${pct.toFixed(1)}%`;
     }
 
     function dropClass(value) {
@@ -174,6 +183,8 @@
               <b>${formatCap(item.current_mcap)}</b>
               <div class="push-sub">${htmlEscape(item.metrics_source || "-")}</div>
             </td>
+            <td><b>${formatCap(item.liquidity || item.pool_liquidity)}</b></td>
+            <td><b>${formatRatio(item.pool_mcap_ratio || (safeNum(item.liquidity || item.pool_liquidity) / Math.max(1, safeNum(item.current_mcap))))}</b></td>
             <td><b class="${dropClass(item.current_drop_pct)}">${formatDrop(item.current_drop_pct)}</b></td>
             <td><code class="ca-full">${htmlEscape(ca)}</code></td>
             <td>

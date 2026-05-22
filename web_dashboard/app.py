@@ -1353,6 +1353,8 @@ def fetch_deep_alpha_1m_ca_items(limit: int = 50, q: str = "", day: str = "") ->
                 "holder_count": _safe_int(row.get("holder_count")),
                 "fee_sol": _safe_float(row.get("fee_sol")),
                 "buy_score": _safe_int(row.get("buy_score")),
+                "liquidity": _safe_float(raw.get("pool_liquidity")),
+                "pool_mcap_ratio": _safe_float(raw.get("pool_mcap_ratio")),
                 "pushed_ts": pushed_ts,
                 "pushed_time": _format_dashboard_time(pushed_ts),
                 "narrative": raw.get("narrative_desc") or raw.get("narrative") or narrative_obj.get("narrative_desc") or "",
