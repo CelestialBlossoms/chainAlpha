@@ -196,6 +196,7 @@
         limit: "50",
         sort: sortEl.value,
         refresh: refresh ? "true" : "false",
+        live: refresh ? "true" : "false",
       });
       const query = queryEl.value.trim();
       const selectedDate = dateEl.value.trim();
@@ -209,6 +210,9 @@
         state.date = data.date || selectedDate || "";
         if (!dateEl.value && state.date) dateEl.value = state.date;
         render();
+        if (!data.live) {
+          summaryEl.textContent += " | 快速模式：优先读数据库缓存，点击刷新再调用 Binance";
+        }
       } catch (err) {
         summaryEl.textContent = `加载失败: ${err.message}`;
       } finally {

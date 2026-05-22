@@ -45,6 +45,7 @@ _PLUGIN_BOTTOM_ABNORMAL_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items":
 PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC = float(os.getenv("PLUGIN_ALPHA_NEW_TOKEN_CACHE_TTL_SEC", "3"))
 _PLUGIN_ALPHA_NEW_TOKEN_CACHE: dict[str, Any] = {"ts": 0.0, "limit": 0, "items": []}
 PUSH_CA_METRIC_CACHE_TTL_SEC = float(os.getenv("PUSH_CA_METRIC_CACHE_TTL_SEC", "60"))
+PUSH_CA_RESPONSE_CACHE_TTL_SEC = float(os.getenv("PUSH_CA_RESPONSE_CACHE_TTL_SEC", "30"))
 PUSH_CA_MAX_WORKERS = int(os.getenv("PUSH_CA_MAX_WORKERS", "6"))
 BINANCE_SOL_CHAIN_ID = os.getenv("BINANCE_SOL_CHAIN_ID", "CT_501")
 BINANCE_WEB3_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
@@ -52,6 +53,7 @@ BINANCE_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direc
 BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USER_AGENT}
 _PUSH_CA_METRIC_CACHE: dict[str, dict[str, Any]] = {}
+_PUSH_CA_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_KLINE_CACHE_TABLE_READY = False
 
 try:
@@ -710,6 +712,130 @@ def load_dashboard_kline_cache(address: str, resolution: str, from_ts: int, to_t
     return db_op(_op) or []
 
 
+def load_dashboard_kline_cache_many(
+    addresses: list[str],
+    resolution: str,
+    from_ts: int,
+    to_ts: int,
+) -> dict[str, list[dict[str, float]]]:
+    addresses = sorted({str(address or "").strip() for address in addresses if str(address or "").strip()})
+    if not addresses:
+        return {}
+    ensure_dashboard_kline_cache_table()
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT address, ts, open, high, low, close, volume, amount
+            FROM bottom_kline_cache
+            WHERE chain=%s
+              AND address = ANY(%s)
+              AND resolution=%s
+              AND ts >= %s
+              AND ts <= %s
+            ORDER BY address ASC, ts ASC
+            """,
+            ("sol", addresses, resolution, int(from_ts), int(to_ts)),
+        )
+        grouped: dict[str, list[dict[str, float]]] = {}
+        for row in cur.fetchall():
+            grouped.setdefault(str(row[0]), []).append(
+                {
+                    "ts": int(row[1]),
+                    "open": _safe_float(row[2]),
+                    "high": _safe_float(row[3]),
+                    "low": _safe_float(row[4]),
+                    "close": _safe_float(row[5]),
+                    "volume": _safe_float(row[6]),
+                    "amount": _safe_float(row[7]),
+                }
+            )
+        return grouped
+
+    return db_op(_op) or {}
+
+
+def _push_item_row_key(item: dict[str, Any]) -> str:
+    return f"{item.get('source_key') or ''}:{item.get('id') or ''}:{item.get('address') or ''}:{item.get('pushed_ts') or 0}"
+
+
+def load_dashboard_kline_stats_many(
+    items: list[dict[str, Any]],
+    resolution: str,
+    to_ts: int,
+) -> dict[str, dict[str, Any]]:
+    rows = [
+        (_push_item_row_key(item), str(item.get("address") or "").strip(), _to_ts(item.get("pushed_ts")))
+        for item in items
+        if str(item.get("address") or "").strip() and _to_ts(item.get("pushed_ts")) > 0
+    ]
+    if not rows:
+        return {}
+    ensure_dashboard_kline_cache_table()
+    values_sql = ",".join(["(%s,%s,%s)"] * len(rows))
+    params: list[Any] = []
+    for row in rows:
+        params.extend(row)
+    params.extend(["sol", resolution, int(to_ts)])
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            WITH inputs(row_key, address, pushed_ts) AS (
+                VALUES {values_sql}
+            ),
+            filtered AS (
+                SELECT
+                    i.row_key,
+                    k.ts,
+                    k.open,
+                    k.high,
+                    k.low,
+                    k.close,
+                    k.volume
+                FROM inputs i
+                JOIN bottom_kline_cache k
+                  ON k.chain = %s
+                 AND k.address = i.address
+                 AND k.resolution = %s
+                 AND k.ts >= GREATEST(0, i.pushed_ts::bigint - 120)
+                 AND k.ts <= %s
+                 AND k.ts + 60 > i.pushed_ts::bigint
+            )
+            SELECT
+                row_key,
+                (array_agg(open ORDER BY ts ASC))[1] AS first_open,
+                (array_agg(close ORDER BY ts ASC))[1] AS first_close,
+                (array_agg(close ORDER BY ts DESC))[1] AS last_close,
+                (array_agg(ts ORDER BY ts DESC))[1] AS last_ts,
+                (array_agg(high ORDER BY high DESC NULLS LAST, ts ASC))[1] AS peak_high,
+                (array_agg(ts ORDER BY high DESC NULLS LAST, ts ASC))[1] AS peak_ts,
+                COUNT(*) AS candle_count,
+                COALESCE(SUM(volume), 0) AS volume_sum
+            FROM filtered
+            GROUP BY row_key
+            """,
+            params,
+        )
+        return {
+            str(row[0]): {
+                "first_open": _safe_float(row[1]),
+                "first_close": _safe_float(row[2]),
+                "last_close": _safe_float(row[3]),
+                "last_ts": _to_ts(row[4]),
+                "peak_high": _safe_float(row[5]),
+                "peak_ts": _to_ts(row[6]),
+                "candle_count": _safe_int(row[7]),
+                "volume_sum": _safe_float(row[8]),
+            }
+            for row in cur.fetchall()
+        }
+
+    return db_op(_op) or {}
+
+
 def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
     if not address or not candles:
         return 0
@@ -756,7 +882,13 @@ def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict
     return int(db_op(_op) or 0)
 
 
-def fetch_dashboard_kline_range(address: str, from_ts: int, to_ts: int, resolution: str = "1m") -> tuple[list[dict[str, float]], str]:
+def fetch_dashboard_kline_range(
+    address: str,
+    from_ts: int,
+    to_ts: int,
+    resolution: str = "1m",
+    allow_external: bool = True,
+) -> tuple[list[dict[str, float]], str]:
     """Read DB K-line cache first, then fetch missing/recent candles from Binance Web3."""
     if not address or from_ts <= 0 or to_ts <= 0:
         return [], "no_address"
@@ -768,7 +900,7 @@ def fetch_dashboard_kline_range(address: str, from_ts: int, to_ts: int, resoluti
 
     cache_has_start = bool(cached and earliest_cached_ts <= from_ts + step * 2)
     cache_is_recent = bool(cached and latest_cached_ts >= to_ts - step * 2)
-    if not cache_has_start or not cache_is_recent:
+    if allow_external and (not cache_has_start or not cache_is_recent):
         fetch_from = from_ts if latest_cached_ts <= 0 else max(from_ts, latest_cached_ts - step * 2)
         if not cache_has_start:
             fetch_from = from_ts
@@ -794,9 +926,109 @@ def fetch_dashboard_kline_range(address: str, from_ts: int, to_ts: int, resoluti
         return merged, "db_cache+binance_kline"
     if cached:
         return merged, "db_cache"
+    if not allow_external:
+        return [], "db_cache_miss"
     if fresh:
         return merged, "binance_kline"
     return [], "empty"
+
+
+def enrich_push_ca_item_from_candles(
+    item: dict[str, Any],
+    candles: list[dict[str, float]],
+    kline_source: str,
+    now: float,
+) -> dict[str, Any]:
+    pushed_ts = _to_ts(item.get("pushed_ts"))
+    signal_mcap = _safe_float(item.get("signal_mcap"))
+    entry_price = _safe_float(item.get("entry_price"))
+    post = [candle for candle in candles if int(candle.get("ts") or 0) + 60 > pushed_ts]
+
+    entry_price_used = entry_price
+    if entry_price_used <= 0 and post:
+        first = post[0]
+        entry_price_used = _safe_float(first.get("open")) or _safe_float(first.get("close"))
+
+    peak_price = 0.0
+    peak_ts = 0
+    current_price = 0.0
+    volume_usd = 0.0
+    if post:
+        peak_candle = max(post, key=lambda candle: _safe_float(candle.get("high")))
+        peak_price = _safe_float(peak_candle.get("high"))
+        peak_ts = _to_ts(peak_candle.get("ts"))
+        current_price = _safe_float(post[-1].get("close"))
+        volume_usd = sum(_safe_float(candle.get("volume")) for candle in post)
+
+    peak_gain_pct = _pct_change(peak_price, entry_price_used)
+    current_gain_pct = _pct_change(current_price, entry_price_used)
+    peak_mcap = signal_mcap * (1 + peak_gain_pct / 100) if signal_mcap > 0 and peak_gain_pct else 0.0
+    current_mcap = signal_mcap * (1 + current_gain_pct / 100) if signal_mcap > 0 and current_gain_pct else 0.0
+    current_mcap = current_mcap or signal_mcap
+    if peak_mcap <= 0 and signal_mcap > 0:
+        peak_mcap = max(signal_mcap, current_mcap)
+        peak_gain_pct = _pct_change(peak_mcap, signal_mcap)
+
+    current_drop_pct = ((signal_mcap - current_mcap) / signal_mcap * 100) if signal_mcap > 0 and current_mcap > 0 else 0.0
+    metrics = {
+        "signal_mcap": signal_mcap,
+        "post_peak_mcap": peak_mcap,
+        "post_peak_gain_pct": peak_gain_pct,
+        "current_mcap": current_mcap,
+        "current_drop_pct": current_drop_pct,
+        "current_vs_signal_pct": -current_drop_pct,
+        "entry_price_used": entry_price_used,
+        "current_price": current_price,
+        "post_peak_price": peak_price,
+        "post_peak_ts": peak_ts,
+        "post_peak_time": _format_dashboard_time(peak_ts),
+        "post_volume_usd": volume_usd,
+        "kline_candles": len(post),
+        "metrics_source": kline_source if post else "db_cache_miss",
+        "refreshed_at": _format_dashboard_time(int(now)),
+    }
+    return {**item, **metrics}
+
+
+def enrich_push_ca_item_from_kline_stats(
+    item: dict[str, Any],
+    stats: dict[str, Any] | None,
+    now: float,
+) -> dict[str, Any]:
+    signal_mcap = _safe_float(item.get("signal_mcap"))
+    entry_price = _safe_float(item.get("entry_price"))
+    stats = stats or {}
+    entry_price_used = entry_price or _safe_float(stats.get("first_open")) or _safe_float(stats.get("first_close"))
+    peak_price = _safe_float(stats.get("peak_high"))
+    current_price = _safe_float(stats.get("last_close"))
+    peak_gain_pct = _pct_change(peak_price, entry_price_used)
+    current_gain_pct = _pct_change(current_price, entry_price_used)
+    peak_mcap = signal_mcap * (1 + peak_gain_pct / 100) if signal_mcap > 0 and peak_gain_pct else 0.0
+    current_mcap = signal_mcap * (1 + current_gain_pct / 100) if signal_mcap > 0 and current_gain_pct else 0.0
+    current_mcap = current_mcap or signal_mcap
+    if peak_mcap <= 0 and signal_mcap > 0:
+        peak_mcap = max(signal_mcap, current_mcap)
+        peak_gain_pct = _pct_change(peak_mcap, signal_mcap)
+    current_drop_pct = ((signal_mcap - current_mcap) / signal_mcap * 100) if signal_mcap > 0 and current_mcap > 0 else 0.0
+    candle_count = _safe_int(stats.get("candle_count"))
+    return {
+        **item,
+        "signal_mcap": signal_mcap,
+        "post_peak_mcap": peak_mcap,
+        "post_peak_gain_pct": peak_gain_pct,
+        "current_mcap": current_mcap,
+        "current_drop_pct": current_drop_pct,
+        "current_vs_signal_pct": -current_drop_pct,
+        "entry_price_used": entry_price_used,
+        "current_price": current_price,
+        "post_peak_price": peak_price,
+        "post_peak_ts": _to_ts(stats.get("peak_ts")),
+        "post_peak_time": _format_dashboard_time(stats.get("peak_ts")),
+        "post_volume_usd": _safe_float(stats.get("volume_sum")),
+        "kline_candles": candle_count,
+        "metrics_source": "db_cache" if candle_count > 0 else "db_cache_miss",
+        "refreshed_at": _format_dashboard_time(int(now)),
+    }
 
 
 def _push_metric_cache_key(item: dict[str, Any]) -> str:
@@ -811,7 +1043,7 @@ def _push_metric_cache_key(item: dict[str, Any]) -> str:
     )
 
 
-def enrich_push_ca_item(item: dict[str, Any], refresh: bool = False) -> dict[str, Any]:
+def enrich_push_ca_item(item: dict[str, Any], refresh: bool = False, allow_external: bool = True) -> dict[str, Any]:
     address = str(item.get("address") or "").strip()
     pushed_ts = _to_ts(item.get("pushed_ts"))
     signal_mcap = _safe_float(item.get("signal_mcap"))
@@ -820,20 +1052,27 @@ def enrich_push_ca_item(item: dict[str, Any], refresh: bool = False) -> dict[str
     now = time.time()
     cached = _PUSH_CA_METRIC_CACHE.get(cached_key)
     if (
-        not refresh
+        allow_external
+        and not refresh
         and cached
         and now - float(cached.get("cached_at") or 0) <= PUSH_CA_METRIC_CACHE_TTL_SEC
     ):
         return {**item, **cached.get("metrics", {})}
 
-    dynamic = _fetch_binance_dynamic(address) if address else {}
+    dynamic = _fetch_binance_dynamic(address) if allow_external and address else {}
     current_price = _safe_float(dynamic.get("price"))
     dynamic_mcap = _safe_float(dynamic.get("market_cap"))
     candles: list[dict[str, float]] = []
     post: list[dict[str, float]] = []
     kline_source = ""
     if address and pushed_ts > 0:
-        candles, kline_source = fetch_dashboard_kline_range(address, max(0, pushed_ts - 120), int(now), resolution="1m")
+        candles, kline_source = fetch_dashboard_kline_range(
+            address,
+            max(0, pushed_ts - 120),
+            int(now),
+            resolution="1m",
+            allow_external=allow_external,
+        )
         post = [candle for candle in candles if int(candle.get("ts") or 0) + 60 > pushed_ts]
 
     entry_price_used = entry_price
@@ -890,14 +1129,26 @@ def enrich_push_ca_item(item: dict[str, Any], refresh: bool = False) -> dict[str
     return {**item, **metrics}
 
 
-def enrich_push_ca_items(items: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
+def enrich_push_ca_items(
+    items: list[dict[str, Any]],
+    refresh: bool = False,
+    allow_external: bool = True,
+) -> list[dict[str, Any]]:
     if not items:
         return []
+    if not allow_external:
+        now = time.time()
+        stats_by_key = load_dashboard_kline_stats_many(items, "1m", int(now))
+        return [
+            enrich_push_ca_item_from_kline_stats(item, stats_by_key.get(_push_item_row_key(item)), now)
+            for item in items
+        ]
+
     max_workers = max(1, min(PUSH_CA_MAX_WORKERS, len(items)))
     enriched: list[dict[str, Any] | None] = [None] * len(items)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
-            executor.submit(enrich_push_ca_item, item, refresh): index
+            executor.submit(enrich_push_ca_item, item, refresh, allow_external): index
             for index, item in enumerate(items)
         }
         for future in as_completed(future_map):
@@ -1296,6 +1547,24 @@ def _sort_push_ca_items(items: list[dict[str, Any]], sort: str) -> list[dict[str
     return sorted(items, key=getter, reverse=reverse)
 
 
+def _push_ca_response_cache_get(key: str) -> dict[str, Any] | None:
+    cached = _PUSH_CA_RESPONSE_CACHE.get(key)
+    if not cached:
+        return None
+    if time.monotonic() - float(cached.get("ts") or 0) > PUSH_CA_RESPONSE_CACHE_TTL_SEC:
+        _PUSH_CA_RESPONSE_CACHE.pop(key, None)
+        return None
+    payload = cached.get("payload")
+    if isinstance(payload, dict):
+        return {**payload, "cached": True}
+    return None
+
+
+def _push_ca_response_cache_set(key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    _PUSH_CA_RESPONSE_CACHE[key] = {"ts": time.monotonic(), "payload": payload}
+    return payload
+
+
 @app.get("/api/push-ca/bottom")
 def bottom_push_ca_api(
     request: Request,
@@ -1304,18 +1573,30 @@ def bottom_push_ca_api(
     date: str = "",
     sort: str = "time_desc",
     refresh: bool = False,
+    live: bool = False,
 ):
     limit = max(1, min(limit, 200))
+    cache_key = f"bottom|{limit}|{q.strip()}|{date.strip()}|{sort}|{bool(refresh)}|{bool(live)}"
+    if not refresh and not live:
+        cached = _push_ca_response_cache_get(cache_key)
+        if cached:
+            return cached
     day_iso, items = fetch_bottom_push_ca_items(limit=limit, q=q.strip(), day=date.strip())
-    items = enrich_push_ca_items(items, refresh=refresh)
-    return {
+    allow_external = bool(refresh or live)
+    items = enrich_push_ca_items(items, refresh=refresh, allow_external=allow_external)
+    payload = {
         "items": _sort_push_ca_items(items, sort),
         "count": len(items),
         "date": day_iso,
         "limit": limit,
         "source": "bottom_push",
         "refreshed": refresh,
+        "live": allow_external,
+        "cached": False,
     }
+    if not allow_external:
+        return _push_ca_response_cache_set(cache_key, payload)
+    return payload
 
 
 @app.get("/api/push-ca/deep-alpha-1m")
@@ -1326,18 +1607,30 @@ def deep_alpha_1m_ca_api(
     date: str = "",
     sort: str = "time_desc",
     refresh: bool = False,
+    live: bool = False,
 ):
     limit = max(1, min(limit, 200))
+    cache_key = f"deep_alpha_1m|{limit}|{q.strip()}|{date.strip()}|{sort}|{bool(refresh)}|{bool(live)}"
+    if not refresh and not live:
+        cached = _push_ca_response_cache_get(cache_key)
+        if cached:
+            return cached
     day_iso, items = fetch_deep_alpha_1m_ca_items(limit=limit, q=q.strip(), day=date.strip())
-    items = enrich_push_ca_items(items, refresh=refresh)
-    return {
+    allow_external = bool(refresh or live)
+    items = enrich_push_ca_items(items, refresh=refresh, allow_external=allow_external)
+    payload = {
         "items": _sort_push_ca_items(items, sort),
         "count": len(items),
         "date": day_iso,
         "limit": limit,
         "source": "deep_alpha_1m",
         "refreshed": refresh,
+        "live": allow_external,
+        "cached": False,
     }
+    if not allow_external:
+        return _push_ca_response_cache_set(cache_key, payload)
+    return payload
 
 
 @app.get("/api/plugin/health")
