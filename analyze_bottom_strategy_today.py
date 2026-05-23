@@ -19,7 +19,7 @@ import requests
 
 BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": "binance-web3/1.1 (Skill)"}
-TODAY = "2026-05-22"  # latest complete day in db
+TODAY = "2026-05-23"  # today
 BEIJING = timezone(timedelta(hours=8))
 
 # Strategy params
@@ -255,7 +255,7 @@ def main():
         event_dt = datetime.fromtimestamp(event_ts, tz=BEIJING) if event_ts else None
 
         # ---- L1: Signal type filter ----
-        valid_types = {"abnormal", "new_revival", "quiet_runup", "drop_40w"}
+        valid_types = {"abnormal", "new_revival", "quiet_runup", "drop_40w", "watchlist_abnormal", "quiet_breakout"}
         if stype not in valid_types:
             l1_skip += 1
             continue

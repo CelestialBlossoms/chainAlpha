@@ -149,7 +149,6 @@
               <th>最高市值</th>
               <th>池子</th>
               <th>Holders</th>
-              <th>5m成交</th>
               <th>已追踪</th>
               <th>状态</th>
               <th>操作</th>
@@ -220,10 +219,12 @@
       const n = safeNum(v);
       if (n <= 0) return "-";
       const date = new Date(n * 1000);
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
       const h = String(date.getHours()).padStart(2, '0');
       const m = String(date.getMinutes()).padStart(2, '0');
       const s = String(date.getSeconds()).padStart(2, '0');
-      return `${h}:${m}:${s}`;
+      return `${month}-${day} ${h}:${m}:${s}`;
     }
 
     function htmlEscape(v) {
@@ -341,9 +342,6 @@
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
             <td>
-              <span class="vol-chip">5m ${formatCap(item.volume_5m)}</span>
-            </td>
-            <td>
               <span>${formatDuration(age)}</span>
               ${!isRemoved ? `<div class="countdown">剩余 ${formatDuration(remaining)}</div>` : ""}
             </td>
@@ -428,7 +426,7 @@
       deletedSummaryEl.textContent = `共 ${deletedItems.length} 个CA`;
       
       deletedRowsEl.innerHTML = deletedItems.map(item => {
-        const deletedAtLocal = item.last_updated ? new Date(item.last_updated * 1000).toLocaleTimeString("zh-CN", {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "-";
+        const deletedAtLocal = item.last_updated ? formatTime(item.last_updated) : "-";
         const pnl = safeNum(item.pnl_pct);
         
         return `
