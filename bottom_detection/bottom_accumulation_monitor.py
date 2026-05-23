@@ -4086,6 +4086,11 @@ def scan_once(
     trending_tokens = fetch_trending_tokens(active_intervals)
     watchlist_tokens = fetch_watchlist_tokens() if include_watchlist else []
     alpha_abnormal_tokens = fetch_alpha_abnormal_tokens()
+
+    # Dedup: remove watchlist CAs from trending to avoid double-processing
+    watchlist_addresses = {token_address(t) for t in watchlist_tokens if token_address(t)}
+    trending_tokens = [t for t in trending_tokens if token_address(t) not in watchlist_addresses]
+
     prefiltered_trending = []
     prefiltered_skipped = 0
     for token in trending_tokens:
@@ -4094,24 +4099,26 @@ def scan_once(
             prefiltered_skipped += 1
             continue
         prefiltered_trending.append(token)
-    tokens = merge_token_sources(prefiltered_trending, watchlist_tokens, alpha_abnormal_tokens)
+
+    # Recent seen dedup for trending only
     dedupe_skipped = 0
     if recent_seen is not None:
         prune_recent_seen(recent_seen, recent_seen_ttl_sec)
         if skip_recent_seen:
-            filtered_tokens = []
-            for token in tokens:
+            filtered_trending = []
+            for token in prefiltered_trending:
                 address = token_address(token)
                 if address and address in recent_seen:
                     dedupe_skipped += 1
                     continue
-                filtered_tokens.append(token)
-            tokens = filtered_tokens
+                filtered_trending.append(token)
+            prefiltered_trending = filtered_trending
         seen_at = time.monotonic()
-        for token in tokens[: args.max_tokens]:
+        for token in prefiltered_trending[: args.max_tokens]:
             address = token_address(token)
             if address:
                 recent_seen[address] = seen_at
+
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] scan_id={scan_id} "
         f"mode={mode_name} "
@@ -4119,14 +4126,22 @@ def scan_once(
         f"trending={len(trending_tokens)} prefiltered={len(prefiltered_trending)} "
         f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} "
         f"alpha_abnormal={len(alpha_abnormal_tokens)} "
-        f"dedupe_skip={dedupe_skipped} merged={len(tokens)}"
+        f"dedupe_skip={dedupe_skipped}"
     )
+
     processed = 0
     skipped = 0
-    for token in tokens[: args.max_tokens]:
+
+    # ========================================================================
+    # Phase 1: Process ALL watchlist tokens first (no max_tokens limit).
+    #   Update mcap/pool via GMGN CLI, then only run abnormal analysis
+    #   for tokens with mcap < $300K (底部异动范围).
+    # ========================================================================
+    WATCHLIST_ABNORMAL_MAX_MCAP = 300_000
+
+    for token in watchlist_tokens:
         try:
             address = token_address(token)
-            is_watchlist = "watchlist" in set(token.get("_sources", []))
             if token.get("blacklisted") or is_watchlist_blacklisted(address):
                 print(f"{token_label(token)} blacklisted, skipped")
                 skipped += 1
@@ -4139,7 +4154,6 @@ def scan_once(
             info, security = fetch_token_metadata(address)
             token = merge_token_metadata(token, info, security)
             fill_watchlist_create_at(token)
-            # Launch/open time filter: token must be >=4h past pool migration.
             created_ts = token_created_ts(info)
             launch_ts = token_launch_ts(info)
             if launch_ts <= 0:
@@ -4165,116 +4179,168 @@ def scan_once(
             pool_summary, pool_reliable, pool_unreliable_reason = summarize_gmgn_pool_data(pool_data, token)
             pool_liquidity = to_float(pool_summary.get("total_liquidity"))
             pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
-            if is_watchlist and not pool_reliable:
+            if not pool_reliable:
                 previous_pool_liquidity = to_float(token.get("watchlist_last_pool_liquidity"))
                 previous_pool_ratio = to_float(token.get("watchlist_last_pool_mcap_ratio"))
                 if previous_pool_liquidity > 0:
                     pool_liquidity = previous_pool_liquidity
                     pool_mcap_ratio = previous_pool_ratio
                 print(f"{address[:8]} pool check skipped: {pool_unreliable_reason}")
-            # Pool/Mcap ratio filter: skip tokens with liquidity < 7% of mcap
             if pool_reliable and 0 < pool_mcap_ratio < 0.07:
                 skipped += 1
                 print(f"{token_label(token)} skip pool/mcap={pool_mcap_ratio:.1%} < 7% (流动性不足)")
                 continue
-            if (
-                is_watchlist
-                and pool_reliable
-                and pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD
-            ):
+            if pool_reliable and pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:
                 deleted = delete_watchlist_token(
-                    address,
-                    "pool_liquidity_below_threshold",
-                    current_mcap=current_mcap,
-                    pool_liquidity=pool_liquidity,
+                    address, "pool_liquidity_below_threshold",
+                    current_mcap=current_mcap, pool_liquidity=pool_liquidity,
                     pool_mcap_ratio=pool_mcap_ratio,
-                    metadata={
-                        "threshold": WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD,
-                        "trigger": "scan_once",
-                        "pool_reliable": pool_reliable,
-                    },
+                    metadata={"threshold": WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD, "trigger": "scan_once", "pool_reliable": pool_reliable},
                 )
                 if deleted:
-                    print(
-                        f"{address[:8]} watchlist deleted: "
-                        f"pool ${pool_liquidity:,.0f}<${WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:,.0f}"
-                    )
+                    print(f"{address[:8]} watchlist deleted: pool ${pool_liquidity:,.0f}<${WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:,.0f}")
                 skipped += 1
                 continue
-            if not is_watchlist:
-                skip_reason = token_basic_filter_reason(token)
-                if skip_reason:
-                    skipped += 1
-                    print(f"{token_label(token)} skip {skip_reason}")
-                    continue
-                skip_reason = token_fee_filter_reason(token)
-                if skip_reason:
-                    skipped += 1
-                    print(f"{token_label(token)} skip {skip_reason}")
-                    continue
-                skip_reason = token_pool_filter_reason(pool_liquidity, pool_reliable, pool_unreliable_reason)
-                if skip_reason:
-                    skipped += 1
-                    print(f"{token_label(token)} skip {skip_reason}")
-                    continue
+            # Update watchlist metadata regardless of mcap
             maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
-            if is_watchlist:
-                update_watchlist_seen(
-                    address,
-                    current_mcap,
-                    pool_liquidity=pool_liquidity,
-                    pool_mcap_ratio=pool_mcap_ratio,
-                    fee_sol=fee_sol(token),
-                    symbol=token.get("symbol"),
-                )
-                daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
-                if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
-                    active_ts = token_active_ts({**token, **(info or {})})
-                    age_sec = (now_ts() - active_ts) if active_ts > 0 else 0
-                    if 0 < age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC:
-                        pool_summary = summarize_pools(token)
-                        pool_liq = to_float(pool_summary.get("total_liquidity"))
-                        pool_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
-                        if pool_liq >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD and pool_ratio >= DAILY_MCAP_MIN_POOL_MCAP_RATIO:
-                            peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
-                            publish_daily_1m_frontend_update(token, current_mcap, peak)
-                if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
-                    if token.get("watchlist_daily_mcap_date"):
-                        skipped += 1
-                        print(
-                            f"{address[:8]} watchlist daily mcap record kept: "
-                            f"mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}"
-                        )
-                        continue
-                    deleted = delete_watchlist_token(
-                        address,
-                        "mcap_below_threshold",
-                        current_mcap=current_mcap,
-                        pool_liquidity=pool_liquidity,
-                        pool_mcap_ratio=pool_mcap_ratio,
-                        metadata={
-                            "threshold": WATCHLIST_DELETE_BELOW_MCAP_USD,
-                            "trigger": "scan_once",
-                        },
-                    )
-                    if deleted:
-                        print(
-                            f"{address[:8]} watchlist deleted: "
-                            f"mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}"
-                        )
+            update_watchlist_seen(
+                address, current_mcap,
+                pool_liquidity=pool_liquidity, pool_mcap_ratio=pool_mcap_ratio,
+                fee_sol=fee_sol(token), symbol=token.get("symbol"),
+            )
+            daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
+            if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
+                active_ts = token_active_ts({**token, **(info or {})})
+                age_sec = (now_ts() - active_ts) if active_ts > 0 else 0
+                if 0 < age_sec <= NEW_TOKEN_AGE_CUTOFF_SEC:
+                    pool_summary2 = summarize_pools(token)
+                    pool_liq = to_float(pool_summary2.get("total_liquidity"))
+                    pool_ratio = to_float(pool_summary2.get("liquidity_mcap_ratio"))
+                    if pool_liq >= BOTTOM_ABNORMAL_MIN_POOL_LIQUIDITY_USD and pool_ratio >= DAILY_MCAP_MIN_POOL_MCAP_RATIO:
+                        peak = max(to_float(token.get("watchlist_peak_mcap")), to_float(token.get("peak_mcap")), current_mcap)
+                        publish_daily_1m_frontend_update(token, current_mcap, peak)
+            if current_mcap > 0 and current_mcap < WATCHLIST_DELETE_BELOW_MCAP_USD:
+                if token.get("watchlist_daily_mcap_date"):
                     skipped += 1
+                    print(f"{address[:8]} watchlist daily mcap record kept: mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}")
                     continue
+                deleted = delete_watchlist_token(
+                    address, "mcap_below_threshold",
+                    current_mcap=current_mcap, pool_liquidity=pool_liquidity,
+                    pool_mcap_ratio=pool_mcap_ratio,
+                    metadata={"threshold": WATCHLIST_DELETE_BELOW_MCAP_USD, "trigger": "scan_once"},
+                )
+                if deleted:
+                    print(f"{address[:8]} watchlist deleted: mcap ${current_mcap:,.0f}<${WATCHLIST_DELETE_BELOW_MCAP_USD:,.0f}")
+                skipped += 1
+                continue
+            # Only run abnormal analysis for tokens with mcap < $300K
+            if current_mcap > 0 and current_mcap >= WATCHLIST_ABNORMAL_MAX_MCAP:
+                skipped += 1
+                print(f"{token_label(token)} watchlist mcap ${current_mcap:,.0f} >= $300K, metadata updated, skip abnormal analysis")
+                continue
             skip_reason = recent_snapshot_skip_reason(token_address(token), token)
             if skip_reason:
                 skipped += 1
                 print(f"{token_label(token)} skip {skip_reason}")
                 continue
-            if handle_token(scan_id, token, args.notify, frontend_update_allowed=is_watchlist):
+            if handle_token(scan_id, token, args.notify, frontend_update_allowed=True):
                 processed += 1
         except Exception as exc:
             print(f"{token_label(token)} failed: {exc}")
         time.sleep(args.token_delay)
-    print(f"scan_id={scan_id} processed={processed}/{len(tokens)} skipped={skipped}")
+
+    # ========================================================================
+    # Phase 2: Process trending tokens (deduped from watchlist, max_tokens applies)
+    # ========================================================================
+    for token in prefiltered_trending[: args.max_tokens]:
+        try:
+            address = token_address(token)
+            if token.get("blacklisted") or is_watchlist_blacklisted(address):
+                print(f"{token_label(token)} blacklisted, skipped")
+                skipped += 1
+                continue
+            pre_skip_reason = recent_snapshot_skip_reason(address, token)
+            if pre_skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {pre_skip_reason}")
+                continue
+            info, security = fetch_token_metadata(address)
+            token = merge_token_metadata(token, info, security)
+            fill_watchlist_create_at(token)
+            created_ts = token_created_ts(info)
+            launch_ts = token_launch_ts(info)
+            if launch_ts <= 0:
+                skipped += 1
+                token["_trench"] = True
+                print(f"{token_label(token)} skip open_ts missing (发射时间小于4H)")
+                continue
+            open_age_sec = now_ts() - launch_ts
+            if open_age_sec < 4 * 3600:
+                skipped += 1
+                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
+                continue
+            gmgn_ath_mcap = current_token_ath_mcap(info)
+            if created_ts > 0 or launch_ts > 0 or gmgn_ath_mcap > 0:
+                store_fill_token_created_at(address, created_ts, gmgn_ath_mcap, launch_ts)
+                token["_gmgn_created_ts"] = created_ts
+                token["_gmgn_open_ts"] = launch_ts
+                if gmgn_ath_mcap > 0:
+                    token["_gmgn_ath_mcap"] = gmgn_ath_mcap
+            current_mcap = calc_mcap(token)
+            pool_data = fetch_token_pool(address)
+            token = attach_token_pool(token, pool_data)
+            pool_summary, pool_reliable, pool_unreliable_reason = summarize_gmgn_pool_data(pool_data, token)
+            pool_liquidity = to_float(pool_summary.get("total_liquidity"))
+            pool_mcap_ratio = to_float(pool_summary.get("liquidity_mcap_ratio"))
+            if pool_reliable and 0 < pool_mcap_ratio < 0.07:
+                skipped += 1
+                print(f"{token_label(token)} skip pool/mcap={pool_mcap_ratio:.1%} < 7% (流动性不足)")
+                continue
+            # Trending-specific filters (basic / fee / pool)
+            skip_reason = token_basic_filter_reason(token)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {skip_reason}")
+                continue
+            skip_reason = token_fee_filter_reason(token)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {skip_reason}")
+                continue
+            skip_reason = token_pool_filter_reason(pool_liquidity, pool_reliable, pool_unreliable_reason)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {skip_reason}")
+                continue
+            maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
+            skip_reason = recent_snapshot_skip_reason(token_address(token), token)
+            if skip_reason:
+                skipped += 1
+                print(f"{token_label(token)} skip {skip_reason}")
+                continue
+            if handle_token(scan_id, token, args.notify, frontend_update_allowed=False):
+                processed += 1
+        except Exception as exc:
+            print(f"{token_label(token)} failed: {exc}")
+        time.sleep(args.token_delay)
+
+    # ========================================================================
+    # Phase 3: Alpha abnormal tokens (deduped from both watchlist and trending)
+    # ========================================================================
+    all_processed = watchlist_addresses | {token_address(t) for t in prefiltered_trending[: args.max_tokens] if token_address(t)}
+    for token in alpha_abnormal_tokens:
+        if token_address(token) in all_processed:
+            continue
+        try:
+            if handle_token(scan_id, token, args.notify, frontend_update_allowed=False):
+                processed += 1
+        except Exception as exc:
+            print(f"{token_label(token)} alpha_abnormal failed: {exc}")
+        time.sleep(args.token_delay)
+
+    total_tokens = len(watchlist_tokens) + min(len(prefiltered_trending), args.max_tokens)
+    print(f"scan_id={scan_id} processed={processed}/{total_tokens} skipped={skipped}")
 
 
 def _fast_snapshot_skip_reason(address: str, token: dict[str, Any]) -> str | None:
