@@ -2028,13 +2028,20 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
     holders = _safe_int(dynamic.get("holders"))
     volume_5m = _safe_float(dynamic.get("volume_5m"))
     volume_1h = _safe_float(dynamic.get("volume_1h"))
-    peak_mcap = max(_safe_float(track.get("peak_mcap")), current_mcap)
+    prev_peak_mcap = _safe_float(track.get("peak_mcap"))
+    peak_mcap = prev_peak_mcap
+    peak_mcap_at = _safe_int(track.get("peak_mcap_at"))
+    if current_mcap > prev_peak_mcap:
+        peak_mcap = current_mcap
+        peak_mcap_at = now_ts
+        
     pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
 
     track.update({
         "current_mcap": current_mcap,
         "current_price": current_price,
         "peak_mcap": peak_mcap,
+        "peak_mcap_at": peak_mcap_at or int(track.get("pushed_at") or now_ts),
         "holders": holders,
         "volume_5m": volume_5m,
         "volume_1h": volume_1h,
@@ -2290,13 +2297,20 @@ def _bottom_live_track_refresh_one(address: str) -> dict[str, Any] | None:
     volume_5m = _safe_float(dynamic.get("volume_5m"))
     volume_1h = _safe_float(dynamic.get("volume_1h"))
     pool_liquidity = _safe_float(dynamic.get("pool_liquidity")) or _safe_float(track.get("pool_liquidity"))
-    peak_mcap = max(_safe_float(track.get("peak_mcap")), current_mcap)
+    prev_peak_mcap = _safe_float(track.get("peak_mcap"))
+    peak_mcap = prev_peak_mcap
+    peak_mcap_at = _safe_int(track.get("peak_mcap_at"))
+    if current_mcap > prev_peak_mcap:
+        peak_mcap = current_mcap
+        peak_mcap_at = now_ts
+        
     pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
 
     track.update({
         "current_mcap": current_mcap,
         "current_price": current_price,
         "peak_mcap": peak_mcap,
+        "peak_mcap_at": peak_mcap_at or int(track.get("pushed_at") or now_ts),
         "pool_liquidity": pool_liquidity,
         "holders": holders,
         "volume_5m": volume_5m,

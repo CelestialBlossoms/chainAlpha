@@ -141,9 +141,11 @@
           <thead>
             <tr>
               <th>Token</th>
+              <th>推送时间</th>
               <th>推送市值</th>
               <th>当前市值</th>
               <th>盈亏</th>
+              <th>巅峰市值时间</th>
               <th>最高市值</th>
               <th>池子</th>
               <th>Holders</th>
@@ -213,6 +215,16 @@
     let evtSource = null;
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+    function formatTime(v) {
+      const n = safeNum(v);
+      if (n <= 0) return "-";
+      const date = new Date(n * 1000);
+      const h = String(date.getHours()).padStart(2, '0');
+      const m = String(date.getMinutes()).padStart(2, '0');
+      const s = String(date.getSeconds()).padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    }
 
     function htmlEscape(v) {
       return String(v == null ? "" : v)
@@ -317,12 +329,14 @@
               <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
             </td>
+            <td><span>${formatTime(item.pushed_at)}</span></td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>
             <td>
               <b>${formatCap(item.current_mcap)}</b>
               ${mcapBarHtml(item.entry_mcap, item.current_mcap)}
             </td>
             <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
+            <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
             <td><b>${formatCap(item.peak_mcap)}</b></td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>

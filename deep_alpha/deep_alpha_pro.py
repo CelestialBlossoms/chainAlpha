@@ -823,6 +823,7 @@ def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_
         "current_mcap": safe_float(entry_mcap),
         "current_price": safe_float(entry_price),
         "peak_mcap": safe_float(entry_mcap),
+        "peak_mcap_at": int(pushed_at),
         "pool_liquidity": 0,
         "holders": 0,
         "volume_5m": 0,

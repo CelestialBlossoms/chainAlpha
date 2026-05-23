@@ -2094,6 +2094,7 @@ def start_bottom_live_tracking(
         "current_mcap": to_float(entry_mcap),
         "current_price": to_float(entry_price),
         "peak_mcap": to_float(entry_mcap),
+        "peak_mcap_at": now_ts(),
         "pool_liquidity": to_float(pool_liquidity),
         "holders": 0,
         "volume_5m": 0,
@@ -3027,10 +3028,11 @@ def maybe_record_daily_mcap_milestone(token: dict[str, Any], current_mcap: float
 def signal_type_text(signal_type: str) -> str:
     mapping = {
         "watch": "观察",
-        "abnormal": "异动检测",
+        "abnormal": "老币异动",
+        "watchlist_abnormal": "历史代币1m异动",
         "drop_50w": "新币跌破50W",
         "drop_40w": "新币跌破40W",
-        "new_revival": "新币底部启动",
+        "new_revival": "新币异动",
         "quiet_breakout": "横盘异动",
         "quiet_runup": "横盘拉升",
         "ema_golden_cross": "EMA金叉",
@@ -3808,6 +3810,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         summary["_1m_candles"] = len(candles_1m)
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
+    if analysis.get("signal_type") == "abnormal" and is_watchlist_token(token):
+        analysis["signal_type"] = "watchlist_abnormal"
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
     has_previous_bottom_signal = previous_bottom_signal_exists(address)
     baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
