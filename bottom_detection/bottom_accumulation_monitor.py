@@ -1642,11 +1642,12 @@ def analyze_abnormal_snapshot(
     pool_ratio_ready = pool_ratio >= BOTTOM_ABNORMAL_MIN_POOL_MCAP_RATIO
     pool_ready = pool_liquidity_ready and pool_ratio_ready
     drop_level = 0.0
-    if is_under_24h and ath_mcap >= BOTTOM_NEW_DROP_ATH_MCAP_USD:
-        for level in sorted(BOTTOM_NEW_DROP_LEVELS):
-            if current_mcap <= level:
-                drop_level = level
-                break
+    # Commented out: new coin high level drop check (drop_50w/drop_40w) as per user request
+    # if is_under_24h and ath_mcap >= BOTTOM_NEW_DROP_ATH_MCAP_USD:
+    #     for level in sorted(BOTTOM_NEW_DROP_LEVELS):
+    #         if current_mcap <= level:
+    #             drop_level = level
+    #             break
     old_abnormal_ready = (
         not is_under_24h
         and current_mcap >= BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
@@ -1661,9 +1662,11 @@ def analyze_abnormal_snapshot(
         and new_revival_price_ready
         and pool_ready
     )
-    if drop_level > 0 and pool_ready:
-        signal_type = f"drop_{int(drop_level / 10000)}w"
-    elif new_revival_ready:
+    # Commented out: drop_* signal trigger as per user request
+    # if drop_level > 0 and pool_ready:
+    #     signal_type = f"drop_{int(drop_level / 10000)}w"
+    # else:
+    if new_revival_ready:
         signal_type = "new_revival"
     elif old_abnormal_ready:
         signal_type = "abnormal"
@@ -1693,16 +1696,17 @@ def analyze_abnormal_snapshot(
     top20_pct_delta = current_top20_pct - previous_top20_pct if previous_holders else 0.0
     top50_pct_delta = current_top50_pct - previous_top50_pct if previous_holders else 0.0
     top100_pct_delta = current_top100_pct - previous_top100_pct if previous_holders else 0.0
-    if drop_level > 0:
-        rule_name = f"NEW_ATH1M_DROP_{int(drop_level / 10000)}W"
-        min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD
-        min_mcap = 0
-        max_mcap = drop_level
-        rule_reason = (
-            f"新币回落{rule_name}: 创建{token_age / 3600:.1f}h, "
-            f"ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}<=${drop_level:,.0f}"
-        )
-    elif new_revival_ready:
+    # Commented out: drop_level rule as per user request
+    # if drop_level > 0:
+    #     rule_name = f"NEW_ATH1M_DROP_{int(drop_level / 10000)}W"
+    #     min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD
+    #     min_mcap = 0
+    #     max_mcap = drop_level
+    #     rule_reason = (
+    #         f"新币回落{rule_name}: 创建{token_age / 3600:.1f}h, "
+    #         f"ATH${ath_mcap:,.0f}>={min_ath_mcap:,.0f}, 当前市值${current_mcap:,.0f}<=${drop_level:,.0f}"
+    #     )
+    if new_revival_ready:
         rule_name = "NEW_BOTTOM_REVIVAL"
         min_ath_mcap = 0
         min_mcap = 0
@@ -4156,16 +4160,6 @@ def scan_once(
             fill_watchlist_create_at(token)
             created_ts = token_created_ts(info)
             launch_ts = token_launch_ts(info)
-            if launch_ts <= 0:
-                skipped += 1
-                token["_trench"] = True
-                print(f"{token_label(token)} skip open_ts missing (发射时间小于4H)")
-                continue
-            open_age_sec = now_ts() - launch_ts
-            if open_age_sec < 4 * 3600:
-                skipped += 1
-                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
-                continue
             gmgn_ath_mcap = current_token_ath_mcap(info)
             if created_ts > 0 or launch_ts > 0 or gmgn_ath_mcap > 0:
                 store_fill_token_created_at(address, created_ts, gmgn_ath_mcap, launch_ts)
@@ -4186,9 +4180,27 @@ def scan_once(
                     pool_liquidity = previous_pool_liquidity
                     pool_mcap_ratio = previous_pool_ratio
                 print(f"{address[:8]} pool check skipped: {pool_unreliable_reason}")
+            # ---- Always update DB immediately after fetching GMGN data ----
+            update_watchlist_seen(
+                address, current_mcap,
+                pool_liquidity=pool_liquidity, pool_mcap_ratio=pool_mcap_ratio,
+                fee_sol=fee_sol(token), symbol=token.get("symbol"),
+            )
+            maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
+            # ---- Filters below only control whether to proceed to abnormal analysis ----
+            if launch_ts <= 0:
+                skipped += 1
+                token["_trench"] = True
+                print(f"{token_label(token)} skip abnormal: open_ts missing (发射时间缺失)")
+                continue
+            open_age_sec = now_ts() - launch_ts
+            if open_age_sec < 4 * 3600:
+                skipped += 1
+                print(f"{token_label(token)} skip abnormal: open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
+                continue
             if pool_reliable and 0 < pool_mcap_ratio < 0.07:
                 skipped += 1
-                print(f"{token_label(token)} skip pool/mcap={pool_mcap_ratio:.1%} < 7% (流动性不足)")
+                print(f"{token_label(token)} skip abnormal: pool/mcap={pool_mcap_ratio:.1%} < 7% (流动性不足)")
                 continue
             if pool_reliable and pool_liquidity < WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:
                 deleted = delete_watchlist_token(
@@ -4201,13 +4213,6 @@ def scan_once(
                     print(f"{address[:8]} watchlist deleted: pool ${pool_liquidity:,.0f}<${WATCHLIST_DELETE_BELOW_POOL_LIQUIDITY_USD:,.0f}")
                 skipped += 1
                 continue
-            # Update watchlist metadata regardless of mcap
-            maybe_record_daily_mcap_milestone(token, current_mcap, args.notify)
-            update_watchlist_seen(
-                address, current_mcap,
-                pool_liquidity=pool_liquidity, pool_mcap_ratio=pool_mcap_ratio,
-                fee_sol=fee_sol(token), symbol=token.get("symbol"),
-            )
             daily_mcap_date = str(token.get("watchlist_daily_mcap_date") or "")
             if daily_mcap_date == datetime.now().date().isoformat() and current_mcap >= DAILY_MCAP_MILESTONE_USD * 0.3:
                 active_ts = token_active_ts({**token, **(info or {})})
