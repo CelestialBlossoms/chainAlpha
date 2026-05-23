@@ -56,6 +56,32 @@ _PUSH_CA_METRIC_CACHE: dict[str, dict[str, Any]] = {}
 _PUSH_CA_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_KLINE_CACHE_TABLE_READY = False
 
+# ---------------------------------------------------------------------------
+# Live-track configuration (mirrors deep_alpha_pro settings)
+# ---------------------------------------------------------------------------
+LIVE_TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_LIVE_TRACK_REDIS_PREFIX", "deep_alpha:live_track")
+LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", "14400"))  # 4h
+LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_DEAD_MCAP", "6000"))
+LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_MCAP", "10000"))
+LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
+LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_SEC", "30"))
+LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
+LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
+_LIVE_TRACK_BG_STARTED = False
+
+# ---------------------------------------------------------------------------
+# Bottom live-track configuration (8h window for bottom abnormal signals)
+# ---------------------------------------------------------------------------
+BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
+BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(8 * 3600)))  # 8h
+BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))
+BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))
+BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
+BOTTOM_LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_REFRESH_SEC", "30"))
+BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom:live_track:updates")
+BOTTOM_LIVE_TRACK_MAX_WORKERS = int(os.getenv("BOTTOM_LIVE_TRACK_MAX_WORKERS", "4"))
+_BOTTOM_LIVE_TRACK_BG_STARTED = False
+
 try:
     REPORT_TZ = ZoneInfo(os.getenv("REPORT_TZ") or os.getenv("TZ") or "Asia/Shanghai")
 except Exception:
@@ -1853,5 +1879,516 @@ async def plugin_events(request: Request, last_id: str = "$"):
                 for stream_id, fields in messages:
                     current_id = stream_id
                     yield sse_message("signal", normalize_alert(stream_id, fields))
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Alpha live-track: background refresh & endpoints
+# ---------------------------------------------------------------------------
+def _live_track_redis_key(address: str) -> str:
+    return f"{LIVE_TRACK_REDIS_PREFIX}:{address}"
+
+
+def _live_track_index_key() -> str:
+    return f"{LIVE_TRACK_REDIS_PREFIX}:__index__"
+
+
+def _live_track_list_addresses() -> list[str]:
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        members = client.smembers(_live_track_index_key())
+        return [str(m) for m in members if m]
+    except Exception:
+        return []
+
+
+def _live_track_load(address: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_live_track_redis_key(address))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _live_track_save(address: str, data: dict[str, Any]) -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        ttl = client.ttl(_live_track_redis_key(address))
+        if ttl is None or ttl <= 0:
+            ttl = LIVE_TRACK_REDIS_TTL_SEC
+        client.setex(
+            _live_track_redis_key(address),
+            ttl,
+            json.dumps(data, ensure_ascii=False),
+        )
+    except Exception:
+        pass
+
+
+def _live_track_remove(address: str, reason: str = "") -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        track = _live_track_load(address)
+        if track:
+            track["status"] = "removed"
+            track["remove_reason"] = reason
+            track["last_updated"] = int(time.time())
+            # Keep for 60s so frontend sees the removal
+            client.setex(_live_track_redis_key(address), 60, json.dumps(track, ensure_ascii=False))
+        client.srem(_live_track_index_key(), address)
+    except Exception:
+        pass
+
+
+def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
+    track = _live_track_load(address)
+    if not track or track.get("status") != "tracking":
+        return track
+    dynamic = _fetch_binance_dynamic(address)
+    if not dynamic:
+        return track
+    now_ts = int(time.time())
+    entry_mcap = _safe_float(track.get("entry_mcap"))
+    current_mcap = _safe_float(dynamic.get("market_cap"))
+    current_price = _safe_float(dynamic.get("price"))
+    holders = _safe_int(dynamic.get("holders"))
+    volume_5m = _safe_float(dynamic.get("volume_5m"))
+    volume_1h = _safe_float(dynamic.get("volume_1h"))
+    peak_mcap = max(_safe_float(track.get("peak_mcap")), current_mcap)
+    pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
+
+    track.update({
+        "current_mcap": current_mcap,
+        "current_price": current_price,
+        "peak_mcap": peak_mcap,
+        "holders": holders,
+        "volume_5m": volume_5m,
+        "volume_1h": volume_1h,
+        "pnl_pct": round(pnl_pct, 2),
+        "last_updated": now_ts,
+    })
+    if dynamic.get("symbol"):
+        track["symbol"] = dynamic["symbol"]
+
+    # --- Removal check ---
+    pushed_at = int(track.get("pushed_at") or now_ts)
+    age_seconds = now_ts - pushed_at
+
+    # Rule 1.2: Market cap < 6K at any time → dead
+    if 0 < current_mcap < LIVE_TRACK_REMOVE_DEAD_MCAP_USD:
+        track["status"] = "removed"
+        track["remove_reason"] = f"市值归零 ${current_mcap:,.0f} < ${LIVE_TRACK_REMOVE_DEAD_MCAP_USD:,.0f}"
+        _live_track_save(address, track)
+        _live_track_remove(address, track["remove_reason"])
+        print(f"  [LiveTrack] 移除(归零) ${track.get('symbol', '')} {address[:8]}: mcap=${current_mcap:,.0f}")
+        return track
+
+    # Rule 1.1: Market cap < 10K within 30 minutes → too weak
+    if age_seconds <= LIVE_TRACK_LOW_MCAP_WINDOW_SEC and 0 < current_mcap < LIVE_TRACK_REMOVE_LOW_MCAP_USD:
+        track["status"] = "removed"
+        track["remove_reason"] = f"30分钟内市值过低 ${current_mcap:,.0f} < ${LIVE_TRACK_REMOVE_LOW_MCAP_USD:,.0f}"
+        _live_track_save(address, track)
+        _live_track_remove(address, track["remove_reason"])
+        print(f"  [LiveTrack] 移除(低市值) ${track.get('symbol', '')} {address[:8]}: mcap=${current_mcap:,.0f} age={age_seconds}s")
+        return track
+
+    _live_track_save(address, track)
+    return track
+
+
+def _live_track_refresh_all() -> list[dict[str, Any]]:
+    addresses = _live_track_list_addresses()
+    if not addresses:
+        return []
+    results: list[dict[str, Any]] = []
+    max_workers = max(1, min(LIVE_TRACK_MAX_WORKERS, len(addresses)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_live_track_refresh_one, addr): addr for addr in addresses}
+        for future in as_completed(future_map):
+            try:
+                track = future.result()
+                if track:
+                    results.append(track)
+            except Exception:
+                pass
+    return results
+
+
+def _live_track_broadcast(items: list[dict[str, Any]]) -> None:
+    client = get_redis_client()
+    if client is None or not items:
+        return
+    try:
+        payload = json.dumps({"ts": int(time.time()), "items": items}, ensure_ascii=False)
+        client.publish(LIVE_TRACK_PUBSUB_CHANNEL, payload)
+    except Exception:
+        pass
+
+
+def _live_track_bg_loop() -> None:
+    import threading
+    while True:
+        try:
+            items = _live_track_refresh_all()
+            if items:
+                _live_track_broadcast(items)
+                active = [item for item in items if item.get("status") == "tracking"]
+                removed = [item for item in items if item.get("status") == "removed"]
+                print(f"  [LiveTrack] 刷新完成: {len(active)}个追踪中, {len(removed)}个已移除")
+        except Exception as exc:
+            print(f"  [LiveTrack] 后台刷新异常: {exc}")
+        time.sleep(LIVE_TRACK_REFRESH_INTERVAL_SEC)
+
+
+@app.on_event("startup")
+def start_live_track_bg():
+    global _LIVE_TRACK_BG_STARTED
+    if _LIVE_TRACK_BG_STARTED:
+        return
+    _LIVE_TRACK_BG_STARTED = True
+    import threading
+    thread = threading.Thread(target=_live_track_bg_loop, daemon=True, name="live_track_bg")
+    thread.start()
+    print("[LiveTrack] 后台刷新线程已启动")
+
+
+@app.get("/alpha-live-track", response_class=HTMLResponse)
+def alpha_live_track_page(request: Request):
+    return templates.TemplateResponse(request, "alpha_live_track.html", {})
+
+
+@app.get("/api/alpha-live-track")
+def alpha_live_track_api(request: Request):
+    addresses = _live_track_list_addresses()
+    items = []
+    for addr in addresses:
+        track = _live_track_load(addr)
+        if track:
+            items.append(track)
+    items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
+    return {"items": items, "count": len(items), "ts": int(time.time())}
+
+
+@app.get("/api/alpha-live-track/events")
+async def alpha_live_track_events(request: Request):
+    async def generator():
+        client = get_redis_client()
+        if client is None:
+            yield sse_message("error", {"message": f"redis unavailable: {get_redis_disabled_reason()}"})
+            return
+
+        # Send initial snapshot
+        addresses = _live_track_list_addresses()
+        snapshot = []
+        for addr in addresses:
+            track = _live_track_load(addr)
+            if track:
+                snapshot.append(track)
+        yield sse_message("snapshot", {"items": snapshot, "ts": int(time.time())})
+
+        # Subscribe to pubsub for real-time updates
+        pubsub = client.pubsub()
+        try:
+            pubsub.subscribe(LIVE_TRACK_PUBSUB_CHANNEL)
+        except Exception as exc:
+            yield sse_message("error", {"message": str(exc)})
+            return
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=30)
+                except Exception as exc:
+                    yield sse_message("error", {"message": str(exc)})
+                    await asyncio.sleep(2)
+                    continue
+
+                if msg is None:
+                    yield ": keepalive\n\n"
+                    continue
+
+                if msg.get("type") != "message":
+                    continue
+
+                data_raw = msg.get("data") or ""
+                try:
+                    data = json.loads(data_raw) if isinstance(data_raw, (str, bytes)) else {}
+                except (json.JSONDecodeError, TypeError):
+                    data = {}
+
+                if data.get("items"):
+                    yield sse_message("update", data)
+        finally:
+            try:
+                pubsub.unsubscribe(LIVE_TRACK_PUBSUB_CHANNEL)
+                pubsub.close()
+            except Exception:
+                pass
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Bottom live-track: background refresh & endpoints
+# ---------------------------------------------------------------------------
+def _bottom_live_track_redis_key(address: str) -> str:
+    return f"{BOTTOM_LIVE_TRACK_REDIS_PREFIX}:{address}"
+
+
+def _bottom_live_track_index_key() -> str:
+    return f"{BOTTOM_LIVE_TRACK_REDIS_PREFIX}:__index__"
+
+
+def _bottom_live_track_list_addresses() -> list[str]:
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        members = client.smembers(_bottom_live_track_index_key())
+        return [str(m) for m in members if m]
+    except Exception:
+        return []
+
+
+def _bottom_live_track_load(address: str) -> dict[str, Any] | None:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_bottom_live_track_redis_key(address))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _bottom_live_track_save(address: str, data: dict[str, Any]) -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        ttl = client.ttl(_bottom_live_track_redis_key(address))
+        if ttl is None or ttl <= 0:
+            ttl = BOTTOM_LIVE_TRACK_TTL_SEC
+        client.setex(
+            _bottom_live_track_redis_key(address),
+            ttl,
+            json.dumps(data, ensure_ascii=False),
+        )
+    except Exception:
+        pass
+
+
+def _bottom_live_track_remove(address: str, reason: str = "") -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        track = _bottom_live_track_load(address)
+        if track:
+            track["status"] = "removed"
+            track["remove_reason"] = reason
+            track["last_updated"] = int(time.time())
+            client.setex(_bottom_live_track_redis_key(address), 60, json.dumps(track, ensure_ascii=False))
+        client.srem(_bottom_live_track_index_key(), address)
+    except Exception:
+        pass
+
+
+def _bottom_live_track_refresh_one(address: str) -> dict[str, Any] | None:
+    track = _bottom_live_track_load(address)
+    if not track or track.get("status") != "tracking":
+        return track
+    dynamic = _fetch_binance_dynamic(address)
+    if not dynamic:
+        return track
+    now_ts = int(time.time())
+    entry_mcap = _safe_float(track.get("entry_mcap"))
+    current_mcap = _safe_float(dynamic.get("market_cap"))
+    current_price = _safe_float(dynamic.get("price"))
+    holders = _safe_int(dynamic.get("holders"))
+    volume_5m = _safe_float(dynamic.get("volume_5m"))
+    volume_1h = _safe_float(dynamic.get("volume_1h"))
+    pool_liquidity = _safe_float(dynamic.get("pool_liquidity")) or _safe_float(track.get("pool_liquidity"))
+    peak_mcap = max(_safe_float(track.get("peak_mcap")), current_mcap)
+    pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
+
+    track.update({
+        "current_mcap": current_mcap,
+        "current_price": current_price,
+        "peak_mcap": peak_mcap,
+        "pool_liquidity": pool_liquidity,
+        "holders": holders,
+        "volume_5m": volume_5m,
+        "volume_1h": volume_1h,
+        "pnl_pct": round(pnl_pct, 2),
+        "last_updated": now_ts,
+    })
+    if dynamic.get("symbol"):
+        track["symbol"] = dynamic["symbol"]
+
+    pushed_at = int(track.get("pushed_at") or now_ts)
+    age_seconds = now_ts - pushed_at
+
+    # Rule 1.2: Market cap < 6K at any time -> dead
+    if 0 < current_mcap < BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD:
+        track["status"] = "removed"
+        track["remove_reason"] = f"市值归零 ${current_mcap:,.0f} < ${BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD:,.0f}"
+        _bottom_live_track_save(address, track)
+        _bottom_live_track_remove(address, track["remove_reason"])
+        print(f"  [BottomLiveTrack] 移除(归零) ${track.get('symbol', '')} {address[:8]}: mcap=${current_mcap:,.0f}")
+        return track
+
+    # Rule 1.1: Market cap < 10K within 30 minutes -> too weak
+    if age_seconds <= BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC and 0 < current_mcap < BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD:
+        track["status"] = "removed"
+        track["remove_reason"] = f"30分钟内市值过低 ${current_mcap:,.0f} < ${BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD:,.0f}"
+        _bottom_live_track_save(address, track)
+        _bottom_live_track_remove(address, track["remove_reason"])
+        print(f"  [BottomLiveTrack] 移除(低市值) ${track.get('symbol', '')} {address[:8]}: mcap=${current_mcap:,.0f} age={age_seconds}s")
+        return track
+
+    _bottom_live_track_save(address, track)
+    return track
+
+
+def _bottom_live_track_refresh_all() -> list[dict[str, Any]]:
+    addresses = _bottom_live_track_list_addresses()
+    if not addresses:
+        return []
+    results: list[dict[str, Any]] = []
+    max_workers = max(1, min(BOTTOM_LIVE_TRACK_MAX_WORKERS, len(addresses)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_bottom_live_track_refresh_one, addr): addr for addr in addresses}
+        for future in as_completed(future_map):
+            try:
+                track = future.result()
+                if track:
+                    results.append(track)
+            except Exception:
+                pass
+    return results
+
+
+def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
+    client = get_redis_client()
+    if client is None or not items:
+        return
+    try:
+        payload = json.dumps({"ts": int(time.time()), "items": items}, ensure_ascii=False)
+        client.publish(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL, payload)
+    except Exception:
+        pass
+
+
+def _bottom_live_track_bg_loop() -> None:
+    while True:
+        try:
+            items = _bottom_live_track_refresh_all()
+            if items:
+                _bottom_live_track_broadcast(items)
+                active = [item for item in items if item.get("status") == "tracking"]
+                removed = [item for item in items if item.get("status") == "removed"]
+                print(f"  [BottomLiveTrack] 刷新完成: {len(active)}个追踪中, {len(removed)}个已移除")
+        except Exception as exc:
+            print(f"  [BottomLiveTrack] 后台刷新异常: {exc}")
+        time.sleep(BOTTOM_LIVE_TRACK_REFRESH_INTERVAL_SEC)
+
+
+@app.on_event("startup")
+def start_bottom_live_track_bg():
+    global _BOTTOM_LIVE_TRACK_BG_STARTED
+    if _BOTTOM_LIVE_TRACK_BG_STARTED:
+        return
+    _BOTTOM_LIVE_TRACK_BG_STARTED = True
+    import threading
+    thread = threading.Thread(target=_bottom_live_track_bg_loop, daemon=True, name="bottom_live_track_bg")
+    thread.start()
+    print("[BottomLiveTrack] 后台刷新线程已启动")
+
+
+@app.get("/bottom-live-track", response_class=HTMLResponse)
+def bottom_live_track_page(request: Request):
+    return templates.TemplateResponse(request, "bottom_live_track.html", {})
+
+
+@app.get("/api/bottom-live-track")
+def bottom_live_track_api(request: Request):
+    addresses = _bottom_live_track_list_addresses()
+    items = []
+    for addr in addresses:
+        track = _bottom_live_track_load(addr)
+        if track:
+            items.append(track)
+    items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
+    return {"items": items, "count": len(items), "ts": int(time.time())}
+
+
+@app.get("/api/bottom-live-track/events")
+async def bottom_live_track_events(request: Request):
+    async def generator():
+        client = get_redis_client()
+        if client is None:
+            yield sse_message("error", {"message": f"redis unavailable: {get_redis_disabled_reason()}"})
+            return
+
+        addresses = _bottom_live_track_list_addresses()
+        snapshot = []
+        for addr in addresses:
+            track = _bottom_live_track_load(addr)
+            if track:
+                snapshot.append(track)
+        yield sse_message("snapshot", {"items": snapshot, "ts": int(time.time())})
+
+        pubsub = client.pubsub()
+        try:
+            pubsub.subscribe(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL)
+        except Exception as exc:
+            yield sse_message("error", {"message": str(exc)})
+            return
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.to_thread(pubsub.get_message, ignore_subscribe_messages=True, timeout=30)
+                except Exception as exc:
+                    yield sse_message("error", {"message": str(exc)})
+                    await asyncio.sleep(2)
+                    continue
+
+                if msg is None:
+                    yield ": keepalive\n\n"
+                    continue
+
+                if msg.get("type") != "message":
+                    continue
+
+                data_raw = msg.get("data") or ""
+                try:
+                    data = json.loads(data_raw) if isinstance(data_raw, (str, bytes)) else {}
+                except (json.JSONDecodeError, TypeError):
+                    data = {}
+
+                if data.get("items"):
+                    yield sse_message("update", data)
+        finally:
+            try:
+                pubsub.unsubscribe(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL)
+                pubsub.close()
+            except Exception:
+                pass
 
     return StreamingResponse(generator(), media_type="text/event-stream")

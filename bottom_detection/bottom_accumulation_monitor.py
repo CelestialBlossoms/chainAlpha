@@ -161,6 +161,16 @@ BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USER_AGENT}
 _POST_PUSH_MONITOR_STARTED = False
 
+# ---------------------------------------------------------------------------
+# Live tracking for frontend real-time dashboard (8h window for bottom signals)
+# ---------------------------------------------------------------------------
+BOTTOM_LIVE_TRACK_ENABLED = os.getenv("BOTTOM_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
+BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(8 * 3600)))  # 8h
+BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
+BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
+BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
+
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
 OLD_TOKEN_SURGE_MIN_AGE_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SURGE_MIN_AGE_SEC", "0"))
@@ -2037,6 +2047,62 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
         print(f"{address[:8]} post-push redis register failed: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Bottom live-track Redis helpers (8h frontend tracking)
+# ---------------------------------------------------------------------------
+def _bottom_live_track_key(address: str) -> str:
+    return redis_key(BOTTOM_LIVE_TRACK_REDIS_PREFIX, address)
+
+
+def _bottom_live_track_index_key() -> str:
+    return redis_key(BOTTOM_LIVE_TRACK_REDIS_PREFIX, "__index__")
+
+
+def start_bottom_live_tracking(
+    address: str,
+    symbol: str = "",
+    entry_mcap: float = 0,
+    entry_price: float = 0,
+    signal_type: str = "",
+    pool_liquidity: float = 0,
+) -> None:
+    """Store a bottom-abnormal CA in Redis for 8h real-time tracking."""
+    if not BOTTOM_LIVE_TRACK_ENABLED or not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    payload = {
+        "address": address,
+        "chain": CHAIN,
+        "symbol": symbol or "UNKNOWN",
+        "signal_type": signal_type,
+        "source": "bottom_abnormal",
+        "entry_mcap": to_float(entry_mcap),
+        "entry_price": to_float(entry_price),
+        "pushed_at": now_ts(),
+        "current_mcap": to_float(entry_mcap),
+        "current_price": to_float(entry_price),
+        "peak_mcap": to_float(entry_mcap),
+        "pool_liquidity": to_float(pool_liquidity),
+        "holders": 0,
+        "volume_5m": 0,
+        "volume_1h": 0,
+        "pnl_pct": 0.0,
+        "last_updated": now_ts(),
+        "status": "tracking",
+        "remove_reason": "",
+    }
+    try:
+        key = _bottom_live_track_key(address)
+        client.setex(key, BOTTOM_LIVE_TRACK_TTL_SEC, json.dumps(payload, ensure_ascii=False))
+        client.sadd(_bottom_live_track_index_key(), address)
+        client.expire(_bottom_live_track_index_key(), BOTTOM_LIVE_TRACK_TTL_SEC)
+        print(f"  [BottomLiveTrack] 开始实时追踪 ${symbol} {address[:8]}... signal={signal_type}")
+    except Exception as exc:
+        print(f"  [BottomLiveTrack] Redis写入失败 {address[:8]}: {exc}")
+
+
 def send_tg_reply(text: str, reply_to_message_id: int, extra: dict[str, Any]) -> int | None:
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         publish_tg_alert(text, "bottom_abnormal_followup", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
@@ -2548,6 +2614,15 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
         message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
         publish_tg_alert(tg_text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
         register_post_push_track(address, extra, message_id)
+        # Live-track: push to Redis for frontend real-time dashboard
+        start_bottom_live_tracking(
+            address=address,
+            symbol=str(extra.get("symbol") or ""),
+            entry_mcap=to_float(extra.get("current_mcap")),
+            entry_price=to_float(extra.get("price")),
+            signal_type=str(extra.get("signal_type") or ""),
+            pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
+        )
         return int(message_id) if message_id else None
     except Exception as exc:
         print(f"tg exception: {exc}")
@@ -2687,6 +2762,15 @@ def publish_frontend_signal_update(
         return
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+    # Live-track: push to Redis for frontend real-time dashboard
+    start_bottom_live_tracking(
+        address=address,
+        symbol=str(extra.get("symbol") or ""),
+        entry_mcap=to_float(extra.get("current_mcap")),
+        entry_price=to_float(extra.get("price")),
+        signal_type=str(extra.get("signal_type") or ""),
+        pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
+    )
 
     # Schedule 10-minute follow-up verdict via TG
     threading.Thread(

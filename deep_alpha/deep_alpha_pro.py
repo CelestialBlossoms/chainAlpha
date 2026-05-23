@@ -110,6 +110,16 @@ TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_TRACK_REDIS_TTL_SEC", "5400"))  
 TRACK_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_TRACK_MAX_AGE_SEC", "3600"))       # 60min
 TRACK_ENABLED = os.getenv("DEEP_ALPHA_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
+# ---------------------------------------------------------------------------
+# Live tracking for frontend real-time dashboard (4h window)
+# ---------------------------------------------------------------------------
+LIVE_TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_LIVE_TRACK_REDIS_PREFIX", "deep_alpha:live_track")
+LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", "14400"))  # 4h
+LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
+LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
+LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
+LIVE_TRACK_ENABLED = os.getenv("DEEP_ALPHA_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
 TG_CHAT_ID = ALPHA_TG_CHAT_ID
@@ -784,6 +794,55 @@ def delete_track(address):
         client.delete(track_redis_key(address))
     except Exception as exc:
         print(f"  [Track] Redis删除失败 {address[:8]}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Live-track Redis helpers (4h frontend tracking)
+# ---------------------------------------------------------------------------
+def live_track_redis_key(address):
+    return redis_key(LIVE_TRACK_REDIS_PREFIX, address)
+
+
+def live_track_index_key():
+    return redis_key(LIVE_TRACK_REDIS_PREFIX, "__index__")
+
+
+def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at):
+    if not LIVE_TRACK_ENABLED or not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    payload = {
+        "address": address,
+        "chain": chain or "sol",
+        "symbol": symbol or "UNKNOWN",
+        "entry_mcap": safe_float(entry_mcap),
+        "entry_price": safe_float(entry_price),
+        "pushed_at": int(pushed_at),
+        "current_mcap": safe_float(entry_mcap),
+        "current_price": safe_float(entry_price),
+        "peak_mcap": safe_float(entry_mcap),
+        "pool_liquidity": 0,
+        "holders": 0,
+        "volume_5m": 0,
+        "volume_1h": 0,
+        "pnl_pct": 0.0,
+        "last_updated": int(time.time()),
+        "status": "tracking",
+        "remove_reason": "",
+    }
+    try:
+        client.setex(
+            live_track_redis_key(address),
+            LIVE_TRACK_REDIS_TTL_SEC,
+            json.dumps(payload, ensure_ascii=False),
+        )
+        client.sadd(live_track_index_key(), address)
+        client.expire(live_track_index_key(), LIVE_TRACK_REDIS_TTL_SEC)
+        print(f"  [LiveTrack] 开始实时追踪 ${symbol} {address[:8]}...")
+    except Exception as exc:
+        print(f"  [LiveTrack] Redis写入失败 {address[:8]}: {exc}")
 
 
 def scan_track_keys():
@@ -3454,6 +3513,21 @@ def scan_pro():
                             save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
                         except Exception as exc:
                             print(f"  [alpha_persist] save failed for {addr}: {exc}")
+                        # Live-track: push to Redis for frontend real-time dashboard
+                        if LIVE_TRACK_ENABLED and not s.get("repeat_alert"):
+                            live_track_price = (
+                                safe_float(s.get("price"))
+                                or safe_float(price_observation.get("current_price"))
+                                or safe_float(t.get("price"))
+                            )
+                            start_live_tracking(
+                                address=addr,
+                                chain=chain,
+                                symbol=s.get("symbol") or "UNKNOWN",
+                                entry_mcap=safe_float(s.get("mcap")),
+                                entry_price=live_track_price,
+                                pushed_at=int(time.time()),
+                            )
                         publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):
                             send_new_token_ca_alert(s)
