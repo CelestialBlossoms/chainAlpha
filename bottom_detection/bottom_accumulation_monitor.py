@@ -4621,6 +4621,7 @@ def cleanup_stale_watchlist_tokens() -> None:
 
 def main() -> None:
     global MIN_MCAP_USD, MIN_TOKEN_AGE_SEC, MIN_FEE_SOL, MIN_POOL_LIQUIDITY_USD, TREND_ORDER_BYS, TREND_INTERVALS, TREND_INTERVAL, EMA_GOLDEN_CROSS_ENABLED, FAST_SCAN_ENABLED, FAST_SCAN_INTERVAL_SEC, FAST_SCAN_MIN_MCAP, FAST_SCAN_MAX_MCAP, FAST_SCAN_SNAPSHOT_INTERVAL_SEC, FAST_SCAN_TOKEN_DELAY, FAST_SCAN_MAX_TOKENS
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] bottom accumulation monitor starting...", flush=True)
     args = build_parser().parse_args()
     MIN_MCAP_USD = args.min_mcap
     MIN_TOKEN_AGE_SEC = int(args.min_age_hours * 3600)
@@ -4637,8 +4638,10 @@ def main() -> None:
     FAST_SCAN_SNAPSHOT_INTERVAL_SEC = args.fast_snapshot_interval
     FAST_SCAN_TOKEN_DELAY = args.fast_token_delay
     FAST_SCAN_MAX_TOKENS = args.fast_max_tokens
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] initializing DB tables...", flush=True)
     ensure_kline_cache_table()
     ensure_watchlist_daily_mcap_columns()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] DB tables ready, cleaning stale watchlist...", flush=True)
     cleanup_stale_watchlist_tokens()
     if args.notify:
         start_post_push_entry_drawdown_monitor()

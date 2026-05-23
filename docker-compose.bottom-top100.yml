@@ -68,6 +68,7 @@ services:
       BOTTOM_LIVE_TRACK_LOW_WINDOW: ${BOTTOM_LIVE_TRACK_LOW_WINDOW:-1800}
     command:
       - python
+      - -u
       - bottom_detection/bottom_accumulation_monitor.py
       - --watch
       - --notify
