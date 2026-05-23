@@ -239,7 +239,20 @@
     }
 
     async function copyCA(addr) {
-      try { await navigator.clipboard.writeText(addr); } catch (_) {}
+      if (!addr) return;
+      try {
+        await navigator.clipboard.writeText(addr);
+        return;
+      } catch (_) {}
+      // Fallback for non-HTTPS contexts
+      const area = document.createElement("textarea");
+      area.value = addr;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
     }
 
     function render() {
