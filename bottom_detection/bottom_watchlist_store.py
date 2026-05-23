@@ -649,3 +649,33 @@ def fill_watchlist_create_at(address: str, created_ts: int) -> None:
         )
 
     db_op(_op)
+
+
+def fetch_today_deleted_watchlist_tokens() -> list[dict[str, Any]]:
+    ensure_watchlist_delete_audit_table()
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ca, deleted_at, reason, symbol, peak_mcap, last_mcap, current_mcap, pool_liquidity, pool_mcap_ratio, note
+            FROM bottom_watchlist_delete_audit
+            WHERE deleted_at >= CURRENT_DATE
+            ORDER BY deleted_at DESC
+            """
+        )
+        return [
+            {
+                "ca": row[0],
+                "deleted_at": row[1].isoformat() if row[1] else "",
+                "reason": row[2],
+                "symbol": row[3],
+                "peak_mcap": float(row[4] or 0.0),
+                "last_mcap": float(row[5] or 0.0),
+                "current_mcap": float(row[6] or 0.0),
+                "pool_liquidity": float(row[7] or 0.0),
+                "pool_mcap_ratio": float(row[8] or 0.0),
+                "note": row[9] or "",
+            }
+            for row in cur.fetchall()
+        ]
+    return db_op(_op) or []

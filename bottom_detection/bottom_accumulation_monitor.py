@@ -166,7 +166,7 @@ _POST_PUSH_MONITOR_STARTED = False
 # ---------------------------------------------------------------------------
 BOTTOM_LIVE_TRACK_ENABLED = os.getenv("BOTTOM_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
-BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(8 * 3600)))  # 8h
+BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min

@@ -73,7 +73,7 @@ _LIVE_TRACK_BG_STARTED = False
 # Bottom live-track configuration (8h window for bottom abnormal signals)
 # ---------------------------------------------------------------------------
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
-BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(8 * 3600)))  # 8h
+BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
@@ -1771,6 +1771,12 @@ def bottom_watchlist_api(request: Request, limit: int = 500, refresh: bool = Fal
         # Re-fetch from DB after update
         return {"items": fetch_bottom_watchlist(limit), "refreshed": True}
     return {"items": fetch_bottom_watchlist(limit)}
+
+
+@app.get("/api/bottom-watchlist/deleted-today")
+def bottom_watchlist_deleted_today_api(request: Request):
+    from bottom_detection.bottom_watchlist_store import fetch_today_deleted_watchlist_tokens
+    return {"items": fetch_today_deleted_watchlist_tokens()}
 
 
 @app.get("/api/onchain-guides")
