@@ -1939,6 +1939,60 @@ def _live_track_save(address: str, data: dict[str, Any]) -> None:
         pass
 
 
+def _alpha_deleted_today_redis_key(address: str) -> str:
+    return f"deep_alpha:live_track:deleted_today:{address}"
+
+
+def _alpha_deleted_today_index_key() -> str:
+    return "deep_alpha:live_track:deleted_today:__index__"
+
+
+def _alpha_deleted_today_save(address: str, track: dict[str, Any]) -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        from datetime import datetime, timedelta
+        # Calculate time left for today to expire at midnight
+        now = time.time()
+        tomorrow_midnight = time.mktime((datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timetuple())
+        ttl = int(tomorrow_midnight - now)
+        if ttl <= 0:
+            ttl = 86400  # Fallback to 24h
+            
+        key = _alpha_deleted_today_redis_key(address)
+        client.setex(key, ttl, json.dumps(track, ensure_ascii=False))
+        
+        index_key = _alpha_deleted_today_index_key()
+        client.sadd(index_key, address)
+        client.expire(index_key, ttl)
+    except Exception as exc:
+        print(f"Failed to save alpha deleted today for {address[:8]}: {exc}")
+
+
+def _alpha_deleted_today_list() -> list[dict[str, Any]]:
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        index_key = _alpha_deleted_today_index_key()
+        members = client.smembers(index_key)
+        addresses = [str(m.decode() if isinstance(m, bytes) else m) for m in members if m]
+        
+        items = []
+        for addr in addresses:
+            raw = client.get(_alpha_deleted_today_redis_key(addr))
+            if raw:
+                try:
+                    items.append(json.loads(raw))
+                except Exception:
+                    pass
+        items.sort(key=lambda x: int(x.get("last_updated") or 0), reverse=True)
+        return items
+    except Exception:
+        return []
+
+
 def _live_track_remove(address: str, reason: str = "") -> None:
     client = get_redis_client()
     if client is None:
@@ -1949,6 +2003,10 @@ def _live_track_remove(address: str, reason: str = "") -> None:
             track["status"] = "removed"
             track["remove_reason"] = reason
             track["last_updated"] = int(time.time())
+            
+            # Archive this removed token to "deleted today" Redis store
+            _alpha_deleted_today_save(address, track)
+            
             # Keep for 60s so frontend sees the removal
             client.setex(_live_track_redis_key(address), 60, json.dumps(track, ensure_ascii=False))
         client.srem(_live_track_index_key(), address)
@@ -2083,6 +2141,11 @@ def alpha_live_track_api(request: Request):
             items.append(track)
     items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
     return {"items": items, "count": len(items), "ts": int(time.time())}
+
+
+@app.get("/api/alpha-live-track/deleted-today")
+def alpha_live_track_deleted_today_api(request: Request):
+    return {"items": _alpha_deleted_today_list()}
 
 
 @app.get("/api/alpha-live-track/events")

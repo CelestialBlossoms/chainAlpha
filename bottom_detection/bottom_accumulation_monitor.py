@@ -285,6 +285,12 @@ def calc_mcap(row: dict[str, Any]) -> float:
         value = to_float(row.get(key))
         if value > 0:
             return value
+    price = to_float(row.get("price"))
+    if isinstance(price, dict):
+        price = to_float(price.get("price") or price.get("price_1m"))
+    supply = to_float(row.get("circulating_supply") or row.get("total_supply"))
+    if price > 0 and supply > 0:
+        return price * supply
     return 0.0
 
 
@@ -4638,8 +4644,9 @@ def main() -> None:
     FAST_SCAN_SNAPSHOT_INTERVAL_SEC = args.fast_snapshot_interval
     FAST_SCAN_TOKEN_DELAY = args.fast_token_delay
     FAST_SCAN_MAX_TOKENS = args.fast_max_tokens
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] initializing DB tables...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] init: kline cache table...", flush=True)
     ensure_kline_cache_table()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] init: watchlist daily mcap columns...", flush=True)
     ensure_watchlist_daily_mcap_columns()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] DB tables ready, cleaning stale watchlist...", flush=True)
     cleanup_stale_watchlist_tokens()

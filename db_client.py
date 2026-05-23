@@ -18,6 +18,8 @@ class DBClient:
         """Create a fresh connection."""
         conn = psycopg2.connect(
             **self.conn_params,
+            connect_timeout=10,
+            options="-c lock_timeout=15s",
             keepalives=1,
             keepalives_idle=30,
             keepalives_interval=10,
