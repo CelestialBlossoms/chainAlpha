@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>底部异动 实时追踪</title>
+  <title>Deep Alpha 实时追踪</title>
   <link rel="stylesheet" href="/static/dashboard.css">
   <style>
     .live-status {
@@ -17,7 +17,7 @@
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: #f59e0b;
+      background: #22c55e;
       animation: pulse-dot 2s ease-in-out infinite;
     }
     .live-dot.disconnected { background: #ef4444; animation: none; }
@@ -60,7 +60,7 @@
       border-radius: 2px;
       transition: width 0.6s ease;
     }
-    .mcap-bar-fill.gain { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .mcap-bar-fill.gain { background: linear-gradient(90deg, #22c55e, #4ade80); }
     .mcap-bar-fill.loss { background: linear-gradient(90deg, #ef4444, #f87171); }
 
     .token-symbol {
@@ -72,16 +72,6 @@
       font-size: 11px;
       color: #6b7280;
       font-family: 'Courier New', monospace;
-    }
-    .signal-chip {
-      display: inline-block;
-      padding: 1px 6px;
-      background: #78350f;
-      color: #fbbf24;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 600;
-      margin-left: 4px;
     }
     .status-badge {
       display: inline-block;
@@ -127,17 +117,17 @@
     <div class="wrap">
       <header class="topbar">
         <div>
-          <h1>底部异动 实时追踪</h1>
-          <p class="desc">底部异动推送CA后实时追踪市值、池子、盈亏（{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时窗口）</p>
+          <h1>Deep Alpha 实时追踪</h1>
+          <p class="desc">推送打新CA后实时追踪市值、池子、盈亏（{{ (alpha_live_track_ttl_sec // 3600) if alpha_live_track_ttl_sec else 24 }}小时窗口）</p>
         </div>
         <div class="nav-actions">
           <div class="live-status">
             <span id="live-dot" class="live-dot"></span>
             <span id="live-label">连接中...</span>
           </div>
-          <a class="mini-link" href="/alpha-live-track">打新追踪</a>
-          <a class="mini-link" href="/bottom-push-ca">底部推送 CA</a>
+          <a class="mini-link" href="/bottom-live-track">🟡 异动追踪</a>
           <a class="mini-link" href="/deep-alpha-1m-ca">Deep Alpha 1m</a>
+          <a class="mini-link" href="/bottom-push-ca">底部推送 CA</a>
           <a class="mini-link" href="/onchain-guides">链上交易指南</a>
         </div>
       </header>
@@ -150,16 +140,14 @@
         <table class="track-table">
           <thead>
             <tr>
-              <th>Token / 信号</th>
+              <th>Token</th>
               <th>推送时间</th>
               <th>推送市值</th>
               <th>当前市值</th>
               <th>盈亏</th>
               <th>巅峰市值时间</th>
-              <th>推送后最高盈利</th>
-              <th>推送后最高市值</th>
+              <th>最高市值</th>
               <th>池子</th>
-              <th>巅峰耗时</th>
               <th>Holders</th>
               <th>已追踪</th>
               <th>状态</th>
@@ -169,13 +157,42 @@
           <tbody id="track-rows"></tbody>
         </table>
         <div id="track-empty" class="empty-state" hidden>
-          <span class="emoji">🔍</span>
-          当前没有正在追踪的底部异动CA<br>
-          <small>等待 Bottom Accumulation Monitor 推送异动信号...</small>
+          <span class="emoji">📡</span>
+          当前没有正在追踪的CA<br>
+          <small>等待 Deep Alpha Pro 推送新的打新信号...</small>
         </div>
         <div id="last-update" class="last-update"></div>
       </section>
 
+      <!-- 今日最终清退及删除的打新 CA -->
+      <section class="watchlist-table-wrap card" style="margin-top: 24px;">
+        <div class="card-header" style="padding: 15px 20px 5px 20px; display: flex; justify-content: space-between; align-items: center;">
+          <h2 style="font-size: 16px; font-weight: 700; color: #f87171; margin: 0;">🛡️ 今日已清退/删除的打新 CA</h2>
+          <span id="deleted-summary" style="font-size: 12px; color: #9ca3af;">共 0 个CA</span>
+        </div>
+        <table class="track-table">
+          <thead>
+            <tr>
+              <th>Token / 地址</th>
+              <th>清退原因</th>
+              <th>推送市值</th>
+              <th>清退时市值</th>
+              <th>历史最高市值</th>
+              <th>盈亏</th>
+              <th>清退时池子</th>
+              <th>Holders</th>
+              <th>清退时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="deleted-rows"></tbody>
+        </table>
+        <div id="deleted-empty" class="empty-state" hidden>
+          <span class="emoji">🛡️</span>
+          今天打新追踪没有清退任何代币<br>
+          <small>当前追踪池内的打新项目状态良好</small>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -186,9 +203,16 @@
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
     const lastUpdateEl = document.getElementById("last-update");
+    
+    // Deleted Elements
+    const deletedRowsEl = document.getElementById("deleted-rows");
+    const deletedEmptyEl = document.getElementById("deleted-empty");
+    const deletedSummaryEl = document.getElementById("deleted-summary");
+    
     let items = [];
+    let deletedItems = [];
     let evtSource = null;
-    let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
+    let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -249,29 +273,11 @@
       return `${m}m\u7a97\u53e3`;
     }
 
-    function formatCreationAge(item, nowTs) {
-      const createdTs = safeNum(item.created_ts);
-      const explicitAge = safeNum(item.created_age_sec || item.age_sec);
-      const seconds = createdTs > 0 ? Math.max(0, nowTs - createdTs) : Math.max(0, explicitAge);
-      if (seconds <= 0) return "";
-      const days = Math.floor(seconds / 86400);
-      const hours = Math.floor((seconds % 86400) / 3600);
-      if (days <= 0) return `${Math.max(1, hours)}小时`;
-      return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
-    }
-
-    function formatPeakDelay(item) {
-      const pushedAt = safeNum(item.pushed_at);
-      const peakAt = safeNum(item.peak_mcap_at || item.pushed_at);
-      if (pushedAt <= 0 || peakAt <= 0 || peakAt < pushedAt) return "-";
-      return `${Math.floor((peakAt - pushedAt) / 60)}分钟`;
-    }
-
     function statusBadge(item) {
       const status = item.status || "tracking";
-      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">\u5df2\u79fb\u9664</span>`;
-      if (status === "expired") return `<span class="status-badge expired">\u5df2\u8fc7\u671f</span>`;
-      return `<span class="status-badge tracking">\u8ffd\u8e2a\u4e2d</span>`;
+      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
+      if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
+      return `<span class="status-badge tracking">追踪中</span>`;
     }
 
     function mcapBarHtml(entry, current) {
@@ -316,7 +322,10 @@
       const now = Math.floor(Date.now() / 1000);
 
       emptyEl.hidden = sorted.length > 0;
-      summaryEl.textContent = `\u8ffd\u8e2a\u4e2d: ${active.length} | \u5df2\u79fb\u9664: ${removed.length} | \u5171 ${sorted.length} \u4e2aCA | ${formatWindow(trackTtlSec)} | \u6bcf30\u79d2\u81ea\u52a8\u5237\u65b0`;
+
+      const activeCount = active.length;
+      const removedCount = removed.length;
+      summaryEl.textContent = `追踪中: ${activeCount} | 已移除: ${removedCount} | 共 ${sorted.length} 个CA | ${formatWindow(trackTtlSec)} | 每30秒自动刷新`;
 
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
@@ -324,24 +333,12 @@
         const isRemoved = item.status !== "tracking";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
-        const signalType = item.signal_type || "";
-        const creationAge = formatCreationAge(item, now);
-        const peakDelay = formatPeakDelay(item);
-
-        // Calculate peak/max PnL since pushed
-        const entryMcap = safeNum(item.entry_mcap);
-        const peakMcap = safeNum(item.peak_mcap);
-        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0.0;
 
         return `
           <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
             <td>
-              <div class="token-symbol">
-                $${htmlEscape(item.symbol || "UNKNOWN")}
-                ${signalType ? `<span class="signal-chip">${htmlEscape(signalType)}</span>` : ""}
-              </div>
+              <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
-              ${creationAge ? `<div class="token-addr">创建 ${htmlEscape(creationAge)}</div>` : ""}
             </td>
             <td><span>${formatTime(item.pushed_at)}</span></td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>
@@ -351,19 +348,17 @@
             </td>
             <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
             <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
-            <td><b class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</b></td>
             <td><b>${formatCap(item.peak_mcap)}</b></td>
             <td>${formatCap(item.pool_liquidity)}</td>
-            <td><span>${htmlEscape(peakDelay)}</span></td>
             <td>${safeNum(item.holders) || "-"}</td>
             <td>
               <span>${formatDuration(age)}</span>
-              ${!isRemoved ? `<div class="countdown">\u5269\u4f59 ${formatDuration(remaining)}</div>` : ""}
+              ${!isRemoved ? `<div class="countdown">剩余 ${formatDuration(remaining)}</div>` : ""}
             </td>
             <td>${statusBadge(item)}</td>
             <td>
               <div class="card-actions">
-                <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">\u590d\u5236</button>
+                <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button>
                 <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
                 <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
               </div>
@@ -377,6 +372,7 @@
       const byAddr = {};
       for (const item of items) byAddr[item.address] = item;
       for (const item of newItems) byAddr[item.address] = item;
+      // Remove expired entries (removed > 2min ago)
       const now = Math.floor(Date.now() / 1000);
       items = Object.values(byAddr).filter(item => {
         if (item.status === "removed") {
@@ -393,12 +389,12 @@
 
     function setConnected(ok) {
       liveDot.className = ok ? "live-dot" : "live-dot disconnected";
-      liveLabel.textContent = ok ? "\u5b9e\u65f6\u8fde\u63a5" : "\u5df2\u65ad\u5f00";
+      liveLabel.textContent = ok ? "实时连接" : "已断开";
     }
 
     function connectSSE() {
       if (evtSource) { try { evtSource.close(); } catch (_) {} }
-      evtSource = new EventSource("/api/bottom-live-track/events");
+      evtSource = new EventSource("/api/alpha-live-track/events");
 
       evtSource.addEventListener("snapshot", (e) => {
         try {
@@ -407,7 +403,7 @@
           items = sortByPushTime(data.items);
           render();
           setConnected(true);
-          lastUpdateEl.textContent = `\u521d\u59cb\u5feb\u7167 ${new Date().toLocaleTimeString()}`;
+          lastUpdateEl.textContent = `初始快照 ${new Date().toLocaleTimeString()}`;
         } catch (_) {}
       });
 
@@ -417,20 +413,20 @@
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           mergeItems(data.items || []);
           render();
-          lastUpdateEl.textContent = `\u6700\u540e\u66f4\u65b0 ${new Date().toLocaleTimeString()}`;
+          lastUpdateEl.textContent = `最后更新 ${new Date().toLocaleTimeString()}`;
         } catch (_) {}
       });
 
       evtSource.addEventListener("error", (e) => {
         try {
           const data = JSON.parse(e.data);
-          console.warn("[BottomLiveTrack] SSE error:", data.message);
+          console.warn("[LiveTrack] SSE error:", data.message);
         } catch (_) {}
       });
 
       evtSource.onerror = () => {
         setConnected(false);
-        liveLabel.textContent = "\u91cd\u8fde\u4e2d...";
+        liveLabel.textContent = "重连中...";
         setTimeout(() => {
           if (evtSource && evtSource.readyState === EventSource.CLOSED) {
             connectSSE();
@@ -441,23 +437,70 @@
       evtSource.onopen = () => setConnected(true);
     }
 
+    function renderDeleted() {
+      deletedEmptyEl.hidden = deletedItems.length > 0;
+      deletedSummaryEl.textContent = `共 ${deletedItems.length} 个CA`;
+      
+      deletedRowsEl.innerHTML = deletedItems.map(item => {
+        const deletedAtLocal = item.last_updated ? formatTime(item.last_updated) : "-";
+        const pnl = safeNum(item.pnl_pct);
+        
+        return `
+          <tr>
+            <td>
+              <div class="token-symbol">
+                $${htmlEscape(item.symbol || "UNKNOWN")}
+              </div>
+              <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
+            </td>
+            <td style="color: #fb7185; font-weight: 600;">${htmlEscape(item.remove_reason || "unspecified")}</td>
+            <td><b>${formatCap(item.entry_mcap)}</b></td>
+            <td><b>${formatCap(item.current_mcap)}</b></td>
+            <td><b>${formatCap(item.peak_mcap)}</b></td>
+            <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
+            <td>${formatCap(item.pool_liquidity)}</td>
+            <td>${safeNum(item.holders) || "-"}</td>
+            <td><span>${deletedAtLocal}</span></td>
+            <td>
+              <div class="card-actions">
+                <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function fetchDeletedToday() {
+      fetch("/api/alpha-live-track/deleted-today")
+        .then(r => r.json())
+        .then(data => {
+          deletedItems = data.items || [];
+          renderDeleted();
+        })
+        .catch(() => {});
+    }
+
     // Initial load via REST, then switch to SSE
-    fetch("/api/bottom-live-track")
+    fetch("/api/alpha-live-track")
       .then(r => r.json())
       .then(data => {
         items = sortByPushTime(data.items);
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         connectSSE();
+        fetchDeletedToday(); // Load deleted today
       })
       .catch(err => {
-        summaryEl.textContent = `\u52a0\u8f7d\u5931\u8d25: ${err.message}`;
+        summaryEl.textContent = `加载失败: ${err.message}`;
         connectSSE();
+        fetchDeletedToday(); // Load deleted today
       });
 
-    // Fallback: poll every 35s
+    // Fallback: poll every 35s in case SSE breaks
     setInterval(() => {
-      fetch("/api/bottom-live-track")
+      fetch("/api/alpha-live-track")
         .then(r => r.json())
         .then(data => {
           mergeItems(data.items || []);
@@ -465,6 +508,7 @@
           render();
         })
         .catch(() => {});
+      fetchDeletedToday(); // Load deleted today in loop
     }, 35000);
   </script>
 </body>

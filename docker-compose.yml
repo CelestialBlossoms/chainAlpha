@@ -5,20 +5,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: chain-alpha-robot
-    restart: "no"
+    restart: unless-stopped
     working_dir: /app
     environment:
       TZ: Asia/Shanghai
       PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "21600"
-      DEEP_ALPHA_PRO_ENABLED: "0"
-      DEEP_ALPHA_PUSH_ENABLED: "0"
     volumes:
       - .:/app
       - ./data:/app/data
     command:
       - python
-      - -c
-      - "print('deep_alpha.deep_alpha_pro service disabled')"
+      - -m
+      - deep_alpha.deep_alpha_pro
     logging:
       driver: json-file
       options:
