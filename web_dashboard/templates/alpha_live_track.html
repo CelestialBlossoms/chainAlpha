@@ -383,6 +383,10 @@
       items.sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
     }
 
+    function sortByPushTime(list) {
+      return (list || []).slice().sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
+    }
+
     function setConnected(ok) {
       liveDot.className = ok ? "live-dot" : "live-dot disconnected";
       liveLabel.textContent = ok ? "实时连接" : "已断开";
@@ -396,7 +400,7 @@
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
-          items = data.items || [];
+          items = sortByPushTime(data.items);
           render();
           setConnected(true);
           lastUpdateEl.textContent = `初始快照 ${new Date().toLocaleTimeString()}`;
@@ -482,7 +486,7 @@
     fetch("/api/alpha-live-track")
       .then(r => r.json())
       .then(data => {
-        items = data.items || [];
+        items = sortByPushTime(data.items);
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         connectSSE();

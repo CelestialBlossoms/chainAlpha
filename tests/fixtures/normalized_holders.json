@@ -1,0 +1,12 @@
+[
+  {"wallet": "Wallet1111111111111111111111111111111111111", "hold_pct": 0.006, "buy_volume": 900, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet2222222222222222222222222222222222222", "hold_pct": 0.006, "buy_volume": 870, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet3333333333333333333333333333333333333", "hold_pct": 0.006, "buy_volume": 880, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet4444444444444444444444444444444444444", "hold_pct": 0.007, "buy_volume": 920, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet5555555555555555555555555555555555555", "hold_pct": 0.007, "buy_volume": 940, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet6666666666666666666666666666666666666", "hold_pct": 0.007, "buy_volume": 930, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet7777777777777777777777777777777777777", "hold_pct": 0.008, "buy_volume": 960, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet8888888888888888888888888888888888888", "hold_pct": 0.008, "buy_volume": 950, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "Wallet9999999999999999999999999999999999999", "hold_pct": 0.008, "buy_volume": 970, "sell_volume": 0, "buy_count": 1, "sell_count": 0, "tags": ["axiom", "bundler"]},
+  {"wallet": "WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "hold_pct": 0.012, "buy_volume": 1200, "sell_volume": 400, "buy_count": 2, "sell_count": 1, "tags": ["smart_degen"]}
+]

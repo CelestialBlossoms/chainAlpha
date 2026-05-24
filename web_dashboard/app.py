@@ -99,6 +99,10 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
+def _sort_live_track_by_push_time(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(items, key=lambda item: _safe_int(item.get("pushed_at")), reverse=True)
+
+
 def normalize_alert(stream_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     item = dict(fields)
     item["id"] = stream_id
@@ -2101,7 +2105,7 @@ def _live_track_refresh_all() -> list[dict[str, Any]]:
                     results.append(track)
             except Exception:
                 pass
-    return results
+    return _sort_live_track_by_push_time(results)
 
 
 def _live_track_broadcast(items: list[dict[str, Any]]) -> None:
@@ -2110,7 +2114,7 @@ def _live_track_broadcast(items: list[dict[str, Any]]) -> None:
         return
     try:
         payload = json.dumps(
-            {"ts": int(time.time()), "items": items, "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
+            {"ts": int(time.time()), "items": _sort_live_track_by_push_time(items), "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
             ensure_ascii=False,
         )
         client.publish(LIVE_TRACK_PUBSUB_CHANNEL, payload)
@@ -2162,7 +2166,7 @@ def alpha_live_track_api(request: Request):
         track = _live_track_load(addr)
         if track:
             items.append(track)
-    items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
+    items = _sort_live_track_by_push_time(items)
     return {
         "items": items,
         "count": len(items),
@@ -2191,6 +2195,7 @@ async def alpha_live_track_events(request: Request):
             track = _live_track_load(addr)
             if track:
                 snapshot.append(track)
+        snapshot = _sort_live_track_by_push_time(snapshot)
         yield sse_message(
             "snapshot",
             {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
@@ -2385,7 +2390,7 @@ def _bottom_live_track_refresh_all() -> list[dict[str, Any]]:
                     results.append(track)
             except Exception:
                 pass
-    return results
+    return _sort_live_track_by_push_time(results)
 
 
 def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
@@ -2394,7 +2399,7 @@ def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
         return
     try:
         payload = json.dumps(
-            {"ts": int(time.time()), "items": items, "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+            {"ts": int(time.time()), "items": _sort_live_track_by_push_time(items), "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
             ensure_ascii=False,
         )
         client.publish(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL, payload)
@@ -2445,7 +2450,7 @@ def bottom_live_track_api(request: Request):
         track = _bottom_live_track_load(addr)
         if track:
             items.append(track)
-    items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
+    items = _sort_live_track_by_push_time(items)
     return {
         "items": items,
         "count": len(items),
@@ -2468,6 +2473,7 @@ async def bottom_live_track_events(request: Request):
             track = _bottom_live_track_load(addr)
             if track:
                 snapshot.append(track)
+        snapshot = _sort_live_track_by_push_time(snapshot)
         yield sse_message(
             "snapshot",
             {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
