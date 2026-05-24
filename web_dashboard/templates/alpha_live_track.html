@@ -118,7 +118,7 @@
       <header class="topbar">
         <div>
           <h1>Deep Alpha 实时追踪</h1>
-          <p class="desc">推送打新CA后实时追踪市值、池子、盈亏（4小时窗口）</p>
+          <p class="desc">推送打新CA后实时追踪市值、池子、盈亏（{{ (alpha_live_track_ttl_sec // 3600) if alpha_live_track_ttl_sec else 24 }}小时窗口）</p>
         </div>
         <div class="nav-actions">
           <div class="live-status">
@@ -212,6 +212,7 @@
     let items = [];
     let deletedItems = [];
     let evtSource = null;
+    let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -261,6 +262,15 @@
       const m = Math.floor((seconds % 3600) / 60);
       if (h > 0) return `${h}h${m}m`;
       return `${m}m`;
+    }
+
+    function formatWindow(seconds) {
+      const n = Math.max(0, Math.round(safeNum(seconds, 86400)));
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      if (h > 0 && m === 0) return `${h}\u5c0f\u65f6\u7a97\u53e3`;
+      if (h > 0) return `${h}h${m}m\u7a97\u53e3`;
+      return `${m}m\u7a97\u53e3`;
     }
 
     function statusBadge(item) {
@@ -315,11 +325,11 @@
 
       const activeCount = active.length;
       const removedCount = removed.length;
-      summaryEl.textContent = `追踪中: ${activeCount} | 已移除: ${removedCount} | 共 ${sorted.length} 个CA | 每30秒自动刷新`;
+      summaryEl.textContent = `追踪中: ${activeCount} | 已移除: ${removedCount} | 共 ${sorted.length} 个CA | ${formatWindow(trackTtlSec)} | 每30秒自动刷新`;
 
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
-        const remaining = Math.max(0, 4 * 3600 - age);
+        const remaining = Math.max(0, trackTtlSec - age);
         const isRemoved = item.status !== "tracking";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
@@ -385,6 +395,7 @@
       evtSource.addEventListener("snapshot", (e) => {
         try {
           const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           items = data.items || [];
           render();
           setConnected(true);
@@ -395,6 +406,7 @@
       evtSource.addEventListener("update", (e) => {
         try {
           const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           mergeItems(data.items || []);
           render();
           lastUpdateEl.textContent = `最后更新 ${new Date().toLocaleTimeString()}`;
@@ -471,6 +483,7 @@
       .then(r => r.json())
       .then(data => {
         items = data.items || [];
+        trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         connectSSE();
         fetchDeletedToday(); // Load deleted today
@@ -487,6 +500,7 @@
         .then(r => r.json())
         .then(data => {
           mergeItems(data.items || []);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           render();
         })
         .catch(() => {});

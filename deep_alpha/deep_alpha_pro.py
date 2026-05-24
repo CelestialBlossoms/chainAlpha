@@ -111,10 +111,10 @@ TRACK_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_TRACK_MAX_AGE_SEC", "3600"))      
 TRACK_ENABLED = os.getenv("DEEP_ALPHA_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 # ---------------------------------------------------------------------------
-# Live tracking for frontend real-time dashboard (4h window)
+# Live tracking for frontend real-time dashboard (24h window)
 # ---------------------------------------------------------------------------
 LIVE_TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_LIVE_TRACK_REDIS_PREFIX", "deep_alpha:live_track")
-LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", "14400"))  # 4h
+LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
 LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
 LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
@@ -797,7 +797,7 @@ def delete_track(address):
 
 
 # ---------------------------------------------------------------------------
-# Live-track Redis helpers (4h frontend tracking)
+# Live-track Redis helpers (24h frontend tracking)
 # ---------------------------------------------------------------------------
 def live_track_redis_key(address):
     return redis_key(LIVE_TRACK_REDIS_PREFIX, address)
@@ -807,7 +807,7 @@ def live_track_index_key():
     return redis_key(LIVE_TRACK_REDIS_PREFIX, "__index__")
 
 
-def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at):
+def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0):
     if not LIVE_TRACK_ENABLED or not address:
         return
     client = get_redis_client()
@@ -824,7 +824,7 @@ def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_
         "current_price": safe_float(entry_price),
         "peak_mcap": safe_float(entry_mcap),
         "peak_mcap_at": int(pushed_at),
-        "pool_liquidity": 0,
+        "pool_liquidity": safe_float(pool_liquidity),
         "holders": 0,
         "volume_5m": 0,
         "volume_1h": 0,
@@ -3528,6 +3528,7 @@ def scan_pro():
                                 entry_mcap=safe_float(s.get("mcap")),
                                 entry_price=live_track_price,
                                 pushed_at=int(time.time()),
+                                pool_liquidity=safe_float(s.get("pool_liquidity")),
                             )
                         publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):

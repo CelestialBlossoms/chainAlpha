@@ -60,7 +60,7 @@ _DASHBOARD_KLINE_CACHE_TABLE_READY = False
 # Live-track configuration (mirrors deep_alpha_pro settings)
 # ---------------------------------------------------------------------------
 LIVE_TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_LIVE_TRACK_REDIS_PREFIX", "deep_alpha:live_track")
-LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", "14400"))  # 4h
+LIVE_TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
 LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_DEAD_MCAP", "6000"))
 LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_MCAP", "10000"))
 LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
@@ -70,7 +70,7 @@ LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4")
 _LIVE_TRACK_BG_STARTED = False
 
 # ---------------------------------------------------------------------------
-# Bottom live-track configuration (8h window for bottom abnormal signals)
+# Bottom live-track configuration (24h window for bottom abnormal signals)
 # ---------------------------------------------------------------------------
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
 BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
@@ -599,6 +599,13 @@ def _fetch_binance_dynamic(address: str) -> dict[str, Any]:
         return {
             "price": _safe_float(data.get("price")),
             "market_cap": _safe_float(data.get("marketCap")),
+            "pool_liquidity": _safe_float(
+                data.get("poolLiquidity")
+                or data.get("pool_liquidity")
+                or data.get("liquidity")
+                or data.get("liquidityUsd")
+                or data.get("poolTotalLiquidity")
+            ),
             "holders": _safe_int(data.get("holders")),
             "volume_5m": _safe_float(data.get("volume5m")),
             "volume_1h": _safe_float(data.get("volume1h")),
@@ -2028,6 +2035,7 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
     holders = _safe_int(dynamic.get("holders"))
     volume_5m = _safe_float(dynamic.get("volume_5m"))
     volume_1h = _safe_float(dynamic.get("volume_1h"))
+    pool_liquidity = _safe_float(dynamic.get("pool_liquidity")) or _safe_float(track.get("pool_liquidity"))
     prev_peak_mcap = _safe_float(track.get("peak_mcap"))
     peak_mcap = prev_peak_mcap
     peak_mcap_at = _safe_int(track.get("peak_mcap_at"))
@@ -2042,6 +2050,7 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
         "current_price": current_price,
         "peak_mcap": peak_mcap,
         "peak_mcap_at": peak_mcap_at or int(track.get("pushed_at") or now_ts),
+        "pool_liquidity": pool_liquidity,
         "holders": holders,
         "volume_5m": volume_5m,
         "volume_1h": volume_1h,
@@ -2100,7 +2109,10 @@ def _live_track_broadcast(items: list[dict[str, Any]]) -> None:
     if client is None or not items:
         return
     try:
-        payload = json.dumps({"ts": int(time.time()), "items": items}, ensure_ascii=False)
+        payload = json.dumps(
+            {"ts": int(time.time()), "items": items, "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
+            ensure_ascii=False,
+        )
         client.publish(LIVE_TRACK_PUBSUB_CHANNEL, payload)
     except Exception:
         pass
@@ -2135,7 +2147,11 @@ def start_live_track_bg():
 
 @app.get("/alpha-live-track", response_class=HTMLResponse)
 def alpha_live_track_page(request: Request):
-    return templates.TemplateResponse(request, "alpha_live_track.html", {})
+    return templates.TemplateResponse(
+        request,
+        "alpha_live_track.html",
+        {"alpha_live_track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
+    )
 
 
 @app.get("/api/alpha-live-track")
@@ -2147,7 +2163,12 @@ def alpha_live_track_api(request: Request):
         if track:
             items.append(track)
     items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
-    return {"items": items, "count": len(items), "ts": int(time.time())}
+    return {
+        "items": items,
+        "count": len(items),
+        "ts": int(time.time()),
+        "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC,
+    }
 
 
 @app.get("/api/alpha-live-track/deleted-today")
@@ -2170,7 +2191,10 @@ async def alpha_live_track_events(request: Request):
             track = _live_track_load(addr)
             if track:
                 snapshot.append(track)
-        yield sse_message("snapshot", {"items": snapshot, "ts": int(time.time())})
+        yield sse_message(
+            "snapshot",
+            {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
+        )
 
         # Subscribe to pubsub for real-time updates
         pubsub = client.pubsub()
@@ -2369,7 +2393,10 @@ def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
     if client is None or not items:
         return
     try:
-        payload = json.dumps({"ts": int(time.time()), "items": items}, ensure_ascii=False)
+        payload = json.dumps(
+            {"ts": int(time.time()), "items": items, "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+            ensure_ascii=False,
+        )
         client.publish(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL, payload)
     except Exception:
         pass
@@ -2403,7 +2430,11 @@ def start_bottom_live_track_bg():
 
 @app.get("/bottom-live-track", response_class=HTMLResponse)
 def bottom_live_track_page(request: Request):
-    return templates.TemplateResponse(request, "bottom_live_track.html", {})
+    return templates.TemplateResponse(
+        request,
+        "bottom_live_track.html",
+        {"bottom_live_track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+    )
 
 
 @app.get("/api/bottom-live-track")
@@ -2415,7 +2446,12 @@ def bottom_live_track_api(request: Request):
         if track:
             items.append(track)
     items.sort(key=lambda item: int(item.get("pushed_at") or 0), reverse=True)
-    return {"items": items, "count": len(items), "ts": int(time.time())}
+    return {
+        "items": items,
+        "count": len(items),
+        "ts": int(time.time()),
+        "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC,
+    }
 
 
 @app.get("/api/bottom-live-track/events")
@@ -2432,7 +2468,10 @@ async def bottom_live_track_events(request: Request):
             track = _bottom_live_track_load(addr)
             if track:
                 snapshot.append(track)
-        yield sse_message("snapshot", {"items": snapshot, "ts": int(time.time())})
+        yield sse_message(
+            "snapshot",
+            {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+        )
 
         pubsub = client.pubsub()
         try:

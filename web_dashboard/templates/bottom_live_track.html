@@ -128,7 +128,7 @@
       <header class="topbar">
         <div>
           <h1>底部异动 实时追踪</h1>
-          <p class="desc">底部异动推送CA后实时追踪市值、池子、盈亏（24小时窗口）</p>
+          <p class="desc">底部异动推送CA后实时追踪市值、池子、盈亏（{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时窗口）</p>
         </div>
         <div class="nav-actions">
           <div class="live-status">
@@ -187,7 +187,7 @@
     const lastUpdateEl = document.getElementById("last-update");
     let items = [];
     let evtSource = null;
-    const TRACK_HOURS = 24;
+    let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -239,6 +239,15 @@
       return `${m}m`;
     }
 
+    function formatWindow(seconds) {
+      const n = Math.max(0, Math.round(safeNum(seconds, 86400)));
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      if (h > 0 && m === 0) return `${h}\u5c0f\u65f6\u7a97\u53e3`;
+      if (h > 0) return `${h}h${m}m\u7a97\u53e3`;
+      return `${m}m\u7a97\u53e3`;
+    }
+
     function statusBadge(item) {
       const status = item.status || "tracking";
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">\u5df2\u79fb\u9664</span>`;
@@ -288,11 +297,11 @@
       const now = Math.floor(Date.now() / 1000);
 
       emptyEl.hidden = sorted.length > 0;
-      summaryEl.textContent = `\u8ffd\u8e2a\u4e2d: ${active.length} | \u5df2\u79fb\u9664: ${removed.length} | \u5171 ${sorted.length} \u4e2aCA | 24\u5c0f\u65f6\u7a97\u53e3 | \u6bcf30\u79d2\u81ea\u52a8\u5237\u65b0`;
+      summaryEl.textContent = `\u8ffd\u8e2a\u4e2d: ${active.length} | \u5df2\u79fb\u9664: ${removed.length} | \u5171 ${sorted.length} \u4e2aCA | ${formatWindow(trackTtlSec)} | \u6bcf30\u79d2\u81ea\u52a8\u5237\u65b0`;
 
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
-        const remaining = Math.max(0, TRACK_HOURS * 3600 - age);
+        const remaining = Math.max(0, trackTtlSec - age);
         const isRemoved = item.status !== "tracking";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
@@ -367,6 +376,7 @@
       evtSource.addEventListener("snapshot", (e) => {
         try {
           const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           items = data.items || [];
           render();
           setConnected(true);
@@ -377,6 +387,7 @@
       evtSource.addEventListener("update", (e) => {
         try {
           const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           mergeItems(data.items || []);
           render();
           lastUpdateEl.textContent = `\u6700\u540e\u66f4\u65b0 ${new Date().toLocaleTimeString()}`;
@@ -408,6 +419,7 @@
       .then(r => r.json())
       .then(data => {
         items = data.items || [];
+        trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         connectSSE();
       })
@@ -422,6 +434,7 @@
         .then(r => r.json())
         .then(data => {
           mergeItems(data.items || []);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           render();
         })
         .catch(() => {});

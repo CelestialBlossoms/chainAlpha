@@ -162,7 +162,7 @@ BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USE
 _POST_PUSH_MONITOR_STARTED = False
 
 # ---------------------------------------------------------------------------
-# Live tracking for frontend real-time dashboard (8h window for bottom signals)
+# Live tracking for frontend real-time dashboard (24h window for bottom signals)
 # ---------------------------------------------------------------------------
 BOTTOM_LIVE_TRACK_ENABLED = os.getenv("BOTTOM_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
@@ -2058,7 +2058,7 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
 
 
 # ---------------------------------------------------------------------------
-# Bottom live-track Redis helpers (8h frontend tracking)
+# Bottom live-track Redis helpers (24h frontend tracking)
 # ---------------------------------------------------------------------------
 def _bottom_live_track_key(address: str) -> str:
     return redis_key(BOTTOM_LIVE_TRACK_REDIS_PREFIX, address)
@@ -2076,7 +2076,7 @@ def start_bottom_live_tracking(
     signal_type: str = "",
     pool_liquidity: float = 0,
 ) -> None:
-    """Store a bottom-abnormal CA in Redis for 8h real-time tracking."""
+    """Store a bottom-abnormal CA in Redis for the configured real-time tracking window."""
     if not BOTTOM_LIVE_TRACK_ENABLED or not address:
         return
     client = get_redis_client()
