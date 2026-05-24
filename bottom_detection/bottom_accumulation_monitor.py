@@ -56,11 +56,11 @@ CHAIN = "sol"
 _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = False
 TREND_INTERVALS = tuple(
     item.strip()
-    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "5m")).split(",")
+    for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1m,5m,1h,6h,24h")).split(",")
     if item.strip()
 )
 TREND_INTERVAL = TREND_INTERVALS[0] if TREND_INTERVALS else "5m"
-TREND_INTERVAL_SCHEDULES_RAW = os.getenv("BOTTOM_TREND_INTERVAL_SCHEDULES", "1m:60,5m:120,1h:300")
+TREND_INTERVAL_SCHEDULES_RAW = os.getenv("BOTTOM_TREND_INTERVAL_SCHEDULES", "1m:60,5m:120,1h:300,6h:600,24h:900")
 TREND_PRIMARY_INTERVAL = os.getenv("BOTTOM_TREND_PRIMARY_INTERVAL", "1m")
 TREND_CROSS_WINDOW_DEDUP_SEC = int(os.getenv("BOTTOM_TREND_CROSS_WINDOW_DEDUP_SEC", "180"))
 TREND_SCHEDULER_IDLE_SLEEP_SEC = float(os.getenv("BOTTOM_TREND_SCHEDULER_IDLE_SLEEP_SEC", "2"))
@@ -157,6 +157,7 @@ POST_PUSH_MAX_REPLIES = int(os.getenv("BOTTOM_POST_PUSH_MAX_REPLIES", "3"))
 BINANCE_SOL_CHAIN_ID = os.getenv("BINANCE_SOL_CHAIN_ID", "CT_501")
 BINANCE_WEB3_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
 BINANCE_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info/ai"
+BINANCE_TOKEN_META_URL = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/dex/market/token/meta/info/ai"
 BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USER_AGENT}
 _POST_PUSH_MONITOR_STARTED = False
@@ -785,9 +786,8 @@ def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
 
 
 def fetch_token_metadata(address: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    info = run_gmgn(["token", "info", "--chain", CHAIN, "--address", address], timeout=75)
-    sec = run_gmgn(["token", "security", "--chain", CHAIN, "--address", address], timeout=75)
-    return (info if isinstance(info, dict) else {}, sec if isinstance(sec, dict) else {})
+    info = fetch_binance_token_metadata(address)
+    return (info if isinstance(info, dict) else {}, {})
 
 
 def fetch_token_pool(address: str) -> dict[str, Any] | list[Any] | None:
@@ -1100,25 +1100,46 @@ def initial_kline_start_ts(token: dict[str, Any], end_ts: int) -> int:
     return end_ts - KLINE_LOOKBACK_SEC
 
 
+def binance_interval_from_resolution(resolution: str) -> str:
+    return {
+        "1m": "1min",
+        "1min": "1min",
+        "5m": "5min",
+        "5min": "5min",
+        "15m": "15min",
+        "15min": "15min",
+        "30m": "30min",
+        "30min": "30min",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d",
+    }.get(str(resolution or "").lower(), resolution or "1min")
+
+
 def fetch_kline_range(address: str, resolution: str, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
-    data = run_gmgn(
-        [
-            "market",
-            "kline",
-            "--chain",
-            CHAIN,
-            "--address",
-            address,
-            "--resolution",
-            resolution,
-            "--from",
-            str(start_ts),
-            "--to",
-            str(end_ts),
-        ],
-        timeout=75,
-    )
-    return extract_kline_rows(data)
+    if not address or start_ts <= 0 or end_ts <= 0 or end_ts <= start_ts:
+        return []
+    try:
+        resp = requests.get(
+            BINANCE_KLINE_URL,
+            params={
+                "address": address,
+                "platform": "solana",
+                "interval": binance_interval_from_resolution(resolution),
+                "pm": "p",
+                "from": max(0, int(start_ts)) * 1000,
+                "to": max(0, int(end_ts)) * 1000,
+            },
+            headers=BINANCE_HEADERS,
+            timeout=25,
+        )
+        if not resp.ok:
+            print(f"{address[:8]} binance kline range failed: status={resp.status_code}")
+            return []
+        return parse_binance_kline_rows(resp.json().get("data"))
+    except Exception as exc:
+        print(f"{address[:8]} binance kline range exception: {exc}")
+        return []
 
 
 def fetch_kline(address: str, resolution: str, token: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1263,10 +1284,11 @@ def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: 
         for key, value in source.items():
             if key not in merged or merged.get(key) in (None, "", 0):
                 merged[key] = value
-    # Flatten nested price object from gmgn token-info (e.g. {"price": "0.0068", "price_1m": "..."})
+    # Flatten nested price object from legacy token-info payloads.
     price_val = merged.get("price")
     if isinstance(price_val, dict):
         merged["price"] = price_val.get("price") or price_val.get("price_1m") or 0
+    merged["_binance_info"] = info
     merged["_gmgn_info"] = info
     merged["_gmgn_security"] = security
     return merged
@@ -2163,6 +2185,79 @@ def _first_number_by_keys(payload: Any, keys: tuple[str, ...]) -> float:
     return 0.0
 
 
+def _first_value_by_keys(payload: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                return value
+        for value in payload.values():
+            found = _first_value_by_keys(value, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _first_value_by_keys(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def fetch_binance_token_meta(address: str) -> dict[str, Any]:
+    if not address:
+        return {}
+    try:
+        resp = requests.get(
+            BINANCE_TOKEN_META_URL,
+            params={"chainId": BINANCE_SOL_CHAIN_ID, "contractAddress": address},
+            headers=BINANCE_HEADERS,
+            timeout=12,
+        )
+        if not resp.ok:
+            return {}
+        data = resp.json().get("data") or {}
+        if not isinstance(data, dict):
+            return {}
+        preview = data.get("previewLink") if isinstance(data.get("previewLink"), dict) else {}
+        website = next(iter(preview.get("website") or []), "")
+        twitter = next(iter(preview.get("x") or []), "")
+        telegram = next(iter(preview.get("tg") or []), "")
+        create_time = _first_value_by_keys(data, ("createTime", "createdTime", "created_at", "creationTimestamp"))
+        return {
+            "address": address,
+            "token_address": address,
+            "data_source": "binance_meta",
+            "name": data.get("name") or "",
+            "symbol": data.get("symbol") or "",
+            "decimals": to_int(data.get("decimals")),
+            "logo": data.get("icon") or data.get("logo") or "",
+            "description": data.get("description") or "",
+            "website": website,
+            "twitter": twitter,
+            "telegram": telegram,
+            "creator": data.get("creatorAddress") or "",
+            "created_at": parse_timestamp(create_time),
+            "creation_timestamp": parse_timestamp(create_time),
+            "token_created_at": parse_timestamp(create_time),
+            "audit_info": data.get("auditInfo") if isinstance(data.get("auditInfo"), dict) else {},
+        }
+    except Exception as exc:
+        print(f"{address[:8]} binance meta fetch failed: {exc}")
+        return {}
+
+
+def fetch_binance_token_metadata(address: str) -> dict[str, Any]:
+    meta = fetch_binance_token_meta(address)
+    dynamic = fetch_binance_dynamic_metrics(address)
+    merged = dict(meta)
+    for key, value in dynamic.items():
+        if key not in merged or merged.get(key) in (None, "", 0, {}):
+            merged[key] = value
+    if meta or dynamic:
+        merged["data_source"] = "binance_meta_dynamic"
+    return merged
+
+
 def fetch_binance_dynamic_metrics(address: str) -> dict[str, Any]:
     if not address:
         return {}
@@ -2184,15 +2279,50 @@ def fetch_binance_dynamic_metrics(address: str) -> dict[str, Any]:
             ("liquidity", "liquidityUsd", "liquidity_usd", "poolLiquidity", "pool_liquidity", "totalLiquidity"),
         )
         price = _first_number_by_keys(data, ("price", "tokenPrice", "priceUsd", "price_usd"))
+        fdv = _first_number_by_keys(data, ("fdv", "fullyDilutedValuation", "fully_diluted_valuation"))
+        holders = to_int(_first_value_by_keys(data, ("holders", "holderCount", "holder_count")))
+        launch_time = _first_value_by_keys(
+            data,
+            ("launchTime", "launch_time", "openTimestamp", "open_timestamp", "pairCreatedAt", "pair_created_at"),
+        )
+        created_time = _first_value_by_keys(
+            data,
+            ("createTime", "createdTime", "created_at", "creationTimestamp", "creation_timestamp"),
+        )
+        circulating_supply = _first_number_by_keys(data, ("circulatingSupply", "circulating_supply"))
+        total_supply = _first_number_by_keys(data, ("totalSupply", "total_supply", "supply"))
+        ath_mcap = _first_number_by_keys(
+            data,
+            ("historyHighestMarketCap", "history_highest_market_cap", "athMarketCap", "ath_market_cap"),
+        )
         return {
+            "address": address,
+            "data_source": "binance_dynamic",
             "price": price,
             "market_cap": market_cap,
+            "usd_market_cap": market_cap,
+            "mcap": market_cap,
+            "fdv": fdv or market_cap,
+            "fully_diluted_valuation": fdv or market_cap,
+            "liquidity": liquidity,
             "pool_liquidity": liquidity,
             "pool_mcap_ratio": liquidity / market_cap if liquidity > 0 and market_cap > 0 else 0.0,
-            "holders": to_int(data.get("holders") or data.get("holderCount")),
-            "volume_5m": to_float(data.get("volume5m")),
-            "volume_1h": to_float(data.get("volume1h")),
-            "symbol": data.get("symbol") or "",
+            "holders": holders,
+            "holder_count": holders,
+            "stat": {"holder_count": holders},
+            "volume_5m": _first_number_by_keys(data, ("volume5m", "volume_5m")),
+            "volume_1h": _first_number_by_keys(data, ("volume1h", "volume_1h")),
+            "volume_6h": _first_number_by_keys(data, ("volume6h", "volume_6h")),
+            "volume_24h": _first_number_by_keys(data, ("volume24h", "volume_24h")),
+            "symbol": _first_value_by_keys(data, ("symbol", "ticker")) or "",
+            "name": _first_value_by_keys(data, ("name", "tokenName", "token_name")) or "",
+            "open_timestamp": parse_timestamp(launch_time),
+            "launch_timestamp": parse_timestamp(launch_time),
+            "created_at": parse_timestamp(created_time) or parse_timestamp(launch_time),
+            "creation_timestamp": parse_timestamp(created_time),
+            "circulating_supply": circulating_supply,
+            "total_supply": total_supply,
+            "history_highest_market_cap": ath_mcap,
         }
     except Exception as exc:
         print(f"{address[:8]} binance dynamic fetch failed: {exc}")
