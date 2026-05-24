@@ -2431,7 +2431,6 @@ def _bottom_live_track_bg_loop() -> None:
 
 @app.on_event("startup")
 def start_bottom_live_track_bg():
-    return
     global _BOTTOM_LIVE_TRACK_BG_STARTED
     if _BOTTOM_LIVE_TRACK_BG_STARTED:
         return
@@ -2444,7 +2443,6 @@ def start_bottom_live_track_bg():
 
 @app.get("/bottom-live-track", response_class=HTMLResponse)
 def bottom_live_track_page(request: Request):
-    raise HTTPException(status_code=410, detail="Bottom live-track frontend has been removed.")
     return templates.TemplateResponse(
         request,
         "bottom_live_track.html",
@@ -2454,7 +2452,6 @@ def bottom_live_track_page(request: Request):
 
 @app.get("/api/bottom-live-track")
 def bottom_live_track_api(request: Request):
-    raise HTTPException(status_code=410, detail="Bottom live-track API has been removed.")
     addresses = _bottom_live_track_list_addresses()
     items = []
     for addr in addresses:
@@ -2472,7 +2469,6 @@ def bottom_live_track_api(request: Request):
 
 @app.get("/api/bottom-live-track/events")
 async def bottom_live_track_events(request: Request):
-    raise HTTPException(status_code=410, detail="Bottom live-track API has been removed.")
     async def generator():
         client = get_redis_client()
         if client is None:

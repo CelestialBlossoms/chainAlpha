@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>底部异动 实时追踪</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <style>
+    .live-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #9ca3af;
+    }
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    .live-dot.disconnected { background: #ef4444; animation: none; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    .track-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .track-table th {
+      text-align: left;
+      padding: 8px 10px;
+      font-weight: 600;
+      color: #9ca3af;
+      border-bottom: 1px solid #374151;
+      white-space: nowrap;
+    }
+    .track-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #1f2937;
+      vertical-align: middle;
+    }
+    .track-table tr:hover { background: #1f293740; }
+    .track-table tr.removed { opacity: 0.45; }
+    .track-table tr.removed td { text-decoration: line-through; text-decoration-color: #ef444480; }
+
+    .pnl-positive { color: #22c55e; font-weight: 700; }
+    .pnl-negative { color: #ef4444; font-weight: 700; }
+    .pnl-zero { color: #9ca3af; }
+
+    .mcap-bar {
+      height: 4px;
+      border-radius: 2px;
+      background: #374151;
+      margin-top: 4px;
+      overflow: hidden;
+    }
+    .mcap-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.6s ease;
+    }
+    .mcap-bar-fill.gain { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .mcap-bar-fill.loss { background: linear-gradient(90deg, #ef4444, #f87171); }
+
+    .token-symbol {
+      font-weight: 700;
+      color: #e5e7eb;
+      font-size: 14px;
+    }
+    .token-addr {
+      font-size: 11px;
+      color: #6b7280;
+      font-family: 'Courier New', monospace;
+    }
+    .signal-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      background: #78350f;
+      color: #fbbf24;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      margin-left: 4px;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .status-badge.tracking { background: #064e3b; color: #34d399; }
+    .status-badge.removed { background: #7f1d1d; color: #fca5a5; }
+    .status-badge.expired { background: #78350f; color: #fbbf24; }
+
+    .countdown {
+      font-size: 11px;
+      color: #6b7280;
+    }
+    .vol-chip {
+      display: inline-block;
+      padding: 1px 5px;
+      background: #1f293780;
+      border-radius: 3px;
+      font-size: 11px;
+      color: #9ca3af;
+      margin-right: 4px;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #6b7280;
+      font-size: 15px;
+    }
+    .empty-state .emoji { font-size: 40px; margin-bottom: 12px; display: block; }
+    .last-update {
+      font-size: 11px;
+      color: #4b5563;
+      text-align: right;
+      padding: 4px 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="wrap">
+      <header class="topbar">
+        <div>
+          <h1>底部异动 实时追踪</h1>
+          <p class="desc">底部异动推送CA后实时追踪市值、池子、盈亏（{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时窗口）</p>
+        </div>
+        <div class="nav-actions">
+          <div class="live-status">
+            <span id="live-dot" class="live-dot"></span>
+            <span id="live-label">连接中...</span>
+          </div>
+          <a class="mini-link" href="/bottom-push-ca">底部推送 CA</a>
+          <a class="mini-link" href="/onchain-guides">链上交易指南</a>
+        </div>
+      </header>
+
+      <section class="controls push-controls">
+        <div id="track-summary" class="watch-summary">加载中...</div>
+      </section>
+
+      <section class="watchlist-table-wrap card">
+        <table class="track-table">
+          <thead>
+            <tr>
+              <th>Token / 信号</th>
+              <th>推送时间</th>
+              <th>推送市值</th>
+              <th>当前市值</th>
+              <th>盈亏</th>
+              <th>巅峰市值时间</th>
+              <th>推送后最高盈利</th>
+              <th>推送后最高市值</th>
+              <th>池子</th>
+              <th>Holders</th>
+              <th>已追踪</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="track-rows"></tbody>
+        </table>
+        <div id="track-empty" class="empty-state" hidden>
+          <span class="emoji">🔍</span>
+          当前没有正在追踪的底部异动CA<br>
+          <small>等待 Bottom Accumulation Monitor 推送异动信号...</small>
+        </div>
+        <div id="last-update" class="last-update"></div>
+      </section>
+
+    </div>
+  </div>
+
+  <script>
+    const rowsEl = document.getElementById("track-rows");
+    const emptyEl = document.getElementById("track-empty");
+    const summaryEl = document.getElementById("track-summary");
+    const liveDot = document.getElementById("live-dot");
+    const liveLabel = document.getElementById("live-label");
+    const lastUpdateEl = document.getElementById("last-update");
+    let items = [];
+    let evtSource = null;
+    let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
+
+    function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+    function formatTime(v) {
+      const n = safeNum(v);
+      if (n <= 0) return "-";
+      const date = new Date(n * 1000);
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const h = String(date.getHours()).padStart(2, '0');
+      const m = String(date.getMinutes()).padStart(2, '0');
+      const s = String(date.getSeconds()).padStart(2, '0');
+      return `${month}-${day} ${h}:${m}:${s}`;
+    }
+
+    function htmlEscape(v) {
+      return String(v == null ? "" : v)
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+
+    function formatCap(v) {
+      const n = safeNum(v);
+      const s = n < 0 ? "-" : "";
+      const a = Math.abs(n);
+      if (a >= 1e9) return `${s}$${(a/1e9).toFixed(2)}B`;
+      if (a >= 1e6) return `${s}$${(a/1e6).toFixed(2)}M`;
+      if (a >= 1e3) return `${s}$${(a/1e3).toFixed(1)}K`;
+      return `${s}$${Math.round(a)}`;
+    }
+
+    function formatPnl(v) {
+      const n = safeNum(v);
+      return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+    }
+
+    function pnlClass(v) {
+      const n = safeNum(v);
+      if (n > 0.5) return "pnl-positive";
+      if (n < -0.5) return "pnl-negative";
+      return "pnl-zero";
+    }
+
+    function formatDuration(seconds) {
+      seconds = Math.max(0, Math.round(seconds));
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      if (h > 0) return `${h}h${m}m`;
+      return `${m}m`;
+    }
+
+    function formatWindow(seconds) {
+      const n = Math.max(0, Math.round(safeNum(seconds, 86400)));
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      if (h > 0 && m === 0) return `${h}\u5c0f\u65f6\u7a97\u53e3`;
+      if (h > 0) return `${h}h${m}m\u7a97\u53e3`;
+      return `${m}m\u7a97\u53e3`;
+    }
+
+    function statusBadge(item) {
+      const status = item.status || "tracking";
+      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">\u5df2\u79fb\u9664</span>`;
+      if (status === "expired") return `<span class="status-badge expired">\u5df2\u8fc7\u671f</span>`;
+      return `<span class="status-badge tracking">\u8ffd\u8e2a\u4e2d</span>`;
+    }
+
+    function mcapBarHtml(entry, current) {
+      const e = safeNum(entry);
+      const c = safeNum(current);
+      if (e <= 0) return "";
+      const ratio = Math.min(2, Math.max(0, c / e));
+      const pct = Math.round(ratio * 50);
+      const cls = c >= e ? "gain" : "loss";
+      return `<div class="mcap-bar"><div class="mcap-bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+    }
+
+    function gmgnUrl(item) {
+      return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`;
+    }
+
+    function binanceUrl(item) {
+      return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`;
+    }
+
+    async function copyCA(addr) {
+      if (!addr) return;
+      try {
+        await navigator.clipboard.writeText(addr);
+        return;
+      } catch (_) {}
+      // Fallback for non-HTTPS contexts
+      const area = document.createElement("textarea");
+      area.value = addr;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+
+    function render() {
+      const active = items.filter(i => i.status === "tracking");
+      const removed = items.filter(i => i.status !== "tracking");
+      const sorted = [...active, ...removed];
+      const now = Math.floor(Date.now() / 1000);
+
+      emptyEl.hidden = sorted.length > 0;
+      summaryEl.textContent = `\u8ffd\u8e2a\u4e2d: ${active.length} | \u5df2\u79fb\u9664: ${removed.length} | \u5171 ${sorted.length} \u4e2aCA | ${formatWindow(trackTtlSec)} | \u6bcf30\u79d2\u81ea\u52a8\u5237\u65b0`;
+
+      rowsEl.innerHTML = sorted.map(item => {
+        const age = now - safeNum(item.pushed_at, now);
+        const remaining = Math.max(0, trackTtlSec - age);
+        const isRemoved = item.status !== "tracking";
+        const rowClass = isRemoved ? "removed" : "";
+        const pnl = safeNum(item.pnl_pct);
+        const signalType = item.signal_type || "";
+
+        // Calculate peak/max PnL since pushed
+        const entryMcap = safeNum(item.entry_mcap);
+        const peakMcap = safeNum(item.peak_mcap);
+        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0.0;
+
+        return `
+          <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
+            <td>
+              <div class="token-symbol">
+                $${htmlEscape(item.symbol || "UNKNOWN")}
+                ${signalType ? `<span class="signal-chip">${htmlEscape(signalType)}</span>` : ""}
+              </div>
+              <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
+            </td>
+            <td><span>${formatTime(item.pushed_at)}</span></td>
+            <td><b>${formatCap(item.entry_mcap)}</b></td>
+            <td>
+              <b>${formatCap(item.current_mcap)}</b>
+              ${mcapBarHtml(item.entry_mcap, item.current_mcap)}
+            </td>
+            <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
+            <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
+            <td><b class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</b></td>
+            <td><b>${formatCap(item.peak_mcap)}</b></td>
+            <td>${formatCap(item.pool_liquidity)}</td>
+            <td>${safeNum(item.holders) || "-"}</td>
+            <td>
+              <span>${formatDuration(age)}</span>
+              ${!isRemoved ? `<div class="countdown">\u5269\u4f59 ${formatDuration(remaining)}</div>` : ""}
+            </td>
+            <td>${statusBadge(item)}</td>
+            <td>
+              <div class="card-actions">
+                <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">\u590d\u5236</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
+                <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function mergeItems(newItems) {
+      const byAddr = {};
+      for (const item of items) byAddr[item.address] = item;
+      for (const item of newItems) byAddr[item.address] = item;
+      const now = Math.floor(Date.now() / 1000);
+      items = Object.values(byAddr).filter(item => {
+        if (item.status === "removed") {
+          return now - safeNum(item.last_updated) < 120;
+        }
+        return true;
+      });
+      items.sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
+    }
+
+    function sortByPushTime(list) {
+      return (list || []).slice().sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
+    }
+
+    function setConnected(ok) {
+      liveDot.className = ok ? "live-dot" : "live-dot disconnected";
+      liveLabel.textContent = ok ? "\u5b9e\u65f6\u8fde\u63a5" : "\u5df2\u65ad\u5f00";
+    }
+
+    function connectSSE() {
+      if (evtSource) { try { evtSource.close(); } catch (_) {} }
+      evtSource = new EventSource("/api/bottom-live-track/events");
+
+      evtSource.addEventListener("snapshot", (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          items = sortByPushTime(data.items);
+          render();
+          setConnected(true);
+          lastUpdateEl.textContent = `\u521d\u59cb\u5feb\u7167 ${new Date().toLocaleTimeString()}`;
+        } catch (_) {}
+      });
+
+      evtSource.addEventListener("update", (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          mergeItems(data.items || []);
+          render();
+          lastUpdateEl.textContent = `\u6700\u540e\u66f4\u65b0 ${new Date().toLocaleTimeString()}`;
+        } catch (_) {}
+      });
+
+      evtSource.addEventListener("error", (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          console.warn("[BottomLiveTrack] SSE error:", data.message);
+        } catch (_) {}
+      });
+
+      evtSource.onerror = () => {
+        setConnected(false);
+        liveLabel.textContent = "\u91cd\u8fde\u4e2d...";
+        setTimeout(() => {
+          if (evtSource && evtSource.readyState === EventSource.CLOSED) {
+            connectSSE();
+          }
+        }, 5000);
+      };
+
+      evtSource.onopen = () => setConnected(true);
+    }
+
+    // Initial load via REST, then switch to SSE
+    fetch("/api/bottom-live-track")
+      .then(r => r.json())
+      .then(data => {
+        items = sortByPushTime(data.items);
+        trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+        render();
+        connectSSE();
+      })
+      .catch(err => {
+        summaryEl.textContent = `\u52a0\u8f7d\u5931\u8d25: ${err.message}`;
+        connectSSE();
+      });
+
+    // Fallback: poll every 35s
+    setInterval(() => {
+      fetch("/api/bottom-live-track")
+        .then(r => r.json())
+        .then(data => {
+          mergeItems(data.items || []);
+          trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          render();
+        })
+        .catch(() => {});
+    }, 35000);
+  </script>
+</body>
+</html>
