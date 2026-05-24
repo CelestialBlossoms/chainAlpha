@@ -70,7 +70,7 @@ TREND_ORDER_BYS = tuple(
     if item.strip()
 )
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
-MAX_TOKENS = int(os.getenv("BOTTOM_MAX_TOKENS", str(TREND_LIMIT)))
+MAX_TOKENS = int(os.getenv("BOTTOM_MAX_TOKENS", "0"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
 RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "100"))
@@ -4086,6 +4086,12 @@ def prune_recent_seen(recent_seen: dict[str, float], ttl_sec: int) -> None:
         recent_seen.pop(address, None)
 
 
+def apply_token_limit(tokens: list[dict[str, Any]], max_tokens: int) -> list[dict[str, Any]]:
+    if max_tokens <= 0:
+        return tokens
+    return tokens[:max_tokens]
+
+
 def scan_once(
     args: argparse.Namespace,
     intervals: tuple[str, ...] | list[str] | None = None,
@@ -4127,8 +4133,12 @@ def scan_once(
                     continue
                 filtered_trending.append(token)
             prefiltered_trending = filtered_trending
+
+    selected_trending = apply_token_limit(prefiltered_trending, args.max_tokens)
+
+    if recent_seen is not None:
         seen_at = time.monotonic()
-        for token in prefiltered_trending[: args.max_tokens]:
+        for token in selected_trending:
             address = token_address(token)
             if address:
                 recent_seen[address] = seen_at
@@ -4138,6 +4148,7 @@ def scan_once(
         f"mode={mode_name} "
         f"intervals={','.join(active_intervals)} "
         f"trending={len(trending_tokens)} prefiltered={len(prefiltered_trending)} "
+        f"selected={len(selected_trending)} "
         f"prefilter_skip={prefiltered_skipped} watchlist={len(watchlist_tokens)} "
         f"alpha_abnormal={len(alpha_abnormal_tokens)} "
         f"dedupe_skip={dedupe_skipped}"
@@ -4266,9 +4277,9 @@ def scan_once(
         time.sleep(args.token_delay)
 
     # ========================================================================
-    # Phase 2: Process trending tokens (deduped from watchlist, max_tokens applies)
+    # Phase 2: Process trending tokens (deduped from watchlist; max_tokens <= 0 means no limit)
     # ========================================================================
-    for token in prefiltered_trending[: args.max_tokens]:
+    for token in selected_trending:
         try:
             address = token_address(token)
             if token.get("blacklisted") or is_watchlist_blacklisted(address):
@@ -4343,7 +4354,7 @@ def scan_once(
     # ========================================================================
     # Phase 3: Alpha abnormal tokens (deduped from both watchlist and trending)
     # ========================================================================
-    all_processed = watchlist_addresses | {token_address(t) for t in prefiltered_trending[: args.max_tokens] if token_address(t)}
+    all_processed = watchlist_addresses | {token_address(t) for t in selected_trending if token_address(t)}
     for token in alpha_abnormal_tokens:
         if token_address(token) in all_processed:
             continue
@@ -4354,7 +4365,7 @@ def scan_once(
             print(f"{token_label(token)} alpha_abnormal failed: {exc}")
         time.sleep(args.token_delay)
 
-    total_tokens = len(watchlist_tokens) + min(len(prefiltered_trending), args.max_tokens)
+    total_tokens = len(watchlist_tokens) + len(selected_trending)
     print(f"scan_id={scan_id} processed={processed}/{total_tokens} skipped={skipped}")
 
 
@@ -4561,7 +4572,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true", help="Run forever.")
     parser.add_argument("--notify", action="store_true", help="Send Telegram messages for new signals.")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC, help="Watch interval seconds.")
-    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
+    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS, help="Max trending tokens per scan; <=0 means no limit.")
     parser.add_argument("--token-delay", type=float, default=0.5, help="Delay between holder calls.")
     parser.add_argument("--min-mcap", type=float, default=MIN_MCAP_USD, help="Skip tokens below this market cap in USD.")
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
