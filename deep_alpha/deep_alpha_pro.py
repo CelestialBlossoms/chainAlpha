@@ -22,6 +22,8 @@ for _stream in (sys.stdout, sys.stderr):
 # 配置
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 0
+DEEP_ALPHA_PRO_ENABLED = os.getenv("DEEP_ALPHA_PRO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEEP_ALPHA_PUSH_ENABLED = os.getenv("DEEP_ALPHA_PUSH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 TREND_INTERVALS = ["1m"]
 TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "").split(",") if item.strip()]
 LOW_MCAP_STRICT_USD = 10_000
@@ -313,6 +315,9 @@ def trend_platform_args():
     return " ".join(f"--platform {shell_quote(platform)}" for platform in TREND_PLATFORMS)
 
 def send_tg_alert(msg, *, ca=None, extra=None):
+    if not DEEP_ALPHA_PUSH_ENABLED:
+        print("Deep Alpha push disabled; skip TG alert.")
+        return None
     stream_extra = dict(extra or {})
     if not TG_BOT_TOKEN or "你的" in TG_BOT_TOKEN: 
         print(f"--- TG ALERT ---\n{msg}\n----------------")
@@ -341,6 +346,8 @@ def send_tg_alert(msg, *, ca=None, extra=None):
         return None
 
 def send_new_token_ca_alert(stats):
+    if not DEEP_ALPHA_PUSH_ENABLED:
+        return None
     if not NEW_TOKEN_TG_ENABLED or not NEW_TOKEN_TG_BOT_TOKEN or not NEW_TOKEN_TG_CHAT_ID:
         return None
     address = stats.get("address") or ""
@@ -506,6 +513,8 @@ def upsert_tg_alert(address, msg, allow_repeat=False, existing_candidate=_SNAPSH
 
 
 def publish_alpha_new_token_plugin_signal(address, chain, interval, stats, tg_message_id=None):
+    if not DEEP_ALPHA_PUSH_ENABLED:
+        return None
     if interval != "1m" or not address or not stats:
         return None
     extra = {
@@ -808,6 +817,8 @@ def live_track_index_key():
 
 
 def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0):
+    if not DEEP_ALPHA_PUSH_ENABLED:
+        return
     if not LIVE_TRACK_ENABLED or not address:
         return
     client = get_redis_client()
@@ -3565,6 +3576,9 @@ def scan_pro():
             print(f"  [Track] check_tracked_tokens error: {exc}")
 
 if __name__ == "__main__":
+    if not DEEP_ALPHA_PRO_ENABLED:
+        print("deep_alpha.deep_alpha_pro service is disabled. Set DEEP_ALPHA_PRO_ENABLED=1 to run it explicitly.")
+        sys.exit(0)
     print("深度关联分析机器人已启动...")
     while True:
         scan_pro()

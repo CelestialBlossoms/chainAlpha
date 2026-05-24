@@ -1505,6 +1505,7 @@ def bottom_push_ca_page(request: Request):
 
 @app.get("/deep-alpha-1m-ca", response_class=HTMLResponse)
 def deep_alpha_1m_ca_page(request: Request):
+    raise HTTPException(status_code=410, detail="Deep Alpha 1m CA frontend has been removed.")
     return templates.TemplateResponse(
         request,
         "push_ca_table.html",
@@ -1554,6 +1555,7 @@ def plugin_bottom_abnormal(request: Request, limit: int = 100):
 
 @app.get("/api/plugin/alpha-new-tokens")
 def plugin_alpha_new_tokens(request: Request, limit: int = 100):
+    raise HTTPException(status_code=410, detail="Deep Alpha new-token stream has been removed.")
     limit = max(1, min(limit, 300))
     now = time.monotonic()
     cache_limit = int(_PLUGIN_ALPHA_NEW_TOKEN_CACHE.get("limit") or 0)
@@ -1648,6 +1650,7 @@ def deep_alpha_1m_ca_api(
     refresh: bool = False,
     live: bool = False,
 ):
+    raise HTTPException(status_code=410, detail="Deep Alpha 1m CA API has been removed.")
     limit = max(1, min(limit, 200))
     cache_key = f"deep_alpha_1m|{limit}|{q.strip()}|{date.strip()}|{sort}|{bool(refresh)}|{bool(live)}"
     if not refresh and not live:
@@ -2139,6 +2142,7 @@ def _live_track_bg_loop() -> None:
 
 @app.on_event("startup")
 def start_live_track_bg():
+    return
     global _LIVE_TRACK_BG_STARTED
     if _LIVE_TRACK_BG_STARTED:
         return
@@ -2151,6 +2155,7 @@ def start_live_track_bg():
 
 @app.get("/alpha-live-track", response_class=HTMLResponse)
 def alpha_live_track_page(request: Request):
+    raise HTTPException(status_code=410, detail="Deep Alpha live-track frontend has been removed.")
     return templates.TemplateResponse(
         request,
         "alpha_live_track.html",
@@ -2160,6 +2165,7 @@ def alpha_live_track_page(request: Request):
 
 @app.get("/api/alpha-live-track")
 def alpha_live_track_api(request: Request):
+    raise HTTPException(status_code=410, detail="Deep Alpha live-track API has been removed.")
     addresses = _live_track_list_addresses()
     items = []
     for addr in addresses:
@@ -2177,11 +2183,13 @@ def alpha_live_track_api(request: Request):
 
 @app.get("/api/alpha-live-track/deleted-today")
 def alpha_live_track_deleted_today_api(request: Request):
+    raise HTTPException(status_code=410, detail="Deep Alpha live-track API has been removed.")
     return {"items": _alpha_deleted_today_list()}
 
 
 @app.get("/api/alpha-live-track/events")
 async def alpha_live_track_events(request: Request):
+    raise HTTPException(status_code=410, detail="Deep Alpha live-track API has been removed.")
     async def generator():
         client = get_redis_client()
         if client is None:
@@ -2423,6 +2431,7 @@ def _bottom_live_track_bg_loop() -> None:
 
 @app.on_event("startup")
 def start_bottom_live_track_bg():
+    return
     global _BOTTOM_LIVE_TRACK_BG_STARTED
     if _BOTTOM_LIVE_TRACK_BG_STARTED:
         return
@@ -2435,6 +2444,7 @@ def start_bottom_live_track_bg():
 
 @app.get("/bottom-live-track", response_class=HTMLResponse)
 def bottom_live_track_page(request: Request):
+    raise HTTPException(status_code=410, detail="Bottom live-track frontend has been removed.")
     return templates.TemplateResponse(
         request,
         "bottom_live_track.html",
@@ -2444,6 +2454,7 @@ def bottom_live_track_page(request: Request):
 
 @app.get("/api/bottom-live-track")
 def bottom_live_track_api(request: Request):
+    raise HTTPException(status_code=410, detail="Bottom live-track API has been removed.")
     addresses = _bottom_live_track_list_addresses()
     items = []
     for addr in addresses:
@@ -2461,6 +2472,7 @@ def bottom_live_track_api(request: Request):
 
 @app.get("/api/bottom-live-track/events")
 async def bottom_live_track_events(request: Request):
+    raise HTTPException(status_code=410, detail="Bottom live-track API has been removed.")
     async def generator():
         client = get_redis_client()
         if client is None:
