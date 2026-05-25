@@ -1,0 +1,21 @@
+services:
+  bottom-kline-backfill:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-bottom-kline-backfill
+    restart: "no"
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+    command:
+      - python
+      - bottom_detection/backfill_bottom_push_kline.py
+      - --window-hours
+      - ${BOTTOM_KLINE_BACKFILL_WINDOW_HOURS:-12}
+      - --delay
+      - ${BOTTOM_KLINE_BACKFILL_DELAY:-0.25}
