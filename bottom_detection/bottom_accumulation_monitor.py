@@ -1282,6 +1282,7 @@ def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: 
         for key, value in source.items():
             if key not in merged or merged.get(key) in (None, "", 0):
                 merged[key] = value
+    merged = apply_binance_dynamic_metrics(merged, info)
     # Flatten nested price object from legacy token-info payloads.
     price_val = merged.get("price")
     if isinstance(price_val, dict):
@@ -2331,6 +2332,68 @@ def fetch_binance_dynamic_metrics(address: str) -> dict[str, Any]:
     except Exception as exc:
         print(f"{address[:8]} binance dynamic fetch failed: {exc}")
         return {}
+
+
+def apply_binance_dynamic_metrics(token: dict[str, Any], dynamic: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Overwrite analysis-critical token fields with Binance dynamic data."""
+    if not isinstance(token, dict):
+        return token
+    if not isinstance(dynamic, dict) or not dynamic:
+        dynamic = token.get("_binance_dynamic") or token.get("_binance_info") or {}
+    if not isinstance(dynamic, dict) or not dynamic:
+        return token
+
+    market_cap = to_float(dynamic.get("market_cap") or dynamic.get("usd_market_cap") or dynamic.get("mcap"))
+    if market_cap > 0:
+        token["market_cap"] = market_cap
+        token["usd_market_cap"] = market_cap
+        token["mcap"] = market_cap
+
+    fdv = to_float(dynamic.get("fdv") or dynamic.get("fully_diluted_valuation"))
+    if fdv > 0:
+        token["fdv"] = fdv
+        token["fully_diluted_valuation"] = fdv
+    elif market_cap > 0:
+        token["fdv"] = market_cap
+        token["fully_diluted_valuation"] = market_cap
+
+    dynamic_numeric_keys = (
+        "price",
+        "liquidity",
+        "pool_liquidity",
+        "pool_mcap_ratio",
+        "holder_count",
+        "holders",
+        "volume_5m",
+        "volume_1h",
+        "volume_6h",
+        "volume_24h",
+        "circulating_supply",
+        "total_supply",
+        "history_highest_market_cap",
+        "open_timestamp",
+        "launch_timestamp",
+        "created_at",
+        "creation_timestamp",
+    )
+    for key in dynamic_numeric_keys:
+        value = to_float(dynamic.get(key))
+        if value > 0:
+            token[key] = value
+
+    if to_int(token.get("holder_count")) > 0:
+        stat = dict(token.get("stat") or {}) if isinstance(token.get("stat"), dict) else {}
+        stat["holder_count"] = to_int(token.get("holder_count"))
+        token["stat"] = stat
+
+    for key in ("symbol", "name"):
+        value = dynamic.get(key)
+        if value and token.get(key) in (None, "", 0):
+            token[key] = value
+
+    token["_binance_dynamic"] = dynamic
+    token["_binance_mcap_source"] = "binance_dynamic" if market_cap > 0 else token.get("_binance_mcap_source")
+    return token
 
 
 def parse_binance_kline_rows(raw: Any) -> list[dict[str, float]]:
@@ -3940,12 +4003,11 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     candles_1m = fetch_kline(address, "1m", token) if kline_resolution != "1m" else candles
     # Enrich token with Binance market cap (GMGN token info often returns empty market_cap for pump.fun tokens)
     binance = fetch_binance_dynamic_metrics(address)
-    if binance.get("market_cap"):
-        token["market_cap"] = binance["market_cap"]
-        if binance.get("price"):
-            token["_binance_price"] = binance["price"]
-        if binance.get("pool_liquidity"):
-            token["_binance_liquidity"] = binance["pool_liquidity"]
+    token = apply_binance_dynamic_metrics(token, binance)
+    if binance.get("price"):
+        token["_binance_price"] = binance["price"]
+    if binance.get("pool_liquidity"):
+        token["_binance_liquidity"] = binance["pool_liquidity"]
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     # Add 1m volume ratio to summary for quick verdict
     if candles_1m and len(candles_1m) >= 6:
