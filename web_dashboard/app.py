@@ -70,16 +70,18 @@ LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4")
 _LIVE_TRACK_BG_STARTED = False
 
 # ---------------------------------------------------------------------------
-# Bottom live-track configuration (24h window for bottom abnormal signals)
+# Bottom live-track configuration (12h window for bottom abnormal signals)
 # ---------------------------------------------------------------------------
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
-BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
+BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(12 * 3600)))  # 12h
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
 BOTTOM_LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_REFRESH_SEC", "30"))
 BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom:live_track:updates")
 BOTTOM_LIVE_TRACK_MAX_WORKERS = int(os.getenv("BOTTOM_LIVE_TRACK_MAX_WORKERS", "4"))
+BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC", str(4 * 3600)))
+BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC", str(12 * 3600)))
 _BOTTOM_LIVE_TRACK_BG_STARTED = False
 
 try:
@@ -915,6 +917,45 @@ def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict
             rows,
         )
         return len(rows)
+
+    return int(db_op(_op) or 0)
+
+
+def insert_dashboard_kline_cache_missing_only(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
+    if not address or not candles:
+        return 0
+    ensure_dashboard_kline_cache_table()
+
+    def _op(conn):
+        cur = conn.cursor()
+        rows = [
+            (
+                "sol",
+                address,
+                resolution,
+                _to_ts(candle.get("ts")),
+                candle.get("open"),
+                candle.get("high"),
+                candle.get("low"),
+                candle.get("close"),
+                candle.get("volume"),
+                candle.get("amount"),
+            )
+            for candle in candles
+            if _to_ts(candle.get("ts")) > 0
+        ]
+        if not rows:
+            return 0
+        cur.executemany(
+            """
+            INSERT INTO bottom_kline_cache (
+                chain, address, resolution, ts, open, high, low, close, volume, amount
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (chain, address, resolution, ts) DO NOTHING
+            """,
+            rows,
+        )
+        return max(cur.rowcount, 0)
 
     return int(db_op(_op) or 0)
 
@@ -2311,6 +2352,33 @@ def _bottom_live_track_remove(address: str, reason: str = "") -> None:
         pass
 
 
+def _bottom_live_track_sync_5m_kline(address: str, track: dict[str, Any], now_ts: int, pushed_at: int) -> dict[str, Any]:
+    if not address or pushed_at <= 0:
+        return track
+    if BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC <= 0 or BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC <= 0:
+        return track
+    track_age = now_ts - pushed_at
+    if track_age < 0 or track_age > BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC:
+        return track
+    last_sync_at = _safe_int(track.get("last_5m_kline_sync_at"))
+    if last_sync_at > 0 and now_ts - last_sync_at < BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC:
+        return track
+
+    from_ts = max(0, pushed_at - _kline_resolution_seconds("5m"))
+    candles = _fetch_binance_kline_range(address, from_ts, now_ts, interval="5min")
+    inserted = insert_dashboard_kline_cache_missing_only(address, "5m", candles)
+    track["last_5m_kline_sync_at"] = now_ts
+    track["last_5m_kline_inserted"] = inserted
+    track["last_5m_kline_candles"] = len(candles)
+    if candles:
+        track["last_5m_kline_ts"] = max(_to_ts(candle.get("ts")) for candle in candles)
+    print(
+        f"  [BottomLiveTrack] 5m kline sync {address[:8]}: "
+        f"candles={len(candles)} inserted={inserted}"
+    )
+    return track
+
+
 def _bottom_live_track_refresh_one(address: str) -> dict[str, Any] | None:
     track = _bottom_live_track_load(address)
     if not track or track.get("status") != "tracking":
@@ -2352,6 +2420,16 @@ def _bottom_live_track_refresh_one(address: str) -> dict[str, Any] | None:
 
     pushed_at = int(track.get("pushed_at") or now_ts)
     age_seconds = now_ts - pushed_at
+
+    if age_seconds >= BOTTOM_LIVE_TRACK_TTL_SEC:
+        track["status"] = "removed"
+        track["remove_reason"] = f"追踪满 {BOTTOM_LIVE_TRACK_TTL_SEC // 3600} 小时"
+        _bottom_live_track_save(address, track)
+        _bottom_live_track_remove(address, track["remove_reason"])
+        print(f"  [BottomLiveTrack] 移除(到期) ${track.get('symbol', '')} {address[:8]}: age={age_seconds}s")
+        return track
+
+    track = _bottom_live_track_sync_5m_kline(address, track, now_ts, pushed_at)
 
     # Rule 1.2: Market cap < 6K at any time -> dead
     if 0 < current_mcap < BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD:
