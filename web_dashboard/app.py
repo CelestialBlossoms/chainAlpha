@@ -82,6 +82,7 @@ BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom
 BOTTOM_LIVE_TRACK_MAX_WORKERS = int(os.getenv("BOTTOM_LIVE_TRACK_MAX_WORKERS", "4"))
 BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_KLINE_REFRESH_SEC", str(4 * 3600)))
 BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC", str(12 * 3600)))
+BOTTOM_LIVE_TRACK_BG_ENABLED = os.getenv("BOTTOM_LIVE_TRACK_BG_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
 _BOTTOM_LIVE_TRACK_BG_STARTED = False
 
 try:
@@ -2501,6 +2502,9 @@ def _bottom_live_track_bg_loop() -> None:
 
 @app.on_event("startup")
 def start_bottom_live_track_bg():
+    if not BOTTOM_LIVE_TRACK_BG_ENABLED:
+        print("[BottomLiveTrack] background refresh disabled in dashboard process")
+        return
     global _BOTTOM_LIVE_TRACK_BG_STARTED
     if _BOTTOM_LIVE_TRACK_BG_STARTED:
         return
