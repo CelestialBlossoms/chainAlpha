@@ -157,7 +157,7 @@
             <tr>
               <th>Token</th>
               <th class="sortable" data-sort="pushed_at">推送时间</th>
-              <th>推送市值</th>
+              <th class="sortable" data-sort="entry_mcap">推送市值</th>
               <th class="sortable" data-sort="current_mcap">当前市值</th>
               <th>盈亏</th>
               <th>巅峰市值时间</th>
@@ -290,6 +290,7 @@
     }
 
     function sortValue(item, key) {
+      if (key === "entry_mcap") return safeNum(item.entry_mcap);
       if (key === "current_mcap") return safeNum(item.current_mcap);
       return safeNum(item.pushed_at);
     }
