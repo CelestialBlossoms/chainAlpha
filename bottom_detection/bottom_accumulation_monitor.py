@@ -2099,6 +2099,7 @@ def start_bottom_live_tracking(
     created_ts: int = 0,
     launch_ts: int = 0,
     age_sec: int = 0,
+    winrate_prediction: dict[str, Any] | None = None,
 ) -> None:
     """Store a bottom-abnormal CA in Redis for the configured real-time tracking window."""
     if not BOTTOM_LIVE_TRACK_ENABLED or not address:
@@ -2131,6 +2132,8 @@ def start_bottom_live_tracking(
         "status": "tracking",
         "remove_reason": "",
     }
+    if winrate_prediction:
+        payload["winrate_prediction"] = winrate_prediction
     try:
         key = _bottom_live_track_key(address)
         client.setex(key, BOTTOM_LIVE_TRACK_TTL_SEC, json.dumps(payload, ensure_ascii=False))
@@ -2833,6 +2836,7 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
             created_ts=to_int(extra.get("created_ts")),
             launch_ts=to_int(extra.get("launch_ts")),
             age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+            winrate_prediction=extra.get("winrate_prediction") or compute_historical_winrate_prediction(extra),
         )
         return int(message_id) if message_id else None
     except Exception as exc:
@@ -2924,6 +2928,172 @@ def compute_strategy_profile(extra: dict[str, Any], risk_tags: list[str] | None 
     }
 
 
+def _pct_value(value: Any) -> float:
+    """Normalize a ratio-or-percent value to percent units."""
+    raw = to_float(value)
+    return raw * 100 if 0 < abs(raw) <= 1 else raw
+
+
+def _bounded_winrate(value: float) -> float:
+    return max(10.0, min(85.0, value))
+
+
+def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Estimate the probability that a bottom-abnormal CA reaches the historical
+    winner threshold from docs/quant_strategy_from_data.md: max gain >= 30%.
+    This is a data-derived observation score, not trading advice.
+    """
+    extra = dict(extra or {})
+    signal_type = str(extra.get("signal_type") or "unknown")
+    signal_baselines = {
+        "abnormal": {"winrate": 41.0, "samples": 51},
+        "drop_40w": {"winrate": 50.0, "samples": 2},
+        "drop_50w": {"winrate": 100.0, "samples": 1},
+        "new_revival": {"winrate": 59.0, "samples": 85},
+        "quiet_runup": {"winrate": 43.0, "samples": 99},
+        "watchlist_abnormal": {"winrate": 33.0, "samples": 3},
+    }
+    baseline = signal_baselines.get(signal_type, {"winrate": 48.5, "samples": 241})
+    score = float(baseline["winrate"])
+    sample_count = int(baseline["samples"])
+    evidence = [f"信号类型 {signal_type or 'unknown'} 历史赢家占比 {baseline['winrate']:.0f}%"]
+    risk_factors: list[str] = []
+
+    top10 = _pct_value(extra.get("top10_current_pct"))
+    if top10 > 0:
+        if top10 < 15:
+            score += 8
+            evidence.append("Top10<15%，历史样本中更偏分散")
+        elif top10 <= 30:
+            score += 2
+            evidence.append("Top10在15%-30%正常区间")
+        elif top10 <= 50:
+            score -= 8
+            risk_factors.append("Top10持仓30%-50%，集中度偏高")
+        else:
+            score -= 10
+            risk_factors.append("Top10持仓>50%，高度集中")
+
+    accumulation = _pct_value(extra.get("accumulation_pct_delta"))
+    distribution = _pct_value(extra.get("distribution_pct_delta"))
+    if accumulation > 2:
+        score += 5
+        evidence.append("Top100吸筹delta>2%，符合历史吸筹正向特征")
+    elif accumulation < 0:
+        score -= 6
+        risk_factors.append("Top100吸筹delta为负")
+    if distribution > accumulation and distribution > 2:
+        score -= 5
+        risk_factors.append("Top100减持强于增持")
+
+    mcap = to_float(extra.get("current_mcap"))
+    if mcap > 0:
+        if 50_000 <= mcap <= 200_000:
+            score += 5
+            evidence.append("市值位于50K-200K历史弹性区间")
+        elif mcap < 30_000:
+            score -= 8
+            risk_factors.append("市值<30K，深度不足")
+        elif mcap > 500_000:
+            score -= 8
+            risk_factors.append("市值>500K，历史样本弹性下降")
+
+    age_hours = to_float(extra.get("age_sec") or extra.get("created_age_sec")) / 3600.0
+    if age_hours > 0:
+        if age_hours <= 48:
+            score += 5
+            evidence.append("币龄<=48h，贴近历史赢家更年轻的特征")
+        elif age_hours > 2000:
+            score -= 6
+            risk_factors.append("币龄>2000h，老币复苏效率偏弱")
+
+    price_change = to_float(extra.get("price_change_pct"))
+    first_signal_change = to_float(extra.get("first_signal_change_pct"))
+    max_push_change = max(price_change, first_signal_change)
+    if max_push_change > 200:
+        score -= 10
+        risk_factors.append("信号涨幅>200%，历史报告中追高风险较高")
+    elif 15 <= max_push_change <= 80:
+        score += 3
+        evidence.append("信号涨幅处于非极端区间")
+
+    vol_1m_ratio = to_float(extra.get("vol_1m_ratio"))
+    breakout_volume = to_float(extra.get("breakout_volume_usd"))
+    breakout_ratio = to_float(extra.get("breakout_volume_ratio"))
+    if vol_1m_ratio > 0:
+        if vol_1m_ratio >= 1.2:
+            score += 5
+            evidence.append("1m后段量能高于前段，短线买盘延续")
+        elif vol_1m_ratio < 0.6:
+            score -= 8
+            risk_factors.append("1m量能衰减明显")
+    if 0 < breakout_volume < 5_000:
+        score -= 8
+        risk_factors.append("突破量能<$5K，历史过滤项偏弱")
+    elif breakout_volume >= 10_000:
+        score += 2
+        evidence.append("突破量能>=10K")
+    if breakout_ratio >= 3:
+        score += 3
+        evidence.append("突破量比>=3x")
+
+    pool_ratio = to_float(extra.get("pool_mcap_ratio"))
+    pool_liquidity = to_float(extra.get("liquidity") or extra.get("pool_total_liquidity"))
+    if 0 < pool_ratio < 0.07:
+        score -= 10
+        risk_factors.append("池/市值<7%，流动性不足")
+    elif 0.15 <= pool_ratio <= 0.40:
+        score += 3
+        evidence.append("池/市值处于相对健康区间")
+    elif pool_ratio > 0.50:
+        score -= 3
+        risk_factors.append("池/市值>50%，弹性可能受限")
+    if 0 < pool_liquidity < 10_000:
+        score -= 8
+        risk_factors.append("池子流动性<10K")
+    elif pool_liquidity >= 30_000:
+        score += 3
+        evidence.append("池子流动性>=30K")
+
+    predicted = _bounded_winrate(score)
+    if predicted >= 60:
+        label = "偏强"
+    elif predicted >= 50:
+        label = "中性偏强"
+    elif predicted >= 40:
+        label = "中性观察"
+    else:
+        label = "偏弱"
+
+    feature_count = sum(
+        1
+        for item in (top10, accumulation, mcap, age_hours, max_push_change, vol_1m_ratio, breakout_volume, pool_ratio, pool_liquidity)
+        if item
+    )
+    if sample_count >= 50 and feature_count >= 5:
+        confidence = "high"
+    elif sample_count >= 20 and feature_count >= 3:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "target": "max_gain_gte_30pct",
+        "predicted_winrate_pct": round(predicted, 1),
+        "baseline_winrate_pct": round(float(baseline["winrate"]), 1),
+        "baseline_sample_count": sample_count,
+        "overall_sample_count": 241,
+        "winner_definition": "历史最大涨幅>=30%",
+        "label": label,
+        "confidence": confidence,
+        "feature_count": feature_count,
+        "evidence": evidence[:6],
+        "risk_factors": risk_factors[:6],
+        "source_doc": "docs/quant_strategy_from_data.md",
+    }
+
+
 def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]:
     """Attach risk tags and strategy guide fields for TG/plugin consumers."""
     extra = dict(extra or {})
@@ -2934,6 +3104,7 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
             extra["risk_tags"] = risk_tags
     strategy = compute_strategy_profile(extra, risk_tags)
     extra.update(strategy)
+    extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
     return extra
 
 
@@ -2984,6 +3155,7 @@ def publish_frontend_signal_update(
         created_ts=to_int(extra.get("created_ts")),
         launch_ts=to_int(extra.get("launch_ts")),
         age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+        winrate_prediction=extra.get("winrate_prediction") or compute_historical_winrate_prediction(extra),
     )
 
     # Schedule 10-minute follow-up verdict via TG

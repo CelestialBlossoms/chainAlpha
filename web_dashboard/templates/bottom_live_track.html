@@ -108,6 +108,40 @@
     .status-badge.tracking { background: #064e3b; color: #34d399; }
     .status-badge.removed { background: #7f1d1d; color: #fca5a5; }
     .status-badge.expired { background: #78350f; color: #fbbf24; }
+    .prediction-cell { min-width: 150px; }
+    .prediction-score {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      font-weight: 700;
+      color: #e5e7eb;
+    }
+    .prediction-score.strong { color: #22c55e; }
+    .prediction-score.neutral { color: #f59e0b; }
+    .prediction-score.weak { color: #ef4444; }
+    .prediction-meta {
+      margin-top: 2px;
+      font-size: 11px;
+      color: #9ca3af;
+      white-space: nowrap;
+    }
+    .prediction-details {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    .prediction-details summary {
+      cursor: pointer;
+      color: #93c5fd;
+      outline: none;
+    }
+    .prediction-list {
+      margin: 4px 0 0;
+      padding-left: 14px;
+      max-width: 260px;
+      line-height: 1.45;
+    }
+    .prediction-risk { color: #fca5a5; }
 
     .countdown {
       font-size: 11px;
@@ -170,6 +204,7 @@
               <th class="sortable" data-sort="entry_mcap">推送市值</th>
               <th class="sortable" data-sort="current_mcap">当前市值</th>
               <th>盈亏</th>
+              <th>历史胜率</th>
               <th>巅峰市值时间</th>
               <th>推送后最高盈利</th>
               <th>推送后最高市值</th>
@@ -323,6 +358,51 @@
       return `<div class="mcap-bar"><div class="mcap-bar-fill ${cls}" style="width:${pct}%"></div></div>`;
     }
 
+    function confidenceLabel(v) {
+      if (v === "high") return "高置信";
+      if (v === "medium") return "中置信";
+      if (v === "low") return "低置信";
+      return "置信未知";
+    }
+
+    function predictionClass(pct) {
+      if (pct >= 60) return "strong";
+      if (pct >= 40) return "neutral";
+      return "weak";
+    }
+
+    function predictionListHtml(items, cls = "") {
+      const arr = Array.isArray(items) ? items.filter(Boolean).slice(0, 3) : [];
+      if (!arr.length) return "";
+      return `<ul class="prediction-list ${cls}">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
+    }
+
+    function predictionHtml(item) {
+      const pred = item.winrate_prediction || {};
+      const pct = safeNum(pred.predicted_winrate_pct, -1);
+      if (pct < 0) return "-";
+      const label = pred.label || "";
+      const confidence = confidenceLabel(pred.confidence);
+      const baseline = safeNum(pred.baseline_winrate_pct, 0);
+      const sampleCount = safeNum(pred.baseline_sample_count, 0);
+      const evidence = predictionListHtml(pred.evidence);
+      const risks = predictionListHtml(pred.risk_factors, "prediction-risk");
+      return `
+        <div class="prediction-cell">
+          <div class="prediction-score ${predictionClass(pct)}">
+            <span>${pct.toFixed(1)}%</span>
+            <small>${htmlEscape(label)}</small>
+          </div>
+          <div class="prediction-meta">基准${baseline.toFixed(0)}% · n=${sampleCount || "-"} · ${htmlEscape(confidence)}</div>
+          <details class="prediction-details">
+            <summary>依据</summary>
+            ${evidence || `<div class="prediction-meta">暂无正向依据</div>`}
+            ${risks ? `<div class="prediction-meta prediction-risk">风险</div>${risks}` : ""}
+          </details>
+        </div>
+      `;
+    }
+
     function gmgnUrl(item) {
       return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`;
     }
@@ -390,6 +470,7 @@
               ${mcapBarHtml(item.entry_mcap, item.current_mcap)}
             </td>
             <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
+            <td>${predictionHtml(item)}</td>
             <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
             <td><b class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</b></td>
             <td><b>${formatCap(item.peak_mcap)}</b></td>

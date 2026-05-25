@@ -2320,6 +2320,73 @@ def _bottom_live_track_load(address: str) -> dict[str, Any] | None:
         return None
 
 
+def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    addresses = sorted({
+        str((item or {}).get("address") or "").strip()
+        for item in items
+        if item and not item.get("winrate_prediction") and str((item or {}).get("address") or "").strip()
+    })
+    if not addresses:
+        return {}
+
+    def _query(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT ON (address) address, extra
+            FROM bottom_top100_push_records
+            WHERE address = ANY(%s)
+            ORDER BY address, COALESCE(NULLIF(event_ts, 0), EXTRACT(EPOCH FROM pushed_at)::bigint) DESC
+            """,
+            [addresses],
+        )
+        rows = cur.fetchall()
+        result = {}
+        for address, extra in rows:
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra) if extra else {}
+                except json.JSONDecodeError:
+                    extra = {}
+            result[str(address)] = extra if isinstance(extra, dict) else {}
+        return result
+
+    try:
+        return db_op(_query) or {}
+    except Exception:
+        return {}
+
+
+def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if not track or track.get("winrate_prediction"):
+        return track
+    try:
+        from bottom_detection.bottom_accumulation_monitor import compute_historical_winrate_prediction
+    except Exception:
+        return track
+
+    merged = {**(extra or {}), **track}
+    current_mcap = _safe_float(merged.get("current_mcap")) or _safe_float(merged.get("entry_mcap"))
+    pool_liquidity = _safe_float(merged.get("pool_liquidity") or merged.get("liquidity") or merged.get("pool_total_liquidity"))
+    if current_mcap > 0 and pool_liquidity > 0 and not _safe_float(merged.get("pool_mcap_ratio")):
+        merged["pool_mcap_ratio"] = pool_liquidity / current_mcap
+    track["winrate_prediction"] = compute_historical_winrate_prediction(merged)
+    return track
+
+
+def _bottom_live_track_attach_predictions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    extra_by_address = _bottom_live_track_extra_map(items)
+    enriched = []
+    for item in items:
+        address = str((item or {}).get("address") or "").strip()
+        had_prediction = bool((item or {}).get("winrate_prediction"))
+        next_item = _bottom_live_track_with_prediction(item, extra_by_address.get(address)) or item
+        if address and not had_prediction and next_item.get("winrate_prediction"):
+            _bottom_live_track_save(address, next_item)
+        enriched.append(next_item)
+    return enriched
+
+
 def _bottom_live_track_save(address: str, data: dict[str, Any]) -> None:
     client = get_redis_client()
     if client is None:
@@ -2532,6 +2599,7 @@ def bottom_live_track_api(request: Request):
         track = _bottom_live_track_load(addr)
         if track:
             items.append(track)
+    items = _bottom_live_track_attach_predictions(items)
     items = _sort_live_track_by_push_time(items)
     return {
         "items": items,
@@ -2555,6 +2623,7 @@ async def bottom_live_track_events(request: Request):
             track = _bottom_live_track_load(addr)
             if track:
                 snapshot.append(track)
+        snapshot = _bottom_live_track_attach_predictions(snapshot)
         snapshot = _sort_live_track_by_push_time(snapshot)
         yield sse_message(
             "snapshot",
