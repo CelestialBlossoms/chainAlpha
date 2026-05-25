@@ -2324,7 +2324,12 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
     addresses = sorted({
         str((item or {}).get("address") or "").strip()
         for item in items
-        if item and not item.get("winrate_prediction") and str((item or {}).get("address") or "").strip()
+        if item
+        and (
+            not item.get("winrate_prediction")
+            or not ((item.get("winrate_prediction") or {}).get("strategy_plan"))
+        )
+        and str((item or {}).get("address") or "").strip()
     })
     if not addresses:
         return {}
@@ -2358,7 +2363,10 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
 
 
 def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    if not track or track.get("winrate_prediction"):
+    if not track:
+        return track
+    existing_prediction = track.get("winrate_prediction") or {}
+    if existing_prediction and existing_prediction.get("strategy_plan"):
         return track
     try:
         from bottom_detection.bottom_accumulation_monitor import compute_historical_winrate_prediction
@@ -2379,7 +2387,8 @@ def _bottom_live_track_attach_predictions(items: list[dict[str, Any]]) -> list[d
     enriched = []
     for item in items:
         address = str((item or {}).get("address") or "").strip()
-        had_prediction = bool((item or {}).get("winrate_prediction"))
+        current_prediction = (item or {}).get("winrate_prediction") or {}
+        had_prediction = bool(current_prediction and current_prediction.get("strategy_plan"))
         next_item = _bottom_live_track_with_prediction(item, extra_by_address.get(address)) or item
         if address and not had_prediction and next_item.get("winrate_prediction"):
             _bottom_live_track_save(address, next_item)

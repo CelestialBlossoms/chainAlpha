@@ -142,6 +142,30 @@
       line-height: 1.45;
     }
     .prediction-risk { color: #fca5a5; }
+    .plan-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(160px, 1fr));
+      gap: 6px;
+      margin-top: 6px;
+      max-width: 430px;
+    }
+    .plan-box {
+      border: 1px solid #374151;
+      border-radius: 4px;
+      padding: 6px;
+      background: #11182780;
+    }
+    .plan-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #d1d5db;
+      margin-bottom: 3px;
+    }
+    .plan-line {
+      font-size: 11px;
+      color: #9ca3af;
+      line-height: 1.45;
+    }
 
     .countdown {
       font-size: 11px;
@@ -240,6 +264,10 @@
     let evtSource = null;
     let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
+    const alertAudio = new Audio("/static/ElevenLabs.mp3");
+    alertAudio.preload = "auto";
+    let audioUnlocked = false;
+    let hasInitialSnapshot = false;
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -377,6 +405,54 @@
       return `<ul class="prediction-list ${cls}">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
     }
 
+    function formatPlanTime(v) {
+      const n = safeNum(v);
+      if (n <= 0) return "-";
+      return formatTime(n);
+    }
+
+    function formatPlanPrice(v) {
+      const n = safeNum(v);
+      if (n <= 0) return "-";
+      if (n < 0.0001) return n.toExponential(3);
+      if (n < 0.01) return n.toFixed(8);
+      return n.toFixed(6);
+    }
+
+    function entryLevelHtml(level) {
+      if (!level) return "";
+      const mcap = formatCap(level.mcap);
+      const price = formatPlanPrice(level.price);
+      return `<div class="plan-line">${htmlEscape(level.label || "入场")} ${safeNum(level.drawdown_pct).toFixed(0)}%: ${mcap}${price !== "-" ? ` / ${price}` : ""}</div>`;
+    }
+
+    function strategyPlanHtml(pred) {
+      const plan = pred.strategy_plan || {};
+      const entry = plan.entry || {};
+      const exit = plan.exit || {};
+      const riskPoints = Array.isArray(plan.risk_points) ? plan.risk_points.slice(0, 4) : [];
+      if (!entry.primary && !exit.time_stop_ts && !riskPoints.length) return "";
+      return `
+        <div class="plan-grid">
+          <div class="plan-box">
+            <div class="plan-title">入场点 / 时间</div>
+            ${entryLevelHtml(entry.primary)}
+            ${entryLevelHtml(entry.balanced)}
+            ${entryLevelHtml(entry.deep)}
+            <div class="plan-line">有效至: ${formatPlanTime(entry.expires_at_ts)}</div>
+          </div>
+          <div class="plan-box">
+            <div class="plan-title">出场时间 / 节奏</div>
+            <div class="plan-line">30m复查: ${formatPlanTime(exit.quick_review_ts)}</div>
+            <div class="plan-line">中位到峰: ${formatPlanTime(exit.median_peak_ts)}</div>
+            <div class="plan-line">时间止盈/退出: ${formatPlanTime(exit.time_stop_ts)}</div>
+            <div class="plan-line">TP: +${safeNum(exit.tp1_pct)}% / +${safeNum(exit.tp2_pct)}%</div>
+          </div>
+        </div>
+        ${riskPoints.length ? `<div class="prediction-meta prediction-risk">风险点</div>${predictionListHtml(riskPoints, "prediction-risk")}` : ""}
+      `;
+    }
+
     function predictionHtml(item) {
       const pred = item.winrate_prediction || {};
       const pct = safeNum(pred.predicted_winrate_pct, -1);
@@ -398,9 +474,43 @@
             <summary>依据</summary>
             ${evidence || `<div class="prediction-meta">暂无正向依据</div>`}
             ${risks ? `<div class="prediction-meta prediction-risk">风险</div>${risks}` : ""}
+            ${strategyPlanHtml(pred)}
           </details>
         </div>
       `;
+    }
+
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      alertAudio.volume = 0.85;
+      alertAudio.muted = true;
+      const p = alertAudio.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          alertAudio.pause();
+          alertAudio.currentTime = 0;
+          alertAudio.muted = false;
+          audioUnlocked = true;
+        }).catch(() => {
+          alertAudio.muted = false;
+        });
+      }
+    }
+
+    function playNewSignalAudio() {
+      if (!audioUnlocked) return;
+      try {
+        alertAudio.currentTime = 0;
+        const p = alertAudio.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch (_) {}
+    }
+
+    function notifyNewItems(newItems) {
+      if (!hasInitialSnapshot) return;
+      const known = new Set(items.map(item => item.address).filter(Boolean));
+      const hasNew = (newItems || []).some(item => item && item.status === "tracking" && item.address && !known.has(item.address));
+      if (hasNew) playNewSignalAudio();
     }
 
     function gmgnUrl(item) {
@@ -523,6 +633,8 @@
         render();
       });
     });
+    document.addEventListener("click", unlockAudio, { once: true });
+    document.addEventListener("keydown", unlockAudio, { once: true });
 
     function setConnected(ok) {
       liveDot.className = ok ? "live-dot" : "live-dot disconnected";
@@ -539,6 +651,7 @@
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           items = sortByPushTime(data.items);
           render();
+          hasInitialSnapshot = true;
           setConnected(true);
           lastUpdateEl.textContent = `\u521d\u59cb\u5feb\u7167 ${new Date().toLocaleTimeString()}`;
         } catch (_) {}
@@ -548,6 +661,7 @@
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          notifyNewItems(data.items || []);
           mergeItems(data.items || []);
           render();
           lastUpdateEl.textContent = `\u6700\u540e\u66f4\u65b0 ${new Date().toLocaleTimeString()}`;
@@ -581,6 +695,7 @@
         items = sortByPushTime(data.items);
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
+        hasInitialSnapshot = true;
         connectSSE();
       })
       .catch(err => {
@@ -593,6 +708,7 @@
       fetch("/api/bottom-live-track")
         .then(r => r.json())
         .then(data => {
+          notifyNewItems(data.items || []);
           mergeItems(data.items || []);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           render();

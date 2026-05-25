@@ -2938,6 +2938,79 @@ def _bounded_winrate(value: float) -> float:
     return max(10.0, min(85.0, value))
 
 
+def _round_price(value: float) -> float:
+    if value <= 0:
+        return 0.0
+    return round(value, 12)
+
+
+def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[str] | None = None) -> dict[str, Any]:
+    """Build entry/exit timing levels from docs/quant_strategy_from_data.md."""
+    signal_mcap = to_float(extra.get("current_mcap") or extra.get("entry_mcap"))
+    signal_price = to_float(extra.get("price") or extra.get("entry_price"))
+    signal_ts = to_int(extra.get("event_ts") or extra.get("signal_ts") or extra.get("pushed_at") or now_ts())
+    primary_dd = -25.0
+    balanced_dd = -35.0
+    deep_dd = -50.0
+
+    def level(drawdown_pct: float) -> dict[str, Any]:
+        multiplier = 1 + drawdown_pct / 100.0
+        return {
+            "drawdown_pct": drawdown_pct,
+            "mcap": round(signal_mcap * multiplier, 2) if signal_mcap > 0 else 0,
+            "price": _round_price(signal_price * multiplier) if signal_price > 0 else 0,
+        }
+
+    risk_points = list(risk_factors or [])
+    risk_points.extend([
+        "历史样本中79%的信号从信号价回撤超过20%，直接追信号价容易被波动扫出",
+        "中位到峰时间约70分钟，75%分位约295分钟，超过295分钟未走强需按时间风险处理",
+        "峰值后平均回撤约53%，冲高后回落速度快",
+    ])
+
+    return {
+        "source_doc": "docs/quant_strategy_from_data.md",
+        "winner_definition": "历史最大涨幅>=30%",
+        "entry": {
+            "method": "wait_pullback_limit",
+            "valid_from_ts": signal_ts,
+            "expires_at_ts": signal_ts + 295 * 60,
+            "primary": {
+                **level(primary_dd),
+                "label": "主入场",
+                "historical_trigger_rate_pct": 70,
+                "historical_winner_rate_pct": 100,
+            },
+            "balanced": {
+                **level(balanced_dd),
+                "label": "均衡入场",
+                "historical_trigger_rate_pct": 58,
+                "historical_winner_rate_pct": 100,
+            },
+            "deep": {
+                **level(deep_dd),
+                "label": "深回撤入场",
+                "historical_trigger_rate_pct": 41,
+                "historical_winner_rate_pct": 100,
+            },
+            "entry_time_rule": "信号后295分钟内触及对应回撤价位才算有效，未触发则过期",
+        },
+        "exit": {
+            "quick_review_ts": signal_ts + 30 * 60,
+            "median_peak_ts": signal_ts + 70 * 60,
+            "time_stop_ts": signal_ts + 295 * 60,
+            "tp1_pct": 30,
+            "tp1_close_pct": 50,
+            "tp2_pct": 50,
+            "tp2_close_pct": 30,
+            "runner_close_pct": 20,
+            "trailing_from_peak_drawdown_pct": 15,
+            "exit_time_rule": "30分钟检查量能，70分钟看是否接近中位到峰，295分钟仍未达预期按时间退出观察",
+        },
+        "risk_points": risk_points[:8],
+    }
+
+
 def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
     """
     Estimate the probability that a bottom-abnormal CA reaches the historical
@@ -3078,6 +3151,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
     else:
         confidence = "low"
 
+    strategy_plan = compute_historical_strategy_plan(extra, risk_factors)
+
     return {
         "target": "max_gain_gte_30pct",
         "predicted_winrate_pct": round(predicted, 1),
@@ -3090,6 +3165,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "feature_count": feature_count,
         "evidence": evidence[:6],
         "risk_factors": risk_factors[:6],
+        "strategy_plan": strategy_plan,
         "source_doc": "docs/quant_strategy_from_data.md",
     }
 
