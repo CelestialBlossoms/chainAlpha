@@ -3938,6 +3938,14 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     candles = fetch_kline(address, kline_resolution, token)
     # Also fetch 1m K-line for micro-structure volume analysis (DCB vs V-reversal)
     candles_1m = fetch_kline(address, "1m", token) if kline_resolution != "1m" else candles
+    # Enrich token with Binance market cap (GMGN token info often returns empty market_cap for pump.fun tokens)
+    binance = fetch_binance_dynamic_metrics(address)
+    if binance.get("market_cap"):
+        token["market_cap"] = binance["market_cap"]
+        if binance.get("price"):
+            token["_binance_price"] = binance["price"]
+        if binance.get("pool_liquidity"):
+            token["_binance_liquidity"] = binance["pool_liquidity"]
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
     # Add 1m volume ratio to summary for quick verdict
     if candles_1m and len(candles_1m) >= 6:
