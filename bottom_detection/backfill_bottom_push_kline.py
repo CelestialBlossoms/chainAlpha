@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import psycopg2.extras
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -33,6 +34,17 @@ def to_int(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def resolution_seconds(resolution: str) -> int:
+    normalized = resolution.strip().lower()
+    if normalized.endswith("min"):
+        return max(1, to_int(normalized[:-3])) * 60
+    if normalized.endswith("m"):
+        return max(1, to_int(normalized[:-1])) * 60
+    if normalized.endswith("h"):
+        return max(1, to_int(normalized[:-1])) * 3600
+    return 300
 
 
 def parse_binance_kline(raw: Any) -> list[dict[str, Any]]:
@@ -84,6 +96,127 @@ def ensure_kline_cache_table() -> None:
             CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
                 ON bottom_kline_cache(address, resolution, ts);
             """
+        )
+
+    db_op(_op)
+
+
+def ensure_backfill_progress_table() -> None:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bottom_kline_backfill_progress (
+                record_id BIGINT NOT NULL,
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                from_ts BIGINT NOT NULL,
+                to_ts BIGINT NOT NULL,
+                status TEXT NOT NULL,
+                fetched_count INTEGER NOT NULL DEFAULT 0,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                processed_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (record_id, resolution, from_ts, to_ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_backfill_progress_status
+                ON bottom_kline_backfill_progress(status, processed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_backfill_progress_addr
+                ON bottom_kline_backfill_progress(address, resolution, processed_at DESC);
+            """
+        )
+
+    db_op(_op)
+
+
+def completed_backfill_keys(resolution: str) -> set[tuple[int, int, int]]:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT record_id, from_ts, to_ts
+            FROM bottom_kline_backfill_progress
+            WHERE resolution = %s
+              AND status = 'success'
+            """,
+            (resolution,),
+        )
+        return {(int(row[0]), int(row[1]), int(row[2])) for row in cur.fetchall()}
+
+    return db_op(_op) or set()
+
+
+def cached_kline_window(address: str, resolution: str, from_ts: int, to_ts: int) -> dict[str, int]:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(MIN(ts), 0), COALESCE(MAX(ts), 0)
+            FROM bottom_kline_cache
+            WHERE chain = 'sol'
+              AND address = %s
+              AND resolution = %s
+              AND ts BETWEEN %s AND %s
+            """,
+            (address, resolution, from_ts, to_ts),
+        )
+        count, first_ts, last_ts = cur.fetchone()
+        return {"count": int(count or 0), "first_ts": int(first_ts or 0), "last_ts": int(last_ts or 0)}
+
+    return db_op(_op) or {"count": 0, "first_ts": 0, "last_ts": 0}
+
+
+def is_cached_window_usable(address: str, resolution: str, from_ts: int, event_ts: int, to_ts: int) -> tuple[bool, dict[str, int]]:
+    cached = cached_kline_window(address, resolution, from_ts, to_ts)
+    step = resolution_seconds(resolution)
+    usable = (
+        cached["count"] >= 24
+        and cached["first_ts"] > 0
+        and cached["first_ts"] <= event_ts
+        and cached["last_ts"] >= to_ts - (2 * step)
+    )
+    return usable, cached
+
+
+def mark_backfill_progress(
+    record_id: int,
+    address: str,
+    resolution: str,
+    from_ts: int,
+    to_ts: int,
+    status: str,
+    fetched_count: int,
+    inserted_count: int,
+    error: str = "",
+) -> None:
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO bottom_kline_backfill_progress (
+                record_id, chain, address, resolution, from_ts, to_ts,
+                status, fetched_count, inserted_count, error, processed_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            ON CONFLICT (record_id, resolution, from_ts, to_ts) DO UPDATE SET
+                status = EXCLUDED.status,
+                fetched_count = EXCLUDED.fetched_count,
+                inserted_count = EXCLUDED.inserted_count,
+                error = EXCLUDED.error,
+                processed_at = NOW()
+            """,
+            (
+                record_id,
+                "sol",
+                address,
+                resolution,
+                from_ts,
+                to_ts,
+                status,
+                fetched_count,
+                inserted_count,
+                error[:500] if error else None,
+            ),
         )
 
     db_op(_op)
@@ -183,14 +316,16 @@ def insert_missing_kline(address: str, resolution: str, candles: list[dict[str, 
         ]
         if not rows:
             return 0
-        cur.executemany(
+        psycopg2.extras.execute_values(
+            cur,
             """
             INSERT INTO bottom_kline_cache (
                 chain, address, resolution, ts, open, high, low, close, volume, amount
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES %s
             ON CONFLICT (chain, address, resolution, ts) DO NOTHING
             """,
             rows,
+            page_size=500,
         )
         return max(cur.rowcount, 0)
 
@@ -210,6 +345,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delay", type=float, default=0.25, help="Delay between API requests.")
     parser.add_argument("--min-event-ts", type=int, default=0, help="Only process pushes at or after this unix timestamp.")
     parser.add_argument("--max-event-ts", type=int, default=0, help="Only process pushes at or before this unix timestamp.")
+    parser.add_argument("--skip-completed", action=argparse.BooleanOptionalAction, default=True, help="Skip records already marked successful in progress table.")
+    parser.add_argument("--skip-cached-window", action=argparse.BooleanOptionalAction, default=True, help="Skip records whose kline cache already covers the event window.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch records but do not call Binance or write DB.")
     return parser
 
@@ -221,6 +358,7 @@ def main() -> None:
         raise SystemExit("--window-hours must be positive")
 
     ensure_kline_cache_table()
+    ensure_backfill_progress_table()
     records = fetch_push_records(args.limit, args.min_event_ts, args.max_event_ts)
     print(f"backfill records={len(records)} window=+/-{args.window_hours:g}h resolution={args.resolution}")
     if args.dry_run:
@@ -231,15 +369,55 @@ def main() -> None:
 
     total_fetched = 0
     total_inserted = 0
+    skipped = 0
     failures = 0
+    completed_keys = completed_backfill_keys(args.resolution) if args.skip_completed else set()
     for index, row in enumerate(records, start=1):
         address = row["address"]
         event_ts = to_int(row.get("event_ts"))
         from_ts = max(0, event_ts - window_sec)
         to_ts = event_ts + window_sec
+        progress_key = (int(row["id"]), from_ts, to_ts)
+        if progress_key in completed_keys:
+            skipped += 1
+            print(
+                f"[{index}/{len(records)}] id={row['id']} {address[:8]} {row['signal_type']} "
+                f"{fmt_ts(event_ts)} skipped=completed"
+            )
+            continue
+        if args.skip_cached_window:
+            cached_ok, cached = is_cached_window_usable(address, args.resolution, from_ts, event_ts, to_ts)
+            if cached_ok:
+                skipped += 1
+                mark_backfill_progress(
+                    int(row["id"]),
+                    address,
+                    args.resolution,
+                    from_ts,
+                    to_ts,
+                    "success",
+                    0,
+                    0,
+                )
+                print(
+                    f"[{index}/{len(records)}] id={row['id']} {address[:8]} {row['signal_type']} "
+                    f"{fmt_ts(event_ts)} skipped=cached count={cached['count']} "
+                    f"range={fmt_ts(cached['first_ts'])}->{fmt_ts(cached['last_ts'])}"
+                )
+                continue
         try:
             candles = fetch_binance_kline_range(address, from_ts, to_ts, args.interval)
             inserted = insert_missing_kline(address, args.resolution, candles)
+            mark_backfill_progress(
+                int(row["id"]),
+                address,
+                args.resolution,
+                from_ts,
+                to_ts,
+                "success",
+                len(candles),
+                inserted,
+            )
             total_fetched += len(candles)
             total_inserted += inserted
             print(
@@ -248,11 +426,22 @@ def main() -> None:
             )
         except Exception as exc:
             failures += 1
+            mark_backfill_progress(
+                int(row["id"]),
+                address,
+                args.resolution,
+                from_ts,
+                to_ts,
+                "failed",
+                0,
+                0,
+                str(exc),
+            )
             print(f"[{index}/{len(records)}] id={row['id']} {address[:8]} failed: {exc}")
         if args.delay > 0 and index < len(records):
             time.sleep(args.delay)
 
-    print(f"done records={len(records)} fetched={total_fetched} inserted={total_inserted} failures={failures}")
+    print(f"done records={len(records)} skipped={skipped} fetched={total_fetched} inserted={total_inserted} failures={failures}")
 
 
 if __name__ == "__main__":

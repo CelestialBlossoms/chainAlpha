@@ -15,7 +15,13 @@ services:
     command:
       - python
       - bottom_detection/backfill_bottom_push_kline.py
+      - --limit
+      - ${BOTTOM_KLINE_BACKFILL_LIMIT:-0}
       - --window-hours
       - ${BOTTOM_KLINE_BACKFILL_WINDOW_HOURS:-12}
       - --delay
       - ${BOTTOM_KLINE_BACKFILL_DELAY:-0.25}
+      - --min-event-ts
+      - ${BOTTOM_KLINE_BACKFILL_MIN_EVENT_TS:-0}
+      - --max-event-ts
+      - ${BOTTOM_KLINE_BACKFILL_MAX_EVENT_TS:-0}
