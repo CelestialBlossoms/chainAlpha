@@ -33,7 +33,6 @@ from plugin_signal_stream import publish_plugin_signal
 from redis_client import get_redis_client, redis_key
 from tg_alert_stream import publish_tg_alert
 from bottom_detection.bottom_watchlist_store import (
-    clean_redis_stream_for_ca,
     daily_mcap_watchlist_needs_notify,
     delete_watchlist_token,
     ensure_watchlist_daily_mcap_columns,
@@ -42,7 +41,6 @@ from bottom_detection.bottom_watchlist_store import (
     fill_watchlist_token_created_at as store_fill_token_created_at,
     is_watchlist_blacklisted,
     mark_daily_mcap_watchlist_notified,
-    set_watchlist_blacklisted,
     update_watchlist_seen,
     upsert_daily_mcap_watchlist_token,
 )
@@ -2095,11 +2093,11 @@ def start_bottom_live_tracking(
     symbol: str = "",
     entry_mcap: float = 0,
     entry_price: float = 0,
+    signal_type: str = "",
+    pool_liquidity: float = 0,
     created_ts: int = 0,
     launch_ts: int = 0,
     age_sec: int = 0,
-    signal_type: str = "",
-    pool_liquidity: float = 0,
 ) -> None:
     """Store a bottom-abnormal CA in Redis for the configured real-time tracking window."""
     if not BOTTOM_LIVE_TRACK_ENABLED or not address:
@@ -2113,11 +2111,11 @@ def start_bottom_live_tracking(
         "symbol": symbol or "UNKNOWN",
         "signal_type": signal_type,
         "source": "bottom_abnormal",
+        "entry_mcap": to_float(entry_mcap),
+        "entry_price": to_float(entry_price),
         "created_ts": to_int(created_ts),
         "launch_ts": to_int(launch_ts),
         "age_sec": to_int(age_sec),
-        "entry_mcap": to_float(entry_mcap),
-        "entry_price": to_float(entry_price),
         "pushed_at": now_ts(),
         "current_mcap": to_float(entry_mcap),
         "current_price": to_float(entry_price),
@@ -2767,11 +2765,11 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
             symbol=str(extra.get("symbol") or ""),
             entry_mcap=to_float(extra.get("current_mcap")),
             entry_price=to_float(extra.get("price")),
+            signal_type=str(extra.get("signal_type") or ""),
+            pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
             created_ts=to_int(extra.get("created_ts")),
             launch_ts=to_int(extra.get("launch_ts")),
             age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
-            signal_type=str(extra.get("signal_type") or ""),
-            pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
         )
         return int(message_id) if message_id else None
     except Exception as exc:
@@ -2918,11 +2916,11 @@ def publish_frontend_signal_update(
         symbol=str(extra.get("symbol") or ""),
         entry_mcap=to_float(extra.get("current_mcap")),
         entry_price=to_float(extra.get("price")),
+        signal_type=str(extra.get("signal_type") or ""),
+        pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
         created_ts=to_int(extra.get("created_ts")),
         launch_ts=to_int(extra.get("launch_ts")),
         age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
-        signal_type=str(extra.get("signal_type") or ""),
-        pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
     )
 
     # Schedule 10-minute follow-up verdict via TG
