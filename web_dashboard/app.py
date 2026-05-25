@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -55,6 +55,7 @@ BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": BINANCE_WEB3_USE
 _PUSH_CA_METRIC_CACHE: dict[str, dict[str, Any]] = {}
 _PUSH_CA_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_KLINE_CACHE_TABLE_READY = False
+BOTTOM_ONLY_FRONTEND = os.getenv("BOTTOM_ONLY_FRONTEND", "1").lower() not in {"0", "false", "no"}
 
 # ---------------------------------------------------------------------------
 # Live-track configuration (mirrors deep_alpha_pro settings)
@@ -1512,6 +1513,8 @@ def fetch_onchain_trading_guides(
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    if BOTTOM_ONLY_FRONTEND:
+        return RedirectResponse(url="/bottom-live-track", status_code=302)
     return templates.TemplateResponse(request, "onchain_guides.html", {})
 
 
@@ -1528,11 +1531,15 @@ def health_api(request: Request):
 
 @app.get("/onchain-guides", response_class=HTMLResponse)
 def onchain_guides(request: Request):
+    if BOTTOM_ONLY_FRONTEND:
+        return RedirectResponse(url="/bottom-live-track", status_code=302)
     return templates.TemplateResponse(request, "onchain_guides.html", {})
 
 
 @app.get("/bottom-push-ca", response_class=HTMLResponse)
 def bottom_push_ca_page(request: Request):
+    if BOTTOM_ONLY_FRONTEND:
+        return RedirectResponse(url="/bottom-live-track", status_code=302)
     return templates.TemplateResponse(
         request,
         "push_ca_table.html",
@@ -1547,6 +1554,8 @@ def bottom_push_ca_page(request: Request):
 
 @app.get("/deep-alpha-1m-ca", response_class=HTMLResponse)
 def deep_alpha_1m_ca_page(request: Request):
+    if BOTTOM_ONLY_FRONTEND:
+        return RedirectResponse(url="/bottom-live-track", status_code=302)
     return templates.TemplateResponse(
         request,
         "push_ca_table.html",
@@ -2193,6 +2202,8 @@ def start_live_track_bg():
 
 @app.get("/alpha-live-track", response_class=HTMLResponse)
 def alpha_live_track_page(request: Request):
+    if BOTTOM_ONLY_FRONTEND:
+        return RedirectResponse(url="/bottom-live-track", status_code=302)
     return templates.TemplateResponse(
         request,
         "alpha_live_track.html",

@@ -3,253 +3,513 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>底部异动 实时追踪</title>
+  <title>底部异动终端</title>
   <link rel="stylesheet" href="/static/dashboard.css">
   <style>
-    .live-status {
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --surface: #12161d;
+      --surface-2: #171c24;
+      --line: #29313d;
+      --muted: #8b96a8;
+      --text: #edf1f7;
+      --green: #2dd4bf;
+      --green-soft: rgba(45, 212, 191, .12);
+      --amber: #f3b342;
+      --amber-soft: rgba(243, 179, 66, .13);
+      --red: #fb7185;
+      --red-soft: rgba(251, 113, 133, .12);
+      --blue: #7dd3fc;
+      --blue-soft: rgba(125, 211, 252, .11);
+      --violet: #c4b5fd;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 8% 0%, rgba(45, 212, 191, .09), transparent 28rem),
+        radial-gradient(circle at 80% 8%, rgba(243, 179, 66, .08), transparent 26rem),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .page { min-height: 100vh; }
+    .wrap {
+      width: min(1880px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 18px 0 28px;
+    }
+
+    .terminal-header {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) auto;
+      gap: 18px;
+      align-items: end;
+      padding: 18px 0 14px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .eyebrow {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      color: #9ca3af;
+      gap: 8px;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
     }
-    .live-dot {
+
+    .pulse-dot {
       width: 8px;
       height: 8px;
-      border-radius: 50%;
-      background: #f59e0b;
-      animation: pulse-dot 2s ease-in-out infinite;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 5px rgba(45, 212, 191, .1);
+      animation: pulse 1.9s ease-in-out infinite;
     }
-    .live-dot.disconnected { background: #ef4444; animation: none; }
-    @keyframes pulse-dot {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(0.8); }
+    .pulse-dot.offline { background: var(--red); box-shadow: 0 0 0 5px rgba(251, 113, 133, .1); animation: none; }
+    @keyframes pulse { 50% { transform: scale(.72); opacity: .65; } }
+
+    h1 {
+      margin: 8px 0 4px;
+      font-size: clamp(26px, 3vw, 44px);
+      line-height: 1.05;
+      letter-spacing: 0;
     }
 
-    .track-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .track-table th {
-      text-align: left;
-      padding: 8px 10px;
-      font-weight: 600;
-      color: #9ca3af;
-      border-bottom: 1px solid #374151;
-      white-space: nowrap;
+    .desc {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 780px;
     }
-    .track-table th.sortable {
-      cursor: pointer;
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .status-pill,
+    .audio-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(18, 22, 29, .82);
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .audio-pill { cursor: pointer; }
+    .audio-pill.unlocked { color: var(--green); border-color: rgba(45, 212, 191, .34); }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .metric-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(23, 28, 36, .94), rgba(18, 22, 29, .94));
+      padding: 12px;
+      min-height: 82px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .metric-value {
+      font-size: 26px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .metric-note {
+      color: var(--muted);
+      margin-top: 7px;
+      font-size: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(18, 22, 29, .82);
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .filter-input {
+      width: min(360px, 62vw);
+      min-height: 34px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #0e1218;
+      color: var(--text);
+      padding: 0 11px;
+      outline: none;
+    }
+    .filter-input:focus { border-color: rgba(125, 211, 252, .55); }
+
+    .toggle-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: #cbd5e1;
+      font-size: 12px;
       user-select: none;
-      color: #d1d5db;
     }
-    .track-table th.sortable::after {
-      content: "↕";
-      margin-left: 4px;
-      color: #6b7280;
-      font-size: 11px;
-    }
-    .track-table th.sortable.active::after {
-      content: attr(data-indicator);
-      color: #60a5fa;
-    }
-    .track-table td {
-      padding: 8px 10px;
-      border-bottom: 1px solid #1f2937;
-      vertical-align: middle;
-    }
-    .track-table tr:hover { background: #1f293740; }
-    .track-table tr.removed { opacity: 0.45; }
-    .track-table tr.removed td { text-decoration: line-through; text-decoration-color: #ef444480; }
 
-    .pnl-positive { color: #22c55e; font-weight: 700; }
-    .pnl-negative { color: #ef4444; font-weight: 700; }
-    .pnl-zero { color: #9ca3af; }
-
-    .mcap-bar {
-      height: 4px;
-      border-radius: 2px;
-      background: #374151;
-      margin-top: 4px;
+    .terminal-shell {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(12, 15, 20, .92);
       overflow: hidden;
     }
-    .mcap-bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      transition: width 0.6s ease;
-    }
-    .mcap-bar-fill.gain { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-    .mcap-bar-fill.loss { background: linear-gradient(90deg, #ef4444, #f87171); }
 
-    .token-symbol {
-      font-weight: 700;
-      color: #e5e7eb;
-      font-size: 14px;
+    .table-scroll {
+      overflow: auto;
+      max-height: calc(100vh - 270px);
     }
-    .token-addr {
-      font-size: 11px;
-      color: #6b7280;
-      font-family: 'Courier New', monospace;
+
+    .track-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      min-width: 1420px;
+      font-size: 13px;
+    }
+
+    .track-table th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      text-align: left;
+      padding: 11px 10px;
+      background: #11161d;
+      border-bottom: 1px solid var(--line);
+      color: #aab4c3;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .track-table th.sortable { cursor: pointer; }
+    .track-table th.sortable.active { color: var(--blue); }
+
+    .track-table td {
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(41, 49, 61, .72);
+      vertical-align: top;
+      background: rgba(18, 22, 29, .36);
+    }
+    .track-table tr:hover td { background: rgba(23, 28, 36, .78); }
+    .track-table tr.removed td { opacity: .48; }
+
+    .token-cell {
+      display: grid;
+      gap: 5px;
+      min-width: 210px;
+    }
+    .token-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .token-symbol {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .signal-chip {
-      display: inline-block;
-      padding: 1px 6px;
-      background: #78350f;
-      color: #fbbf24;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 600;
-      margin-left: 4px;
-    }
-    .status-badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--amber-soft);
+      color: #ffd38a;
       font-size: 11px;
-      font-weight: 600;
+      font-weight: 700;
+      white-space: nowrap;
     }
-    .status-badge.tracking { background: #064e3b; color: #34d399; }
-    .status-badge.removed { background: #7f1d1d; color: #fca5a5; }
-    .status-badge.expired { background: #78350f; color: #fbbf24; }
-    .prediction-cell { min-width: 150px; }
+    .token-addr {
+      color: var(--muted);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 11px;
+    }
+
+    .mono { font-family: Consolas, "Courier New", monospace; }
+    .cap-main { font-weight: 800; color: #f8fafc; }
+    .muted { color: var(--muted); }
+    .small { font-size: 11px; }
+
+    .pnl-positive { color: var(--green); font-weight: 800; }
+    .pnl-negative { color: var(--red); font-weight: 800; }
+    .pnl-zero { color: #aab4c3; font-weight: 700; }
+
+    .mcap-bar {
+      height: 5px;
+      width: 110px;
+      border-radius: 999px;
+      background: #26303c;
+      margin-top: 7px;
+      overflow: hidden;
+    }
+    .mcap-bar-fill { height: 100%; border-radius: inherit; transition: width .45s ease; }
+    .mcap-bar-fill.gain { background: linear-gradient(90deg, var(--green), #9ff5e8); }
+    .mcap-bar-fill.loss { background: linear-gradient(90deg, var(--red), #fda4af); }
+
+    .prediction-cell { width: 330px; }
+    .prediction-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
     .prediction-score {
       display: inline-flex;
       align-items: baseline;
-      gap: 5px;
-      font-weight: 700;
-      color: #e5e7eb;
+      gap: 6px;
+      font-weight: 850;
+      font-size: 18px;
     }
-    .prediction-score.strong { color: #22c55e; }
-    .prediction-score.neutral { color: #f59e0b; }
-    .prediction-score.weak { color: #ef4444; }
-    .prediction-meta {
-      margin-top: 2px;
+    .prediction-score.strong { color: var(--green); }
+    .prediction-score.neutral { color: var(--amber); }
+    .prediction-score.weak { color: var(--red); }
+    .quality-pill {
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
       font-size: 11px;
-      color: #9ca3af;
+      font-weight: 700;
       white-space: nowrap;
     }
-    .prediction-details {
+    .prediction-meta {
       margin-top: 4px;
+      color: var(--muted);
       font-size: 11px;
-      color: #9ca3af;
-    }
-    .prediction-details summary {
-      cursor: pointer;
-      color: #93c5fd;
-      outline: none;
-    }
-    .prediction-list {
-      margin: 4px 0 0;
-      padding-left: 14px;
-      max-width: 260px;
-      line-height: 1.45;
-    }
-    .prediction-risk { color: #fca5a5; }
-    .plan-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(160px, 1fr));
-      gap: 6px;
-      margin-top: 6px;
-      max-width: 430px;
-    }
-    .plan-box {
-      border: 1px solid #374151;
-      border-radius: 4px;
-      padding: 6px;
-      background: #11182780;
-    }
-    .plan-title {
-      font-size: 11px;
-      font-weight: 700;
-      color: #d1d5db;
-      margin-bottom: 3px;
-    }
-    .plan-line {
-      font-size: 11px;
-      color: #9ca3af;
       line-height: 1.45;
     }
 
-    .countdown {
-      font-size: 11px;
-      color: #6b7280;
+    .plan-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 5px;
+      margin-top: 8px;
     }
-    .vol-chip {
-      display: inline-block;
-      padding: 1px 5px;
-      background: #1f293780;
-      border-radius: 3px;
-      font-size: 11px;
-      color: #9ca3af;
-      margin-right: 4px;
+    .plan-mini {
+      border: 1px solid rgba(41, 49, 61, .95);
+      background: rgba(11, 13, 16, .42);
+      border-radius: 6px;
+      padding: 6px;
+      min-height: 54px;
     }
+    .plan-mini-label { color: var(--muted); font-size: 10px; margin-bottom: 3px; }
+    .plan-mini-value { color: #e5e7eb; font-size: 12px; font-weight: 750; line-height: 1.35; }
+
+    details.analysis-details {
+      margin-top: 7px;
+      border-top: 1px dashed rgba(148, 163, 184, .18);
+      padding-top: 6px;
+    }
+    details.analysis-details summary {
+      cursor: pointer;
+      color: var(--blue);
+      font-size: 12px;
+      outline: none;
+    }
+    .analysis-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 7px;
+    }
+    .analysis-box {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(11, 13, 16, .55);
+      padding: 8px;
+    }
+    .analysis-title {
+      color: #d7dee9;
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 5px;
+    }
+    .analysis-list {
+      margin: 0;
+      padding-left: 16px;
+      color: #aeb8c8;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .analysis-list.risk { color: #fda4af; }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .status-badge.tracking { background: var(--green-soft); color: var(--green); }
+    .status-badge.removed { background: var(--red-soft); color: var(--red); }
+    .status-badge.expired { background: var(--amber-soft); color: var(--amber); }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 150px;
+    }
+    .mini-btn,
+    .mini-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #11161d;
+      color: #cbd5e1;
+      text-decoration: none;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .mini-btn:hover,
+    .mini-link:hover { border-color: rgba(125, 211, 252, .45); color: var(--blue); }
+
     .empty-state {
       text-align: center;
-      padding: 60px 20px;
-      color: #6b7280;
-      font-size: 15px;
+      padding: 58px 20px;
+      color: var(--muted);
+      font-size: 14px;
     }
-    .empty-state .emoji { font-size: 40px; margin-bottom: 12px; display: block; }
     .last-update {
-      font-size: 11px;
-      color: #4b5563;
+      padding: 8px 12px;
       text-align: right;
-      padding: 4px 10px;
+      color: #697588;
+      font-size: 11px;
+      border-top: 1px solid rgba(41,49,61,.72);
+      background: #0e1218;
+    }
+
+    @media (max-width: 900px) {
+      .terminal-header { grid-template-columns: 1fr; }
+      .header-actions { justify-content: flex-start; }
+      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .analysis-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="page">
     <div class="wrap">
-      <header class="topbar">
+      <header class="terminal-header">
         <div>
-          <h1>底部异动 实时追踪</h1>
-          <p class="desc">底部异动推送CA后实时追踪市值、池子、盈亏（{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时窗口）</p>
+          <div class="eyebrow"><span id="live-dot" class="pulse-dot"></span><span id="live-label">连接中...</span></div>
+          <h1>底部异动终端</h1>
+          <p class="desc">聚合底部异动 CA 的实时市值、历史胜率、入场时间窗、出场节奏和风险点。打新、Deep Alpha 1m、底部推送列表入口已隐藏，仅保留异动终端。</p>
         </div>
-        <div class="nav-actions">
-          <div class="live-status">
-            <span id="live-dot" class="live-dot"></span>
-            <span id="live-label">连接中...</span>
-          </div>
-          <a class="mini-link" href="/alpha-live-track">打新追踪</a>
-          <a class="mini-link" href="/bottom-push-ca">底部推送 CA</a>
-          <a class="mini-link" href="/deep-alpha-1m-ca">Deep Alpha 1m</a>
-          <a class="mini-link" href="/onchain-guides">链上交易指南</a>
+        <div class="header-actions">
+          <button id="audio-toggle" class="audio-pill" type="button">声音提醒待解锁</button>
+          <span class="status-pill">{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时追踪窗口</span>
         </div>
       </header>
 
-      <section class="controls push-controls">
-        <div id="track-summary" class="watch-summary">加载中...</div>
+      <section class="summary-grid" aria-label="追踪概览">
+        <div class="metric-box">
+          <div class="metric-label">追踪中</div>
+          <div id="metric-active" class="metric-value">-</div>
+          <div class="metric-note">实时刷新中的异动 CA</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">偏强胜率</div>
+          <div id="metric-strong" class="metric-value">-</div>
+          <div class="metric-note">预测胜率 >= 60%</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">平均最高收益</div>
+          <div id="metric-peak" class="metric-value">-</div>
+          <div class="metric-note">按当前追踪池计算</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">已移除</div>
+          <div id="metric-removed" class="metric-value">-</div>
+          <div class="metric-note">短时间保留便于复盘</div>
+        </div>
       </section>
 
-      <section class="watchlist-table-wrap card">
-        <table class="track-table">
-          <thead>
-            <tr>
-              <th>Token / 信号</th>
-              <th class="sortable" data-sort="pushed_at">推送时间</th>
-              <th class="sortable" data-sort="entry_mcap">推送市值</th>
-              <th class="sortable" data-sort="current_mcap">当前市值</th>
-              <th>盈亏</th>
-              <th>历史胜率</th>
-              <th>巅峰市值时间</th>
-              <th>推送后最高盈利</th>
-              <th>推送后最高市值</th>
-              <th>池子</th>
-              <th>巅峰耗时</th>
-              <th>Holders</th>
-              <th>已追踪</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="track-rows"></tbody>
-        </table>
+      <section class="toolbar">
+        <div class="toolbar-left">
+          <input id="filter-input" class="filter-input" type="search" placeholder="搜索 symbol / CA / signal type">
+          <label class="toggle-row"><input id="strong-only" type="checkbox"> 只看偏强</label>
+          <label class="toggle-row"><input id="hide-removed" type="checkbox" checked> 隐藏已移除</label>
+        </div>
+        <div class="toolbar-right">
+          <span id="track-summary" class="muted small">加载中...</span>
+        </div>
+      </section>
+
+      <section class="terminal-shell">
+        <div class="table-scroll">
+          <table class="track-table">
+            <thead>
+              <tr>
+                <th>Token / 信号</th>
+                <th class="sortable" data-sort="pushed_at">推送时间</th>
+                <th class="sortable" data-sort="entry_mcap">推送市值</th>
+                <th class="sortable" data-sort="current_mcap">当前市值</th>
+                <th>盈亏</th>
+                <th>胜率 / 入场计划</th>
+                <th>峰值</th>
+                <th>流动性</th>
+                <th>追踪</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="track-rows"></tbody>
+          </table>
+        </div>
         <div id="track-empty" class="empty-state" hidden>
-          <span class="emoji">🔍</span>
-          当前没有正在追踪的底部异动CA<br>
-          <small>等待 Bottom Accumulation Monitor 推送异动信号...</small>
+          当前没有符合筛选条件的底部异动 CA<br>
+          <small>等待 Bottom Accumulation Monitor 推送新的异动信号</small>
         </div>
         <div id="last-update" class="last-update"></div>
       </section>
-
     </div>
   </div>
 
@@ -260,57 +520,61 @@
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
     const lastUpdateEl = document.getElementById("last-update");
+    const filterInput = document.getElementById("filter-input");
+    const strongOnlyEl = document.getElementById("strong-only");
+    const hideRemovedEl = document.getElementById("hide-removed");
+    const audioToggle = document.getElementById("audio-toggle");
+    const metricActive = document.getElementById("metric-active");
+    const metricStrong = document.getElementById("metric-strong");
+    const metricPeak = document.getElementById("metric-peak");
+    const metricRemoved = document.getElementById("metric-removed");
+
     let items = [];
     let evtSource = null;
     let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
+    let hasInitialSnapshot = false;
+    let audioUnlocked = false;
     const alertAudio = new Audio("/static/ElevenLabs.mp3");
     alertAudio.preload = "auto";
-    let audioUnlocked = false;
-    let hasInitialSnapshot = false;
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
-
+    function htmlEscape(v) {
+      return String(v == null ? "" : v)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
     function formatTime(v) {
       const n = safeNum(v);
       if (n <= 0) return "-";
       const date = new Date(n * 1000);
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      const h = String(date.getHours()).padStart(2, '0');
-      const m = String(date.getMinutes()).padStart(2, '0');
-      const s = String(date.getSeconds()).padStart(2, '0');
-      return `${month}-${day} ${h}:${m}:${s}`;
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      const h = String(date.getHours()).padStart(2, "0");
+      const m = String(date.getMinutes()).padStart(2, "0");
+      return `${month}-${day} ${h}:${m}`;
     }
-
-    function htmlEscape(v) {
-      return String(v == null ? "" : v)
-        .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-    }
-
     function formatCap(v) {
       const n = safeNum(v);
       const s = n < 0 ? "-" : "";
       const a = Math.abs(n);
-      if (a >= 1e9) return `${s}$${(a/1e9).toFixed(2)}B`;
-      if (a >= 1e6) return `${s}$${(a/1e6).toFixed(2)}M`;
-      if (a >= 1e3) return `${s}$${(a/1e3).toFixed(1)}K`;
+      if (a >= 1e9) return `${s}$${(a / 1e9).toFixed(2)}B`;
+      if (a >= 1e6) return `${s}$${(a / 1e6).toFixed(2)}M`;
+      if (a >= 1e3) return `${s}$${(a / 1e3).toFixed(1)}K`;
       return `${s}$${Math.round(a)}`;
     }
-
     function formatPnl(v) {
       const n = safeNum(v);
       return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
     }
-
     function pnlClass(v) {
       const n = safeNum(v);
       if (n > 0.5) return "pnl-positive";
       if (n < -0.5) return "pnl-negative";
       return "pnl-zero";
     }
-
     function formatDuration(seconds) {
       seconds = Math.max(0, Math.round(seconds));
       const h = Math.floor(seconds / 3600);
@@ -318,16 +582,13 @@
       if (h > 0) return `${h}h${m}m`;
       return `${m}m`;
     }
-
-    function formatWindow(seconds) {
-      const n = Math.max(0, Math.round(safeNum(seconds, 86400)));
-      const h = Math.floor(n / 3600);
-      const m = Math.floor((n % 3600) / 60);
-      if (h > 0 && m === 0) return `${h}\u5c0f\u65f6\u7a97\u53e3`;
-      if (h > 0) return `${h}h${m}m\u7a97\u53e3`;
-      return `${m}m\u7a97\u53e3`;
+    function formatPlanPrice(v) {
+      const n = safeNum(v);
+      if (n <= 0) return "-";
+      if (n < 0.0001) return n.toExponential(3);
+      if (n < 0.01) return n.toFixed(8);
+      return n.toFixed(6);
     }
-
     function formatCreationAge(item, nowTs) {
       const createdTs = safeNum(item.created_ts);
       const explicitAge = safeNum(item.created_age_sec || item.age_sec);
@@ -338,20 +599,11 @@
       if (days <= 0) return `${Math.max(1, hours)}小时`;
       return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
     }
-
-    function formatPeakDelay(item) {
-      const pushedAt = safeNum(item.pushed_at);
-      const peakAt = safeNum(item.peak_mcap_at || item.pushed_at);
-      if (pushedAt <= 0 || peakAt <= 0 || peakAt < pushedAt) return "-";
-      return `${Math.floor((peakAt - pushedAt) / 60)}分钟`;
-    }
-
     function sortValue(item, key) {
       if (key === "entry_mcap") return safeNum(item.entry_mcap);
       if (key === "current_mcap") return safeNum(item.current_mcap);
       return safeNum(item.pushed_at);
     }
-
     function sortTrackItems(list) {
       const dir = sortState.dir === "asc" ? 1 : -1;
       return (list || []).slice().sort((a, b) => {
@@ -360,22 +612,89 @@
         return (safeNum(a.pushed_at) - safeNum(b.pushed_at)) * -1;
       });
     }
-
     function updateSortHeaders() {
       document.querySelectorAll("th.sortable").forEach(th => {
-        const active = th.dataset.sort === sortState.key;
-        th.classList.toggle("active", active);
-        th.dataset.indicator = active ? (sortState.dir === "asc" ? "↑" : "↓") : "↕";
+        th.classList.toggle("active", th.dataset.sort === sortState.key);
       });
     }
-
+    function predictionClass(pct) {
+      if (pct >= 60) return "strong";
+      if (pct >= 40) return "neutral";
+      return "weak";
+    }
+    function confidenceLabel(v) {
+      if (v === "high") return "高置信";
+      if (v === "medium") return "中置信";
+      if (v === "low") return "低置信";
+      return "置信未知";
+    }
+    function listHtml(values, cls = "") {
+      const arr = Array.isArray(values) ? values.filter(Boolean).slice(0, 5) : [];
+      if (!arr.length) return `<div class="muted small">暂无</div>`;
+      return `<ul class="analysis-list ${cls}">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
+    }
+    function entryMini(level) {
+      if (!level) return "";
+      return `
+        <div class="plan-mini">
+          <div class="plan-mini-label">${htmlEscape(level.label || "入场")} ${safeNum(level.drawdown_pct).toFixed(0)}%</div>
+          <div class="plan-mini-value">${formatCap(level.mcap)}${safeNum(level.price) > 0 ? `<br>${formatPlanPrice(level.price)}` : ""}</div>
+        </div>
+      `;
+    }
+    function predictionHtml(item) {
+      const pred = item.winrate_prediction || {};
+      const plan = pred.strategy_plan || {};
+      const entry = plan.entry || {};
+      const exit = plan.exit || {};
+      const pct = safeNum(pred.predicted_winrate_pct, -1);
+      if (pct < 0) return `<span class="muted">等待数据</span>`;
+      return `
+        <div class="prediction-cell">
+          <div class="prediction-top">
+            <div class="prediction-score ${predictionClass(pct)}"><span>${pct.toFixed(1)}%</span><small>${htmlEscape(pred.label || "")}</small></div>
+            <span class="quality-pill">${htmlEscape(confidenceLabel(pred.confidence))}</span>
+          </div>
+          <div class="prediction-meta">基准 ${safeNum(pred.baseline_winrate_pct).toFixed(0)}% · n=${safeNum(pred.baseline_sample_count) || "-"} · ${htmlEscape(pred.winner_definition || "历史最大涨幅>=30%")}</div>
+          <div class="plan-strip">
+            ${entryMini(entry.primary)}
+            ${entryMini(entry.balanced)}
+            ${entryMini(entry.deep)}
+          </div>
+          <div class="prediction-meta">有效至 ${formatTime(entry.expires_at_ts)} · 30m复查 ${formatTime(exit.quick_review_ts)} · 295m退出 ${formatTime(exit.time_stop_ts)}</div>
+          <details class="analysis-details">
+            <summary>展开依据 / 风险 / 出场</summary>
+            <div class="analysis-grid">
+              <div class="analysis-box">
+                <div class="analysis-title">胜率依据</div>
+                ${listHtml(pred.evidence)}
+              </div>
+              <div class="analysis-box">
+                <div class="analysis-title">风险点</div>
+                ${listHtml(plan.risk_points || pred.risk_factors, "risk")}
+              </div>
+              <div class="analysis-box">
+                <div class="analysis-title">出场节奏</div>
+                <div class="prediction-meta">TP1 +${safeNum(exit.tp1_pct)}% 平${safeNum(exit.tp1_close_pct)}%</div>
+                <div class="prediction-meta">TP2 +${safeNum(exit.tp2_pct)}% 平${safeNum(exit.tp2_close_pct)}%</div>
+                <div class="prediction-meta">剩余${safeNum(exit.runner_close_pct)}%，峰值回撤${safeNum(exit.trailing_from_peak_drawdown_pct)}%跟踪</div>
+              </div>
+              <div class="analysis-box">
+                <div class="analysis-title">时间计划</div>
+                <div class="prediction-meta">中位到峰 ${formatTime(exit.median_peak_ts)}</div>
+                <div class="prediction-meta">${htmlEscape(exit.exit_time_rule || "")}</div>
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
+    }
     function statusBadge(item) {
       const status = item.status || "tracking";
-      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">\u5df2\u79fb\u9664</span>`;
-      if (status === "expired") return `<span class="status-badge expired">\u5df2\u8fc7\u671f</span>`;
-      return `<span class="status-badge tracking">\u8ffd\u8e2a\u4e2d</span>`;
+      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || "")}">已移除</span>`;
+      if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
+      return `<span class="status-badge tracking">追踪中</span>`;
     }
-
     function mcapBarHtml(entry, current) {
       const e = safeNum(entry);
       const c = safeNum(current);
@@ -385,149 +704,11 @@
       const cls = c >= e ? "gain" : "loss";
       return `<div class="mcap-bar"><div class="mcap-bar-fill ${cls}" style="width:${pct}%"></div></div>`;
     }
-
-    function confidenceLabel(v) {
-      if (v === "high") return "高置信";
-      if (v === "medium") return "中置信";
-      if (v === "low") return "低置信";
-      return "置信未知";
-    }
-
-    function predictionClass(pct) {
-      if (pct >= 60) return "strong";
-      if (pct >= 40) return "neutral";
-      return "weak";
-    }
-
-    function predictionListHtml(items, cls = "") {
-      const arr = Array.isArray(items) ? items.filter(Boolean).slice(0, 3) : [];
-      if (!arr.length) return "";
-      return `<ul class="prediction-list ${cls}">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
-    }
-
-    function formatPlanTime(v) {
-      const n = safeNum(v);
-      if (n <= 0) return "-";
-      return formatTime(n);
-    }
-
-    function formatPlanPrice(v) {
-      const n = safeNum(v);
-      if (n <= 0) return "-";
-      if (n < 0.0001) return n.toExponential(3);
-      if (n < 0.01) return n.toFixed(8);
-      return n.toFixed(6);
-    }
-
-    function entryLevelHtml(level) {
-      if (!level) return "";
-      const mcap = formatCap(level.mcap);
-      const price = formatPlanPrice(level.price);
-      return `<div class="plan-line">${htmlEscape(level.label || "入场")} ${safeNum(level.drawdown_pct).toFixed(0)}%: ${mcap}${price !== "-" ? ` / ${price}` : ""}</div>`;
-    }
-
-    function strategyPlanHtml(pred) {
-      const plan = pred.strategy_plan || {};
-      const entry = plan.entry || {};
-      const exit = plan.exit || {};
-      const riskPoints = Array.isArray(plan.risk_points) ? plan.risk_points.slice(0, 4) : [];
-      if (!entry.primary && !exit.time_stop_ts && !riskPoints.length) return "";
-      return `
-        <div class="plan-grid">
-          <div class="plan-box">
-            <div class="plan-title">入场点 / 时间</div>
-            ${entryLevelHtml(entry.primary)}
-            ${entryLevelHtml(entry.balanced)}
-            ${entryLevelHtml(entry.deep)}
-            <div class="plan-line">有效至: ${formatPlanTime(entry.expires_at_ts)}</div>
-          </div>
-          <div class="plan-box">
-            <div class="plan-title">出场时间 / 节奏</div>
-            <div class="plan-line">30m复查: ${formatPlanTime(exit.quick_review_ts)}</div>
-            <div class="plan-line">中位到峰: ${formatPlanTime(exit.median_peak_ts)}</div>
-            <div class="plan-line">时间止盈/退出: ${formatPlanTime(exit.time_stop_ts)}</div>
-            <div class="plan-line">TP: +${safeNum(exit.tp1_pct)}% / +${safeNum(exit.tp2_pct)}%</div>
-          </div>
-        </div>
-        ${riskPoints.length ? `<div class="prediction-meta prediction-risk">风险点</div>${predictionListHtml(riskPoints, "prediction-risk")}` : ""}
-      `;
-    }
-
-    function predictionHtml(item) {
-      const pred = item.winrate_prediction || {};
-      const pct = safeNum(pred.predicted_winrate_pct, -1);
-      if (pct < 0) return "-";
-      const label = pred.label || "";
-      const confidence = confidenceLabel(pred.confidence);
-      const baseline = safeNum(pred.baseline_winrate_pct, 0);
-      const sampleCount = safeNum(pred.baseline_sample_count, 0);
-      const evidence = predictionListHtml(pred.evidence);
-      const risks = predictionListHtml(pred.risk_factors, "prediction-risk");
-      return `
-        <div class="prediction-cell">
-          <div class="prediction-score ${predictionClass(pct)}">
-            <span>${pct.toFixed(1)}%</span>
-            <small>${htmlEscape(label)}</small>
-          </div>
-          <div class="prediction-meta">基准${baseline.toFixed(0)}% · n=${sampleCount || "-"} · ${htmlEscape(confidence)}</div>
-          <details class="prediction-details">
-            <summary>依据</summary>
-            ${evidence || `<div class="prediction-meta">暂无正向依据</div>`}
-            ${risks ? `<div class="prediction-meta prediction-risk">风险</div>${risks}` : ""}
-            ${strategyPlanHtml(pred)}
-          </details>
-        </div>
-      `;
-    }
-
-    function unlockAudio() {
-      if (audioUnlocked) return;
-      alertAudio.volume = 0.85;
-      alertAudio.muted = true;
-      const p = alertAudio.play();
-      if (p && typeof p.then === "function") {
-        p.then(() => {
-          alertAudio.pause();
-          alertAudio.currentTime = 0;
-          alertAudio.muted = false;
-          audioUnlocked = true;
-        }).catch(() => {
-          alertAudio.muted = false;
-        });
-      }
-    }
-
-    function playNewSignalAudio() {
-      if (!audioUnlocked) return;
-      try {
-        alertAudio.currentTime = 0;
-        const p = alertAudio.play();
-        if (p && typeof p.catch === "function") p.catch(() => {});
-      } catch (_) {}
-    }
-
-    function notifyNewItems(newItems) {
-      if (!hasInitialSnapshot) return;
-      const known = new Set(items.map(item => item.address).filter(Boolean));
-      const hasNew = (newItems || []).some(item => item && item.status === "tracking" && item.address && !known.has(item.address));
-      if (hasNew) playNewSignalAudio();
-    }
-
-    function gmgnUrl(item) {
-      return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`;
-    }
-
-    function binanceUrl(item) {
-      return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`;
-    }
-
+    function gmgnUrl(item) { return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`; }
+    function binanceUrl(item) { return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`; }
     async function copyCA(addr) {
       if (!addr) return;
-      try {
-        await navigator.clipboard.writeText(addr);
-        return;
-      } catch (_) {}
-      // Fallback for non-HTTPS contexts
+      try { await navigator.clipboard.writeText(addr); return; } catch (_) {}
       const area = document.createElement("textarea");
       area.value = addr;
       area.style.position = "fixed";
@@ -537,173 +718,172 @@
       document.execCommand("copy");
       area.remove();
     }
-
+    function filteredItems() {
+      const q = filterInput.value.trim().toLowerCase();
+      return items.filter(item => {
+        if (hideRemovedEl.checked && item.status !== "tracking") return false;
+        const pct = safeNum((item.winrate_prediction || {}).predicted_winrate_pct, -1);
+        if (strongOnlyEl.checked && pct < 60) return false;
+        if (!q) return true;
+        return [item.symbol, item.address, item.signal_type].some(v => String(v || "").toLowerCase().includes(q));
+      });
+    }
+    function updateMetrics(active, removed, visible) {
+      const strong = active.filter(item => safeNum((item.winrate_prediction || {}).predicted_winrate_pct) >= 60).length;
+      const peakPnls = active.map(item => {
+        const entry = safeNum(item.entry_mcap);
+        const peak = safeNum(item.peak_mcap);
+        return entry > 0 ? ((peak - entry) / entry * 100) : 0;
+      });
+      const avgPeak = peakPnls.length ? peakPnls.reduce((a, b) => a + b, 0) / peakPnls.length : 0;
+      metricActive.textContent = String(active.length);
+      metricStrong.textContent = String(strong);
+      metricPeak.textContent = peakPnls.length ? formatPnl(avgPeak) : "-";
+      metricRemoved.textContent = String(removed.length);
+      summaryEl.textContent = `显示 ${visible.length} / 总计 ${active.length + removed.length} · 每30秒刷新`;
+    }
     function render() {
       updateSortHeaders();
       const active = sortTrackItems(items.filter(i => i.status === "tracking"));
       const removed = sortTrackItems(items.filter(i => i.status !== "tracking"));
-      const sorted = [...active, ...removed];
+      const sorted = sortTrackItems(filteredItems());
       const now = Math.floor(Date.now() / 1000);
-
+      updateMetrics(active, removed, sorted);
       emptyEl.hidden = sorted.length > 0;
-      summaryEl.textContent = `\u8ffd\u8e2a\u4e2d: ${active.length} | \u5df2\u79fb\u9664: ${removed.length} | \u5171 ${sorted.length} \u4e2aCA | ${formatWindow(trackTtlSec)} | \u6bcf30\u79d2\u81ea\u52a8\u5237\u65b0`;
-
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
         const remaining = Math.max(0, trackTtlSec - age);
         const isRemoved = item.status !== "tracking";
-        const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
-        const signalType = item.signal_type || "";
-        const creationAge = formatCreationAge(item, now);
-        const peakDelay = formatPeakDelay(item);
-
-        // Calculate peak/max PnL since pushed
         const entryMcap = safeNum(item.entry_mcap);
         const peakMcap = safeNum(item.peak_mcap);
-        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0.0;
-
+        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0;
+        const creationAge = formatCreationAge(item, now);
         return `
-          <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
+          <tr class="${isRemoved ? "removed" : ""}" data-ca="${htmlEscape(item.address)}">
             <td>
-              <div class="token-symbol">
-                $${htmlEscape(item.symbol || "UNKNOWN")}
-                ${signalType ? `<span class="signal-chip">${htmlEscape(signalType)}</span>` : ""}
+              <div class="token-cell">
+                <div class="token-line"><span class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</span>${item.signal_type ? `<span class="signal-chip">${htmlEscape(item.signal_type)}</span>` : ""}</div>
+                <div class="token-addr">${htmlEscape(item.address || "")}</div>
+                ${creationAge ? `<div class="muted small">创建 ${htmlEscape(creationAge)}</div>` : ""}
               </div>
-              <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
-              ${creationAge ? `<div class="token-addr">创建 ${htmlEscape(creationAge)}</div>` : ""}
             </td>
-            <td><span>${formatTime(item.pushed_at)}</span></td>
-            <td><b>${formatCap(item.entry_mcap)}</b></td>
-            <td>
-              <b>${formatCap(item.current_mcap)}</b>
-              ${mcapBarHtml(item.entry_mcap, item.current_mcap)}
-            </td>
-            <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
+            <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)}前</div></td>
+            <td><div class="cap-main">${formatCap(item.entry_mcap)}</div></td>
+            <td><div class="cap-main">${formatCap(item.current_mcap)}</div>${mcapBarHtml(item.entry_mcap, item.current_mcap)}</td>
+            <td><div class="${pnlClass(pnl)}">${formatPnl(pnl)}</div></td>
             <td>${predictionHtml(item)}</td>
-            <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
-            <td><b class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</b></td>
-            <td><b>${formatCap(item.peak_mcap)}</b></td>
-            <td>${formatCap(item.pool_liquidity)}</td>
-            <td><span>${htmlEscape(peakDelay)}</span></td>
-            <td>${safeNum(item.holders) || "-"}</td>
-            <td>
-              <span>${formatDuration(age)}</span>
-              ${!isRemoved ? `<div class="countdown">\u5269\u4f59 ${formatDuration(remaining)}</div>` : ""}
-            </td>
+            <td><div class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</div><div class="muted small">${formatCap(item.peak_mcap)} · ${formatTime(item.peak_mcap_at || item.pushed_at)}</div></td>
+            <td><div>${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
+            <td><div>${formatDuration(age)}</div>${!isRemoved ? `<div class="muted small">剩余 ${formatDuration(remaining)}</div>` : ""}</td>
             <td>${statusBadge(item)}</td>
-            <td>
-              <div class="card-actions">
-                <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">\u590d\u5236</button>
-                <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
-                <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
-              </div>
-            </td>
+            <td><div class="actions"><button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button><a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a><a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a></div></td>
           </tr>
         `;
       }).join("");
     }
-
     function mergeItems(newItems) {
       const byAddr = {};
       for (const item of items) byAddr[item.address] = item;
       for (const item of newItems) byAddr[item.address] = item;
       const now = Math.floor(Date.now() / 1000);
-      items = Object.values(byAddr).filter(item => {
-        if (item.status === "removed") {
-          return now - safeNum(item.last_updated) < 120;
-        }
-        return true;
-      });
+      items = Object.values(byAddr).filter(item => item.status !== "removed" || now - safeNum(item.last_updated) < 120);
       items = sortTrackItems(items);
     }
-
-    function sortByPushTime(list) {
-      return sortTrackItems(list);
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      alertAudio.volume = 0.86;
+      alertAudio.muted = true;
+      const p = alertAudio.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          alertAudio.pause();
+          alertAudio.currentTime = 0;
+          alertAudio.muted = false;
+          audioUnlocked = true;
+          audioToggle.classList.add("unlocked");
+          audioToggle.textContent = "声音提醒已开启";
+        }).catch(() => {
+          alertAudio.muted = false;
+          audioToggle.textContent = "点击开启声音提醒";
+        });
+      }
     }
-
-    document.querySelectorAll("th.sortable").forEach(th => {
-      th.addEventListener("click", () => {
-        const key = th.dataset.sort || "pushed_at";
-        sortState = {
-          key,
-          dir: sortState.key === key && sortState.dir === "desc" ? "asc" : "desc",
-        };
-        items = sortTrackItems(items);
-        render();
-      });
-    });
-    document.addEventListener("click", unlockAudio, { once: true });
-    document.addEventListener("keydown", unlockAudio, { once: true });
-
+    function playNewSignalAudio() {
+      if (!audioUnlocked) return;
+      try {
+        alertAudio.currentTime = 0;
+        const p = alertAudio.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch (_) {}
+    }
+    function notifyNewItems(newItems) {
+      if (!hasInitialSnapshot) return;
+      const known = new Set(items.map(item => item.address).filter(Boolean));
+      const hasNew = (newItems || []).some(item => item && item.status === "tracking" && item.address && !known.has(item.address));
+      if (hasNew) playNewSignalAudio();
+    }
     function setConnected(ok) {
-      liveDot.className = ok ? "live-dot" : "live-dot disconnected";
-      liveLabel.textContent = ok ? "\u5b9e\u65f6\u8fde\u63a5" : "\u5df2\u65ad\u5f00";
+      liveDot.className = ok ? "pulse-dot" : "pulse-dot offline";
+      liveLabel.textContent = ok ? "实时连接" : "连接断开";
     }
-
     function connectSSE() {
       if (evtSource) { try { evtSource.close(); } catch (_) {} }
       evtSource = new EventSource("/api/bottom-live-track/events");
-
-      evtSource.addEventListener("snapshot", (e) => {
+      evtSource.addEventListener("snapshot", e => {
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
-          items = sortByPushTime(data.items);
+          items = sortTrackItems(data.items || []);
           render();
           hasInitialSnapshot = true;
           setConnected(true);
-          lastUpdateEl.textContent = `\u521d\u59cb\u5feb\u7167 ${new Date().toLocaleTimeString()}`;
+          lastUpdateEl.textContent = `初始快照 ${new Date().toLocaleTimeString()}`;
         } catch (_) {}
       });
-
-      evtSource.addEventListener("update", (e) => {
+      evtSource.addEventListener("update", e => {
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           notifyNewItems(data.items || []);
           mergeItems(data.items || []);
           render();
-          lastUpdateEl.textContent = `\u6700\u540e\u66f4\u65b0 ${new Date().toLocaleTimeString()}`;
+          lastUpdateEl.textContent = `最后更新 ${new Date().toLocaleTimeString()}`;
         } catch (_) {}
       });
-
-      evtSource.addEventListener("error", (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          console.warn("[BottomLiveTrack] SSE error:", data.message);
-        } catch (_) {}
-      });
-
       evtSource.onerror = () => {
         setConnected(false);
-        liveLabel.textContent = "\u91cd\u8fde\u4e2d...";
         setTimeout(() => {
-          if (evtSource && evtSource.readyState === EventSource.CLOSED) {
-            connectSSE();
-          }
+          if (evtSource && evtSource.readyState === EventSource.CLOSED) connectSSE();
         }, 5000);
       };
-
       evtSource.onopen = () => setConnected(true);
     }
 
-    // Initial load via REST, then switch to SSE
+    document.querySelectorAll("th.sortable").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort || "pushed_at";
+        sortState = { key, dir: sortState.key === key && sortState.dir === "desc" ? "asc" : "desc" };
+        render();
+      });
+    });
+    [filterInput, strongOnlyEl, hideRemovedEl].forEach(el => el.addEventListener("input", render));
+    audioToggle.addEventListener("click", unlockAudio);
+    document.addEventListener("keydown", unlockAudio, { once: true });
+
     fetch("/api/bottom-live-track")
       .then(r => r.json())
       .then(data => {
-        items = sortByPushTime(data.items);
+        items = sortTrackItems(data.items || []);
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         hasInitialSnapshot = true;
         connectSSE();
       })
       .catch(err => {
-        summaryEl.textContent = `\u52a0\u8f7d\u5931\u8d25: ${err.message}`;
+        summaryEl.textContent = `加载失败: ${err.message}`;
         connectSSE();
       });
-
-    // Fallback: poll every 35s
     setInterval(() => {
       fetch("/api/bottom-live-track")
         .then(r => r.json())
