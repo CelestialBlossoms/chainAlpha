@@ -35,6 +35,21 @@
       border-bottom: 1px solid #374151;
       white-space: nowrap;
     }
+    .track-table th.sortable {
+      cursor: pointer;
+      user-select: none;
+      color: #d1d5db;
+    }
+    .track-table th.sortable::after {
+      content: "↕";
+      margin-left: 4px;
+      color: #6b7280;
+      font-size: 11px;
+    }
+    .track-table th.sortable.active::after {
+      content: attr(data-indicator);
+      color: #60a5fa;
+    }
     .track-table td {
       padding: 8px 10px;
       border-bottom: 1px solid #1f2937;
@@ -141,9 +156,9 @@
           <thead>
             <tr>
               <th>Token</th>
-              <th>推送时间</th>
+              <th class="sortable" data-sort="pushed_at">推送时间</th>
               <th>推送市值</th>
-              <th>当前市值</th>
+              <th class="sortable" data-sort="current_mcap">当前市值</th>
               <th>盈亏</th>
               <th>巅峰市值时间</th>
               <th>最高市值</th>
@@ -213,6 +228,7 @@
     let deletedItems = [];
     let evtSource = null;
     let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
+    let sortState = { key: "pushed_at", dir: "desc" };
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -273,6 +289,28 @@
       return `${m}m\u7a97\u53e3`;
     }
 
+    function sortValue(item, key) {
+      if (key === "current_mcap") return safeNum(item.current_mcap);
+      return safeNum(item.pushed_at);
+    }
+
+    function sortTrackItems(list) {
+      const dir = sortState.dir === "asc" ? 1 : -1;
+      return (list || []).slice().sort((a, b) => {
+        const diff = sortValue(a, sortState.key) - sortValue(b, sortState.key);
+        if (diff !== 0) return diff * dir;
+        return (safeNum(a.pushed_at) - safeNum(b.pushed_at)) * -1;
+      });
+    }
+
+    function updateSortHeaders() {
+      document.querySelectorAll("th.sortable").forEach(th => {
+        const active = th.dataset.sort === sortState.key;
+        th.classList.toggle("active", active);
+        th.dataset.indicator = active ? (sortState.dir === "asc" ? "↑" : "↓") : "↕";
+      });
+    }
+
     function statusBadge(item) {
       const status = item.status || "tracking";
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
@@ -316,8 +354,9 @@
     }
 
     function render() {
-      const active = items.filter(i => i.status === "tracking");
-      const removed = items.filter(i => i.status !== "tracking");
+      updateSortHeaders();
+      const active = sortTrackItems(items.filter(i => i.status === "tracking"));
+      const removed = sortTrackItems(items.filter(i => i.status !== "tracking"));
       const sorted = [...active, ...removed];
       const now = Math.floor(Date.now() / 1000);
 
@@ -380,12 +419,24 @@
         }
         return true;
       });
-      items.sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
+      items = sortTrackItems(items);
     }
 
     function sortByPushTime(list) {
-      return (list || []).slice().sort((a, b) => safeNum(b.pushed_at) - safeNum(a.pushed_at));
+      return sortTrackItems(list);
     }
+
+    document.querySelectorAll("th.sortable").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort || "pushed_at";
+        sortState = {
+          key,
+          dir: sortState.key === key && sortState.dir === "desc" ? "asc" : "desc",
+        };
+        items = sortTrackItems(items);
+        render();
+      });
+    });
 
     function setConnected(ok) {
       liveDot.className = ok ? "live-dot" : "live-dot disconnected";
