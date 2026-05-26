@@ -67,6 +67,11 @@ TREND_ORDER_BYS = tuple(
     for item in os.getenv("BOTTOM_TREND_ORDER_BYS", "default,change5m").split(",")
     if item.strip()
 )
+TREND_FILTERS = tuple(
+    item.strip()
+    for item in os.getenv("BOTTOM_TREND_FILTERS", "is_out_market,not_wash_trading").split(",")
+    if item.strip()
+)
 TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 MAX_TOKENS = int(os.getenv("BOTTOM_MAX_TOKENS", "0"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
@@ -512,6 +517,8 @@ def token_pool_filter_reason(pool_liquidity: float, pool_reliable: bool, reason:
 
 def fetch_trending_tokens_for_interval(interval: str, order_by: str = "default") -> list[dict[str, Any]]:
     args = ["market", "trending", "--chain", CHAIN, "--interval", interval, "--limit", str(TREND_LIMIT)]
+    for filter_tag in TREND_FILTERS:
+        args.extend(["--filter", filter_tag])
     if order_by and order_by != "default":
         args.extend(["--order-by", order_by, "--direction", "desc"])
     data = run_gmgn(args)
