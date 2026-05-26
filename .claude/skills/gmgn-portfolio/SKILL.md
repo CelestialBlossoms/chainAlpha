@@ -52,7 +52,7 @@ Use the `gmgn-cli` tool to query wallet portfolio data based on the user's reque
 
 ## Rate Limit Handling
 
-All portfolio routes used by this skill go through GMGN's leaky-bucket limiter with `rate=10` and `capacity=10`. Sustained throughput is roughly `10 ÷ weight` requests/second, and the max burst is roughly `floor(10 ÷ weight)` when the bucket is full.
+All portfolio routes used by this skill go through GMGN's leaky-bucket limiter with `rate=20` and `capacity=20`. Sustained throughput is roughly `20 ÷ weight` requests/second, and the max burst is roughly `floor(20 ÷ weight)` when the bucket is full.
 
 | Command | Route | Weight |
 |---------|-------|--------|
@@ -360,7 +360,7 @@ Show the `[Identity: ...]` line only if `common` is present in the response. For
 
 ## Notes
 
-- All portfolio commands use normal auth (API Key only, no signature required)
+- All portfolio commands use exist auth (API Key only, no signature required)
 - `portfolio stats` supports multiple `--wallet` flags for batch queries
 - Use `--raw` to get single-line JSON for further processing
 - **Input validation** — Wallet and token addresses are validated against the expected chain format at runtime (sol: base58 32–44 chars; bsc/base/eth: `0x` + 40 hex digits). The CLI exits with an error on invalid input.

@@ -2675,6 +2675,37 @@ def bottom_live_track_api(request: Request):
     }
 
 
+@app.get("/api/bottom-live-track/{address}/detail")
+def bottom_live_track_detail_api(address: str):
+    track = _bottom_live_track_load(address)
+    if not track:
+        raise HTTPException(status_code=404, detail="track not found")
+
+    now_ts = int(time.time())
+    pushed_at = _safe_int(track.get("pushed_at")) or max(0, now_ts - BOTTOM_LIVE_TRACK_KLINE_WINDOW_SEC)
+    from_ts = max(0, pushed_at - _kline_resolution_seconds("5m"))
+    to_ts = now_ts
+    candles: list[dict[str, float]] = []
+    kline_source = "empty"
+    try:
+        candles, kline_source = fetch_dashboard_kline_range(
+            address,
+            from_ts,
+            to_ts,
+            resolution="5m",
+            allow_external=True,
+        )
+    except Exception as exc:
+        kline_source = f"error:{exc.__class__.__name__}"
+
+    return {
+        "address": address,
+        "kline_source": kline_source,
+        "candles": candles[-180:],
+        "ts": now_ts,
+    }
+
+
 @app.get("/api/bottom-live-track/events")
 async def bottom_live_track_events(request: Request):
     async def generator():

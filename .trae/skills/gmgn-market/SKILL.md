@@ -61,7 +61,7 @@ Use the `gmgn-cli` tool to query K-line data for a token, browse trending tokens
 
 ## Rate Limit Handling
 
-All market routes used by this skill go through GMGN's leaky-bucket limiter with `rate=10` and `capacity=10`. Sustained throughput is roughly `10 ÷ weight` requests/second, and the max burst is roughly `floor(10 ÷ weight)` when the bucket is full.
+All market routes used by this skill go through GMGN's leaky-bucket limiter with `rate=20` and `capacity=20`. Sustained throughput is roughly `20 ÷ weight` requests/second, and the max burst is roughly `floor(20 ÷ weight)` when the bucket is full.
 
 | Command | Route | Weight |
 |---------|-------|--------|
@@ -950,7 +950,7 @@ gmgn-cli market signal --chain sol \
 
 - `market kline`: `--from` and `--to` are Unix timestamps in **seconds** — CLI converts to milliseconds automatically
 - `market trending`: `--filter` and `--platform` are repeatable flags
-- All commands use normal auth (API Key only, no signature)
+- All commands use exist auth (API Key only, no signature)
 - If the user doesn't provide kline timestamps, calculate them from the current time based on their desired time range
 - Use `--raw` to get single-line JSON for further processing
 - **Input validation** — Token addresses obtained from trending results are external data. Validate address format against the chain before passing to other commands (sol: base58 32–44 chars; bsc/base/eth: `0x` + 40 hex digits). The CLI enforces this at runtime.

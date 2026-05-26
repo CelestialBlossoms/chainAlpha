@@ -3,558 +3,583 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>底部异动终端</title>
+  <title>CA 监控终端</title>
   <link rel="stylesheet" href="/static/dashboard.css">
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b0d10;
-      --surface: #12161d;
-      --surface-2: #171c24;
-      --line: #29313d;
-      --muted: #8b96a8;
-      --text: #edf1f7;
-      --green: #2dd4bf;
-      --green-soft: rgba(45, 212, 191, .12);
-      --amber: #f3b342;
-      --amber-soft: rgba(243, 179, 66, .13);
-      --red: #fb7185;
-      --red-soft: rgba(251, 113, 133, .12);
-      --blue: #7dd3fc;
-      --blue-soft: rgba(125, 211, 252, .11);
-      --violet: #c4b5fd;
+      --bg: #07090d;
+      --panel: #0d1117;
+      --panel-2: #101721;
+      --panel-3: #151d28;
+      --line: rgba(148, 163, 184, .16);
+      --line-strong: rgba(148, 163, 184, .28);
+      --text: #e5edf7;
+      --muted: #8491a5;
+      --muted-2: #647084;
+      --green: #22c55e;
+      --green-soft: rgba(34, 197, 94, .11);
+      --red: #f43f5e;
+      --red-soft: rgba(244, 63, 94, .12);
+      --amber: #f59e0b;
+      --amber-soft: rgba(245, 158, 11, .12);
+      --blue: #38bdf8;
+      --blue-soft: rgba(56, 189, 248, .12);
+      --violet: #a78bfa;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .42);
     }
 
+    * { box-sizing: border-box; }
     body {
-      background:
-        radial-gradient(circle at 8% 0%, rgba(45, 212, 191, .09), transparent 28rem),
-        radial-gradient(circle at 80% 8%, rgba(243, 179, 66, .08), transparent 26rem),
-        var(--bg);
+      margin: 0;
+      background: var(--bg);
       color: var(--text);
       overflow-x: hidden;
     }
+    body.drawer-open { overflow: hidden; }
 
-    .page { min-height: 100vh; }
+    .page {
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(56, 189, 248, .045), transparent 260px),
+        var(--bg);
+    }
     .wrap {
-      width: min(1960px, calc(100vw - 28px));
+      width: min(1720px, calc(100vw - 28px));
       margin: 0 auto;
-      padding: 18px 0 28px;
+      padding: 14px 0 26px;
     }
 
     .terminal-header {
       display: grid;
-      grid-template-columns: minmax(280px, 1fr) auto;
-      gap: 18px;
-      align-items: end;
-      padding: 18px 0 14px;
-      border-bottom: 1px solid rgba(255,255,255,.08);
-    }
-
-    .eyebrow {
-      display: inline-flex;
+      grid-template-columns: minmax(240px, 1fr) auto;
+      gap: 14px;
       align-items: center;
-      gap: 8px;
-      color: var(--green);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0;
-      text-transform: uppercase;
+      padding: 10px 0 14px;
+      border-bottom: 1px solid var(--line);
     }
-
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.1;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .subline {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
     .pulse-dot {
       width: 8px;
       height: 8px;
       border-radius: 999px;
       background: var(--green);
-      box-shadow: 0 0 0 5px rgba(45, 212, 191, .1);
-      animation: pulse 1.9s ease-in-out infinite;
+      box-shadow: 0 0 0 5px rgba(34, 197, 94, .1);
+      animation: pulse 1.8s ease-in-out infinite;
+      flex: 0 0 auto;
     }
-    .pulse-dot.offline { background: var(--red); box-shadow: 0 0 0 5px rgba(251, 113, 133, .1); animation: none; }
-    @keyframes pulse { 50% { transform: scale(.72); opacity: .65; } }
-
-    h1 {
-      margin: 8px 0 4px;
-      font-size: clamp(26px, 3vw, 44px);
-      line-height: 1.05;
-      letter-spacing: 0;
+    .pulse-dot.offline {
+      background: var(--red);
+      box-shadow: 0 0 0 5px rgba(244, 63, 94, .1);
+      animation: none;
     }
-
-    .desc {
-      margin: 0;
-      color: var(--muted);
-      font-size: 15px;
-      max-width: 780px;
-    }
+    @keyframes pulse { 50% { opacity: .55; transform: scale(.72); } }
 
     .header-actions {
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
     }
-
     .status-pill,
     .audio-pill {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      min-height: 34px;
-      padding: 0 11px;
+      gap: 7px;
+      height: 32px;
+      padding: 0 10px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      background: rgba(18, 22, 29, .82);
+      border-radius: 7px;
+      background: rgba(13, 17, 23, .9);
       color: #cbd5e1;
-      font-size: 13px;
+      font-size: 12px;
     }
     .audio-pill { cursor: pointer; }
-    .audio-pill.unlocked { color: var(--green); border-color: rgba(45, 212, 191, .34); }
-
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 12px;
-      margin: 18px 0;
+    .audio-pill.unlocked {
+      border-color: rgba(34, 197, 94, .45);
+      color: var(--green);
+      background: var(--green-soft);
     }
 
-    .pullback-alert {
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      margin: 16px 0 0;
-      padding: 14px 16px;
-      border: 1px solid rgba(243, 179, 66, .4);
-      border-radius: 8px;
-      background: linear-gradient(180deg, rgba(87, 55, 12, .68), rgba(23, 28, 36, .92));
-      box-shadow: 0 12px 34px rgba(0, 0, 0, .22);
-    }
-    .pullback-alert.show { display: flex; }
-    .pullback-alert-main {
+    .metric-grid {
       display: grid;
-      gap: 4px;
-      min-width: 0;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+      margin: 14px 0;
     }
-    .pullback-alert-title {
-      color: #ffe1a3;
-      font-size: 16px;
-      font-weight: 850;
-    }
-    .pullback-alert-detail {
-      color: #f8fafc;
-      font-size: 14px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-    }
-    .pullback-list {
-      display: grid;
-      gap: 7px;
-      margin-top: 6px;
-    }
-    .pullback-item {
-      display: grid;
-      grid-template-columns: minmax(130px, 1.2fr) repeat(4, minmax(86px, .8fr));
-      gap: 8px;
-      align-items: center;
-      padding: 8px 10px;
-      border: 1px solid rgba(243, 179, 66, .22);
-      border-radius: 7px;
-      background: rgba(11, 13, 16, .34);
-    }
-    .pullback-token {
-      font-weight: 850;
-      color: #fff7dc;
-      overflow-wrap: anywhere;
-    }
-    .pullback-metric {
-      color: #f8fafc;
-      font-size: 12px;
-      line-height: 1.35;
-    }
-    .pullback-metric span {
-      display: block;
-      color: #d7b679;
-      font-size: 11px;
-    }
-    .pullback-alert-note {
-      color: #d7b679;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-
     .metric-box {
+      min-height: 84px;
+      padding: 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: linear-gradient(180deg, rgba(23, 28, 36, .94), rgba(18, 22, 29, .94));
-      padding: 14px;
-      min-height: 92px;
+      background: linear-gradient(180deg, rgba(16, 23, 33, .94), rgba(11, 15, 21, .94));
     }
-
     .metric-label {
       color: var(--muted);
-      font-size: 13px;
-      margin-bottom: 8px;
+      font-size: 12px;
+      margin-bottom: 10px;
     }
     .metric-value {
-      font-size: 30px;
-      font-weight: 800;
+      font-size: 28px;
+      font-weight: 850;
       line-height: 1;
+      font-variant-numeric: tabular-nums;
     }
     .metric-note {
-      color: var(--muted);
-      margin-top: 7px;
+      margin-top: 8px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+
+    .alert-section {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, .86);
+      overflow: hidden;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-size: 13px;
+      font-weight: 800;
+      color: #dbeafe;
+    }
+    .section-title::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--red);
+      box-shadow: 0 0 18px rgba(244, 63, 94, .5);
+    }
+    .alert-note {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .alert-queue {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(210px, 1fr));
+      gap: 10px;
+      padding: 10px;
+    }
+    .alert-empty {
+      padding: 18px 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .alert-card {
+      display: grid;
+      gap: 10px;
+      min-height: 132px;
+      padding: 11px;
+      border: 1px solid rgba(244, 63, 94, .24);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(244, 63, 94, .07), rgba(16, 23, 33, .76));
+      cursor: pointer;
+    }
+    .alert-card:hover { border-color: rgba(244, 63, 94, .48); background: rgba(20, 27, 38, .94); }
+    .alert-token-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .alert-symbol {
+      font-size: 15px;
+      font-weight: 850;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .alert-dd {
+      color: var(--red);
+      font-size: 20px;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    }
+    .alert-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+    .kv {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .kv span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .kv b {
+      color: #f8fafc;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+    .hit-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-height: 22px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 21px;
+      padding: 0 7px;
+      border: 1px solid rgba(56, 189, 248, .22);
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .tag.hot { border-color: rgba(244, 63, 94, .28); background: var(--red-soft); color: #fb7185; }
+    .tag.good { border-color: rgba(34, 197, 94, .28); background: var(--green-soft); color: var(--green); }
+    .tag.warn { border-color: rgba(245, 158, 11, .28); background: var(--amber-soft); color: var(--amber); }
+    .alert-actions {
+      display: flex;
+      gap: 7px;
+      align-items: center;
     }
 
     .toolbar {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
       align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: rgba(18, 22, 29, .82);
-      padding: 12px 14px;
-      margin-bottom: 14px;
+      background: rgba(13, 17, 23, .88);
     }
-
     .toolbar-left,
     .toolbar-right {
       display: flex;
-      gap: 10px;
       align-items: center;
+      gap: 10px;
       flex-wrap: wrap;
     }
-
     .filter-input {
-      width: min(360px, 62vw);
-      min-height: 38px;
-      border-radius: 6px;
+      width: min(390px, 58vw);
+      height: 36px;
       border: 1px solid var(--line);
-      background: #0e1218;
+      border-radius: 7px;
+      background: #090d13;
       color: var(--text);
-      padding: 0 13px;
-      font-size: 14px;
+      padding: 0 12px;
+      font-size: 13px;
       outline: none;
     }
-    .filter-input:focus { border-color: rgba(125, 211, 252, .55); }
-
-    .toggle-row {
+    .filter-input:focus { border-color: rgba(56, 189, 248, .55); }
+    .segments {
       display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      color: #cbd5e1;
-      font-size: 13px;
-      user-select: none;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #090d13;
+    }
+    .segment {
+      height: 28px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .segment.active {
+      background: var(--panel-3);
+      color: #e2e8f0;
+      box-shadow: inset 0 0 0 1px var(--line);
     }
 
     .terminal-shell {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: rgba(12, 15, 20, .92);
+      background: rgba(9, 13, 19, .94);
       overflow: hidden;
     }
-
     .table-scroll {
-      overflow-y: auto;
-      overflow-x: hidden;
-      max-height: calc(100vh - 270px);
+      max-height: calc(100vh - 372px);
+      overflow: auto;
     }
-
     .track-table {
       width: 100%;
+      min-width: 1040px;
       border-collapse: separate;
       border-spacing: 0;
-      min-width: 0;
       table-layout: fixed;
-      font-size: 14px;
+      font-size: 13px;
     }
-
     .track-table th {
       position: sticky;
       top: 0;
       z-index: 2;
+      height: 38px;
+      padding: 0 10px;
       text-align: left;
-      padding: 13px 8px;
-      background: #11161d;
       border-bottom: 1px solid var(--line);
-      color: #aab4c3;
-      font-size: 13px;
-      font-weight: 700;
-      white-space: normal;
-      line-height: 1.25;
+      background: #0c1118;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }
     .track-table th.sortable { cursor: pointer; }
     .track-table th.sortable.active { color: var(--blue); }
-
     .track-table td {
-      padding: 14px 8px;
-      border-bottom: 1px solid rgba(41, 49, 61, .72);
-      vertical-align: top;
-      background: rgba(18, 22, 29, .36);
-      overflow-wrap: anywhere;
-      word-break: break-word;
+      padding: 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, .1);
+      background: rgba(13, 17, 23, .48);
+      vertical-align: middle;
     }
-    .track-table th:nth-child(1), .track-table td:nth-child(1) { width: 12%; }
-    .track-table th:nth-child(2), .track-table td:nth-child(2) { width: 7%; }
-    .track-table th:nth-child(3), .track-table td:nth-child(3) { width: 7%; }
-    .track-table th:nth-child(4), .track-table td:nth-child(4) { width: 7%; }
-    .track-table th:nth-child(5), .track-table td:nth-child(5) { width: 5%; }
-    .track-table th:nth-child(6), .track-table td:nth-child(6) { width: 16%; }
-    .track-table th:nth-child(7), .track-table td:nth-child(7) { width: 20%; }
-    .track-table th:nth-child(8), .track-table td:nth-child(8) { width: 6%; }
+    .track-table tr { cursor: pointer; }
+    .track-table tr:hover td { background: rgba(21, 29, 40, .82); }
+    .track-table tr.removed td { opacity: .5; }
+    .track-table tr.pullback-zone td { box-shadow: inset 3px 0 0 var(--red); }
+    .track-table th:nth-child(1), .track-table td:nth-child(1) { width: 23%; }
+    .track-table th:nth-child(2), .track-table td:nth-child(2) { width: 10%; }
+    .track-table th:nth-child(3), .track-table td:nth-child(3) { width: 9%; }
+    .track-table th:nth-child(4), .track-table td:nth-child(4) { width: 12%; }
+    .track-table th:nth-child(5), .track-table td:nth-child(5) { width: 11%; }
+    .track-table th:nth-child(6), .track-table td:nth-child(6) { width: 12%; }
+    .track-table th:nth-child(7), .track-table td:nth-child(7) { width: 10%; }
+    .track-table th:nth-child(8), .track-table td:nth-child(8) { width: 7%; }
     .track-table th:nth-child(9), .track-table td:nth-child(9) { width: 6%; }
-    .track-table th:nth-child(10), .track-table td:nth-child(10) { width: 5%; }
-    .track-table th:nth-child(11), .track-table td:nth-child(11) { width: 4%; }
-    .track-table th:nth-child(12), .track-table td:nth-child(12) { width: 5%; }
-    .track-table tr:hover td { background: rgba(23, 28, 36, .78); }
-    .track-table tr.removed td { opacity: .48; }
-    .track-table tr.pullback-zone td {
-      background: rgba(87, 55, 12, .34);
-      box-shadow: inset 3px 0 0 var(--amber);
-    }
 
-    .token-cell {
-      display: grid;
-      gap: 5px;
-      min-width: 0;
-    }
+    .token-cell { display: grid; gap: 5px; min-width: 0; }
     .token-line {
       display: flex;
       align-items: center;
-      gap: 7px;
+      gap: 8px;
       min-width: 0;
     }
     .token-symbol {
+      color: #f8fafc;
       font-size: 15px;
-      font-weight: 800;
-      color: var(--text);
-      max-width: 100%;
+      font-weight: 850;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .signal-chip {
-      display: inline-flex;
-      align-items: center;
-      min-height: 20px;
-      padding: 0 7px;
-      border-radius: 999px;
-      background: var(--amber-soft);
-      color: #ffd38a;
+    .token-addr {
+      color: var(--muted-2);
+      font-family: Consolas, "Courier New", monospace;
       font-size: 11px;
-      font-weight: 700;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .token-addr {
-      color: var(--muted);
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 12px;
-      line-height: 1.35;
-      overflow-wrap: anywhere;
-    }
-
     .mono { font-family: Consolas, "Courier New", monospace; }
-    .cap-main { font-weight: 800; color: #f8fafc; }
     .muted { color: var(--muted); }
     .small { font-size: 11px; }
-
-    .pnl-positive { color: var(--green); font-weight: 800; }
-    .pnl-negative { color: var(--red); font-weight: 800; }
-    .pnl-zero { color: #aab4c3; font-weight: 700; }
-
-    .mcap-bar {
-      height: 5px;
-      width: 100%;
-      border-radius: 999px;
-      background: #26303c;
-      margin-top: 7px;
-      overflow: hidden;
-    }
-    .mcap-bar-fill { height: 100%; border-radius: inherit; transition: width .45s ease; }
-    .mcap-bar-fill.gain { background: linear-gradient(90deg, var(--green), #9ff5e8); }
-    .mcap-bar-fill.loss { background: linear-gradient(90deg, var(--red), #fda4af); }
-
-    .prediction-cell { width: auto; }
-    .narrative-cell {
-      width: auto;
-      max-width: none;
-    }
-    .narrative-tag {
-      display: inline-flex;
-      align-items: center;
-      min-height: 21px;
-      padding: 0 7px;
-      border-radius: 999px;
-      background: var(--blue-soft);
-      color: var(--blue);
-      font-size: 12px;
-      font-weight: 800;
-      margin: 0 5px 6px 0;
-      vertical-align: top;
-    }
-    .narrative-text {
-      color: #d7dee9;
-      font-size: 13px;
-      line-height: 1.45;
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-    .prediction-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .prediction-score {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 6px;
+    .cap-main {
+      color: #f8fafc;
       font-weight: 850;
-      font-size: 20px;
+      font-variant-numeric: tabular-nums;
     }
-    .prediction-score.strong { color: var(--green); }
-    .prediction-score.neutral { color: var(--amber); }
-    .prediction-score.weak { color: var(--red); }
-    .quality-pill {
-      padding: 3px 7px;
-      border-radius: 999px;
-      background: var(--blue-soft);
-      color: var(--blue);
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
+    .num-strong {
+      font-size: 15px;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
     }
-    .prediction-meta {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .plan-strip {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 5px;
-      margin-top: 8px;
-    }
-    .plan-mini {
-      border: 1px solid rgba(41, 49, 61, .95);
-      background: rgba(11, 13, 16, .42);
-      border-radius: 6px;
-      padding: 6px;
-      min-height: 54px;
-    }
-    .plan-mini-label { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
-    .plan-mini-value { color: #e5e7eb; font-size: 12px; font-weight: 750; line-height: 1.35; }
-
-    details.analysis-details {
-      margin-top: 7px;
-      border-top: 1px dashed rgba(148, 163, 184, .18);
-      padding-top: 6px;
-    }
-    details.analysis-details summary {
-      cursor: pointer;
-      color: var(--blue);
-      font-size: 12px;
-      outline: none;
-    }
-    .analysis-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      margin-top: 7px;
-    }
-    .analysis-box {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: rgba(11, 13, 16, .55);
-      padding: 8px;
-    }
-    .analysis-title {
-      color: #d7dee9;
-      font-size: 13px;
-      font-weight: 800;
-      margin-bottom: 5px;
-    }
-    .analysis-list {
-      margin: 0;
-      padding-left: 16px;
-      color: #aeb8c8;
-      font-size: 11px;
-      line-height: 1.45;
-    }
-    .analysis-list.risk { color: #fda4af; }
-
+    .pnl-positive { color: var(--green); }
+    .pnl-negative { color: var(--red); }
+    .pnl-zero { color: #b7c1d0; }
     .status-badge {
       display: inline-flex;
       align-items: center;
-      min-height: 24px;
+      min-height: 22px;
       padding: 0 8px;
       border-radius: 999px;
       font-size: 11px;
-      font-weight: 800;
+      font-weight: 850;
       white-space: nowrap;
     }
-    .status-badge.tracking { background: var(--green-soft); color: var(--green); }
-    .status-badge.removed { background: var(--red-soft); color: var(--red); }
-    .status-badge.expired { background: var(--amber-soft); color: var(--amber); }
+    .status-badge.tracking { color: var(--green); background: var(--green-soft); }
+    .status-badge.removed { color: var(--red); background: var(--red-soft); }
+    .status-badge.expired { color: var(--amber); background: var(--amber-soft); }
 
-    .actions {
-      display: grid;
-      gap: 6px;
-      min-width: 0;
-    }
     .mini-btn,
     .mini-link {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 30px;
-      padding: 0 7px;
-      border-radius: 6px;
+      height: 28px;
+      padding: 0 8px;
       border: 1px solid var(--line);
-      background: #11161d;
+      border-radius: 6px;
+      background: #0c1118;
       color: #cbd5e1;
-      text-decoration: none;
       font-size: 12px;
+      text-decoration: none;
       cursor: pointer;
       white-space: nowrap;
     }
     .mini-btn:hover,
-    .mini-link:hover { border-color: rgba(125, 211, 252, .45); color: var(--blue); }
-
+    .mini-link:hover {
+      border-color: rgba(56, 189, 248, .5);
+      color: var(--blue);
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .empty-state {
+      padding: 54px 18px;
       text-align: center;
-      padding: 58px 20px;
       color: var(--muted);
-      font-size: 14px;
+      font-size: 13px;
     }
     .last-update {
-      padding: 8px 12px;
-      text-align: right;
-      color: #697588;
+      padding: 8px 10px;
+      border-top: 1px solid var(--line);
+      background: #090d13;
+      color: var(--muted-2);
       font-size: 11px;
-      border-top: 1px solid rgba(41,49,61,.72);
-      background: #0e1218;
+      text-align: right;
     }
 
-    @media (max-width: 900px) {
-      .terminal-header { grid-template-columns: 1fr; }
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      background: rgba(0, 0, 0, .48);
+    }
+    .drawer-backdrop.show { display: block; }
+    .detail-drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      z-index: 40;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      width: min(520px, 100vw);
+      height: 100vh;
+      border-left: 1px solid var(--line-strong);
+      background: #0a0e14;
+      box-shadow: var(--shadow);
+      transform: translateX(104%);
+      transition: transform .18s ease;
+    }
+    .detail-drawer.show { transform: translateX(0); }
+    .drawer-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .drawer-title {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+    .drawer-body {
+      overflow: auto;
+      padding: 14px 16px 24px;
+    }
+    .drawer-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin-bottom: 14px;
+    }
+    .detail-panel {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(16, 23, 33, .72);
+      overflow: hidden;
+    }
+    .detail-panel h3 {
+      margin: 0;
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--line);
+      color: #dbeafe;
+      font-size: 13px;
+    }
+    .detail-content {
+      padding: 11px;
+      color: #cbd5e1;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .list {
+      margin: 0;
+      padding-left: 16px;
+    }
+    .list li { margin: 4px 0; }
+    .chart {
+      width: 100%;
+      height: 178px;
+      display: block;
+      border-radius: 6px;
+      background: #080c12;
+    }
+    .chart-empty {
+      display: grid;
+      place-items: center;
+      height: 178px;
+      color: var(--muted);
+      border-radius: 6px;
+      background: #080c12;
+      font-size: 12px;
+    }
+
+    @media (max-width: 1120px) {
+      .alert-queue { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
+      .table-scroll { max-height: none; }
+    }
+    @media (max-width: 760px) {
+      .terminal-header { grid-template-columns: 1fr; align-items: start; }
       .header-actions { justify-content: flex-start; }
-      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .alert-queue { grid-template-columns: 1fr; }
       .toolbar { align-items: stretch; flex-direction: column; }
-      .analysis-grid { grid-template-columns: 1fr; }
-      .pullback-alert { align-items: flex-start; flex-direction: column; }
-      .pullback-alert-note { white-space: normal; }
-      .pullback-item { grid-template-columns: 1fr 1fr; }
-      .pullback-token { grid-column: 1 / -1; }
-      .track-table { font-size: 12px; }
-      .track-table th, .track-table td { padding: 10px 5px; }
-      .narrative-text { -webkit-line-clamp: 2; }
-      .plan-strip { grid-template-columns: 1fr; }
+      .filter-input { width: 100%; }
+      .segments { width: 100%; overflow-x: auto; }
+      .drawer-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -563,52 +588,60 @@
     <div class="wrap">
       <header class="terminal-header">
         <div>
-          <div class="eyebrow"><span id="live-dot" class="pulse-dot"></span><span id="live-label">连接中...</span></div>
-          <h1>底部异动终端</h1>
-          <p class="desc">聚合底部异动 CA 的实时市值、历史胜率、入场时间窗、出场节奏和风险点。打新、Deep Alpha 1m、底部推送列表入口已隐藏，仅保留异动终端。</p>
+          <div class="title-row">
+            <span id="live-dot" class="pulse-dot"></span>
+            <h1>CA 监控交易终端</h1>
+            <span id="live-label" class="status-pill">连接中...</span>
+          </div>
+          <div class="subline">底部异动 CA 实时监控，聚焦回撤报警、胜率、盈亏、市值与流动性。</div>
         </div>
         <div class="header-actions">
-          <button id="audio-toggle" class="audio-pill" type="button">声音提醒待解锁</button>
-          <span class="status-pill">{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时追踪窗口</span>
+          <button id="audio-toggle" class="audio-pill" type="button">声音提醒待开启</button>
+          <span class="status-pill">{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 12 }} 小时追踪</span>
         </div>
       </header>
 
-      <section id="pullback-alert" class="pullback-alert" aria-live="polite">
-        <div class="pullback-alert-main">
-          <div class="pullback-alert-title">回撤观察触发</div>
-          <div id="pullback-alert-detail" class="pullback-alert-detail"></div>
-        </div>
-        <div class="pullback-alert-note">参考 quant_strategy_from_data.md：-30%~-40% 为均衡回撤区间，页面监控 30%-50%</div>
-      </section>
-
-      <section class="summary-grid" aria-label="追踪概览">
+      <section class="metric-grid" aria-label="追踪概览">
         <div class="metric-box">
           <div class="metric-label">追踪中</div>
           <div id="metric-active" class="metric-value">-</div>
-          <div class="metric-note">实时刷新中的异动 CA</div>
+          <div class="metric-note">当前仍在刷新</div>
         </div>
         <div class="metric-box">
-          <div class="metric-label">偏强胜率</div>
-          <div id="metric-strong" class="metric-value">-</div>
-          <div class="metric-note">预测胜率 >= 60%</div>
+          <div class="metric-label">高置信</div>
+          <div id="metric-high" class="metric-value">-</div>
+          <div class="metric-note">预测置信度 high 或胜率 >= 60%</div>
         </div>
         <div class="metric-box">
-          <div class="metric-label">平均最高收益</div>
+          <div class="metric-label">近24h新增</div>
+          <div id="metric-new24h" class="metric-value">-</div>
+          <div class="metric-note">按推送时间统计</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">平均峰值</div>
           <div id="metric-peak" class="metric-value">-</div>
-          <div class="metric-note">按当前追踪池计算</div>
+          <div class="metric-note">当前追踪池平均峰值收益</div>
         </div>
-        <div class="metric-box">
-          <div class="metric-label">已移除</div>
-          <div id="metric-removed" class="metric-value">-</div>
-          <div class="metric-note">短时间保留便于复盘</div>
+      </section>
+
+      <section class="alert-section" aria-live="polite">
+        <div class="section-head">
+          <div class="section-title">重点报警队列</div>
+          <div id="alert-note" class="alert-note">监控信号价回撤 30%-50%，过滤已明显冲高样本</div>
         </div>
+        <div id="alert-queue" class="alert-queue"></div>
       </section>
 
       <section class="toolbar">
         <div class="toolbar-left">
-          <input id="filter-input" class="filter-input" type="search" placeholder="搜索 symbol / CA / signal type / 叙事">
-          <label class="toggle-row"><input id="strong-only" type="checkbox"> 只看偏强</label>
-          <label class="toggle-row"><input id="hide-removed" type="checkbox" checked> 隐藏已移除</label>
+          <input id="filter-input" class="filter-input" type="search" placeholder="搜索 Token / CA / 信号 / 叙事">
+          <div class="segments" role="tablist" aria-label="筛选">
+            <button class="segment active" type="button" data-filter="all">全部</button>
+            <button class="segment" type="button" data-filter="alert">报警</button>
+            <button class="segment" type="button" data-filter="high">高置信</button>
+            <button class="segment" type="button" data-filter="active">追踪中</button>
+            <button class="segment" type="button" data-filter="removed">已移除</button>
+          </div>
         </div>
         <div class="toolbar-right">
           <span id="track-summary" class="muted small">加载中...</span>
@@ -620,16 +653,13 @@
           <table class="track-table">
             <thead>
               <tr>
-                <th>Token / 信号</th>
-                <th class="sortable" data-sort="pushed_at">推送时间</th>
-                <th class="sortable" data-sort="entry_mcap">推送市值</th>
+                <th>Token / CA</th>
+                <th class="sortable" data-sort="winrate">胜率</th>
+                <th class="sortable" data-sort="pnl">盈亏</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
-                <th>盈亏</th>
-                <th>叙事</th>
-                <th>胜率 / 入场计划</th>
+                <th class="sortable" data-sort="liquidity">流动性</th>
+                <th class="sortable" data-sort="pushed_at">推送</th>
                 <th>峰值</th>
-                <th>流动性</th>
-                <th>追踪</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -638,13 +668,25 @@
           </table>
         </div>
         <div id="track-empty" class="empty-state" hidden>
-          当前没有符合筛选条件的底部异动 CA<br>
+          当前没有符合筛选条件的 CA<br>
           <small>等待 Bottom Accumulation Monitor 推送新的异动信号</small>
         </div>
         <div id="last-update" class="last-update"></div>
       </section>
     </div>
   </div>
+
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
+  <aside id="detail-drawer" class="detail-drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <h2 id="drawer-title" class="drawer-title">-</h2>
+        <div id="drawer-subtitle" class="token-addr"></div>
+      </div>
+      <button id="drawer-close" class="mini-btn" type="button">关闭</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
 
   <script>
     const rowsEl = document.getElementById("track-rows");
@@ -653,32 +695,40 @@
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
     const lastUpdateEl = document.getElementById("last-update");
-    const pullbackAlertEl = document.getElementById("pullback-alert");
-    const pullbackAlertDetailEl = document.getElementById("pullback-alert-detail");
+    const alertQueueEl = document.getElementById("alert-queue");
+    const alertNoteEl = document.getElementById("alert-note");
     const filterInput = document.getElementById("filter-input");
-    const strongOnlyEl = document.getElementById("strong-only");
-    const hideRemovedEl = document.getElementById("hide-removed");
     const audioToggle = document.getElementById("audio-toggle");
     const metricActive = document.getElementById("metric-active");
-    const metricStrong = document.getElementById("metric-strong");
+    const metricHigh = document.getElementById("metric-high");
+    const metricNew24h = document.getElementById("metric-new24h");
     const metricPeak = document.getElementById("metric-peak");
-    const metricRemoved = document.getElementById("metric-removed");
+    const drawer = document.getElementById("detail-drawer");
+    const drawerBackdrop = document.getElementById("drawer-backdrop");
+    const drawerClose = document.getElementById("drawer-close");
+    const drawerTitle = document.getElementById("drawer-title");
+    const drawerSubtitle = document.getElementById("drawer-subtitle");
+    const drawerBody = document.getElementById("drawer-body");
 
     let items = [];
     let evtSource = null;
-    let trackTtlSec = {{ bottom_live_track_ttl_sec | default(86400) | int }};
+    let trackTtlSec = {{ bottom_live_track_ttl_sec | default(43200) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
+    let filterMode = "all";
     let hasInitialSnapshot = false;
     let audioUnlocked = false;
     let pullbackBaselineReady = false;
     const pullbackSeen = new Set();
     const pullbackNotified = new Set();
     const alertAudio = new Audio("/static/ElevenLabs.mp3");
-    alertAudio.preload = "auto";
     const pullbackAudio = new Audio("/static/xm3527.mp3");
+    alertAudio.preload = "auto";
     pullbackAudio.preload = "auto";
 
-    function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+    function safeNum(v, d = 0) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : d;
+    }
     function htmlEscape(v) {
       return String(v == null ? "" : v)
         .replaceAll("&", "&amp;")
@@ -722,26 +772,31 @@
       if (h > 0) return `${h}h${m}m`;
       return `${m}m`;
     }
-    function formatPlanPrice(v) {
-      const n = safeNum(v);
-      if (n <= 0) return "-";
-      if (n < 0.0001) return n.toExponential(3);
-      if (n < 0.01) return n.toFixed(8);
-      return n.toFixed(6);
+    function shortAddress(addr) {
+      const s = String(addr || "");
+      return s.length > 16 ? `${s.slice(0, 8)}...${s.slice(-6)}` : s;
     }
-    function formatCreationAge(item, nowTs) {
-      const createdTs = safeNum(item.created_ts);
-      const explicitAge = safeNum(item.created_age_sec || item.age_sec);
-      const seconds = createdTs > 0 ? Math.max(0, nowTs - createdTs) : Math.max(0, explicitAge);
-      if (seconds <= 0) return "";
-      const days = Math.floor(seconds / 86400);
-      const hours = Math.floor((seconds % 86400) / 3600);
-      if (days <= 0) return `${Math.max(1, hours)}小时`;
-      return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
+    function prediction(item) {
+      return item.winrate_prediction || {};
+    }
+    function predictedWinrate(item) {
+      return safeNum(prediction(item).predicted_winrate_pct, -1);
+    }
+    function isHighConfidence(item) {
+      const pred = prediction(item);
+      return pred.confidence === "high" || predictedWinrate(item) >= 60;
+    }
+    function confidenceText(v) {
+      if (v === "high") return "高置信";
+      if (v === "medium") return "中置信";
+      if (v === "low") return "低置信";
+      return "置信未知";
     }
     function sortValue(item, key) {
-      if (key === "entry_mcap") return safeNum(item.entry_mcap);
+      if (key === "winrate") return predictedWinrate(item);
+      if (key === "pnl") return safeNum(item.pnl_pct);
       if (key === "current_mcap") return safeNum(item.current_mcap);
+      if (key === "liquidity") return safeNum(item.pool_liquidity);
       return safeNum(item.pushed_at);
     }
     function sortTrackItems(list) {
@@ -757,106 +812,29 @@
         th.classList.toggle("active", th.dataset.sort === sortState.key);
       });
     }
-    function predictionClass(pct) {
-      if (pct >= 60) return "strong";
-      if (pct >= 40) return "neutral";
-      return "weak";
+    function gmgnUrl(item) {
+      return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`;
     }
-    function confidenceLabel(v) {
-      if (v === "high") return "高置信";
-      if (v === "medium") return "中置信";
-      if (v === "low") return "低置信";
-      return "置信未知";
+    function binanceUrl(item) {
+      return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`;
     }
-    function listHtml(values, cls = "") {
-      const arr = Array.isArray(values) ? values.filter(Boolean).slice(0, 5) : [];
-      if (!arr.length) return `<div class="muted small">暂无</div>`;
-      return `<ul class="analysis-list ${cls}">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
+    function copyCA(addr) {
+      if (!addr) return;
+      navigator.clipboard?.writeText(addr).catch(() => {
+        const area = document.createElement("textarea");
+        area.value = addr;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      });
     }
-    function entryMini(level) {
-      if (!level) return "";
-      return `
-        <div class="plan-mini">
-          <div class="plan-mini-label">${htmlEscape(level.label || "入场")} ${safeNum(level.drawdown_pct).toFixed(0)}%</div>
-          <div class="plan-mini-value">${formatCap(level.mcap)}${safeNum(level.price) > 0 ? `<br>${formatPlanPrice(level.price)}` : ""}</div>
-        </div>
-      `;
+    function stopEvent(event) {
+      event.stopPropagation();
     }
-    function predictionHtml(item) {
-      const pred = item.winrate_prediction || {};
-      const plan = pred.strategy_plan || {};
-      const entry = plan.entry || {};
-      const exit = plan.exit || {};
-      const pct = safeNum(pred.predicted_winrate_pct, -1);
-      if (pct < 0) return `<span class="muted">等待数据</span>`;
-      return `
-        <div class="prediction-cell">
-          <div class="prediction-top">
-            <div class="prediction-score ${predictionClass(pct)}"><span>${pct.toFixed(1)}%</span><small>${htmlEscape(pred.label || "")}</small></div>
-            <span class="quality-pill">${htmlEscape(confidenceLabel(pred.confidence))}</span>
-          </div>
-          <div class="prediction-meta">基准 ${safeNum(pred.baseline_winrate_pct).toFixed(0)}% · n=${safeNum(pred.baseline_sample_count) || "-"} · ${htmlEscape(pred.winner_definition || "历史最大涨幅>=30%")}</div>
-          <div class="plan-strip">
-            ${entryMini(entry.primary)}
-            ${entryMini(entry.balanced)}
-            ${entryMini(entry.deep)}
-          </div>
-          <div class="prediction-meta">有效至 ${formatTime(entry.expires_at_ts)} · 30m复查 ${formatTime(exit.quick_review_ts)} · 295m退出 ${formatTime(exit.time_stop_ts)}</div>
-          <details class="analysis-details">
-            <summary>展开依据 / 风险 / 出场</summary>
-            <div class="analysis-grid">
-              <div class="analysis-box">
-                <div class="analysis-title">胜率依据</div>
-                ${listHtml(pred.evidence)}
-              </div>
-              <div class="analysis-box">
-                <div class="analysis-title">风险点</div>
-                ${listHtml(plan.risk_points || pred.risk_factors, "risk")}
-              </div>
-              <div class="analysis-box">
-                <div class="analysis-title">出场节奏</div>
-                <div class="prediction-meta">TP1 +${safeNum(exit.tp1_pct)}% 平${safeNum(exit.tp1_close_pct)}%</div>
-                <div class="prediction-meta">TP2 +${safeNum(exit.tp2_pct)}% 平${safeNum(exit.tp2_close_pct)}%</div>
-                <div class="prediction-meta">剩余${safeNum(exit.runner_close_pct)}%，峰值回撤${safeNum(exit.trailing_from_peak_drawdown_pct)}%跟踪</div>
-              </div>
-              <div class="analysis-box">
-                <div class="analysis-title">时间计划</div>
-                <div class="prediction-meta">中位到峰 ${formatTime(exit.median_peak_ts)}</div>
-                <div class="prediction-meta">${htmlEscape(exit.exit_time_rule || "")}</div>
-              </div>
-            </div>
-          </details>
-        </div>
-      `;
-    }
-    function statusBadge(item) {
-      const status = item.status || "tracking";
-      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || "")}">已移除</span>`;
-      if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
-      return `<span class="status-badge tracking">追踪中</span>`;
-    }
-    function narrativeHtml(item) {
-      const desc = item.narrative_desc || item.narrative || "";
-      const type = item.narrative_type || "";
-      const category = item.narrative_category || "";
-      if (!desc && !type && !category) return `<span class="muted">-</span>`;
-      return `
-        <div class="narrative-cell" title="${htmlEscape([category, type, desc].filter(Boolean).join(" | "))}">
-          ${category ? `<span class="narrative-tag">${htmlEscape(category)}</span>` : ""}
-          ${type ? `<span class="narrative-tag">${htmlEscape(type)}</span>` : ""}
-          <div class="narrative-text">${htmlEscape(desc || type || category)}</div>
-        </div>
-      `;
-    }
-    function mcapBarHtml(entry, current) {
-      const e = safeNum(entry);
-      const c = safeNum(current);
-      if (e <= 0) return "";
-      const ratio = Math.min(2, Math.max(0, c / e));
-      const pct = Math.round(ratio * 50);
-      const cls = c >= e ? "gain" : "loss";
-      return `<div class="mcap-bar"><div class="mcap-bar-fill ${cls}" style="width:${pct}%"></div></div>`;
-    }
+
     function pullbackInfo(item) {
       const entry = safeNum(item.entry_mcap);
       const current = safeNum(item.current_mcap);
@@ -872,39 +850,57 @@
         peakGainPct,
         currentMcap: current,
         entryMcap: entry,
-        peakMcap: peak,
-        pnlPct: ((current - entry) / entry) * 100,
-        lastUpdated: safeNum(item.last_updated || item.pushed_at),
+        item,
       };
     }
-    function updatePullbackAlert(activeItems) {
+    function hitTags(item) {
+      const pred = prediction(item);
+      const tags = [];
+      if (isHighConfidence(item)) tags.push(`<span class="tag good">${htmlEscape(confidenceText(pred.confidence))}</span>`);
+      if (item.signal_type) tags.push(`<span class="tag">${htmlEscape(item.signal_type)}</span>`);
+      if (item.narrative_category) tags.push(`<span class="tag">${htmlEscape(item.narrative_category)}</span>`);
+      const risks = (pred.risk_factors || pred.strategy_plan?.risk_points || []).slice(0, 1);
+      if (risks.length) tags.push(`<span class="tag warn">${htmlEscape(risks[0])}</span>`);
+      return tags.slice(0, 3).join("");
+    }
+    function renderAlertQueue(activeItems) {
       const hits = (activeItems || [])
         .map(pullbackInfo)
         .filter(Boolean)
         .sort((a, b) => b.entryDrawdownPct - a.entryDrawdownPct);
 
+      alertNoteEl.textContent = hits.length
+        ? `${hits.length} 个 CA 位于重点回撤区间`
+        : "监控信号价回撤 30%-50%，过滤已明显冲高样本";
+
       if (!hits.length) {
-        pullbackAlertEl.classList.remove("show");
-        pullbackAlertDetailEl.textContent = "";
+        alertQueueEl.className = "alert-empty";
+        alertQueueEl.innerHTML = "暂无重点回撤报警";
         pullbackSeen.clear();
         return;
       }
 
-      const top = hits[0];
-      const topRows = hits.slice(0, 4).map(hit => `
-        <div class="pullback-item">
-          <div class="pullback-token">$${htmlEscape(hit.symbol)}<br><span class="muted small">${htmlEscape(hit.address)}</span></div>
-          <div class="pullback-metric"><span>当前回撤</span>-${hit.entryDrawdownPct.toFixed(1)}%</div>
-          <div class="pullback-metric"><span>推送市值</span>${formatCap(hit.entryMcap)}</div>
-          <div class="pullback-metric"><span>当前市值</span>${formatCap(hit.currentMcap)}</div>
-          <div class="pullback-metric"><span>最高涨幅 / 更新</span>${hit.peakGainPct.toFixed(1)}% · ${formatTime(hit.lastUpdated)}</div>
-        </div>
+      alertQueueEl.className = "alert-queue";
+      alertQueueEl.innerHTML = hits.slice(0, 4).map(hit => `
+        <article class="alert-card" data-ca="${htmlEscape(hit.address)}">
+          <div class="alert-token-row">
+            <div class="alert-symbol">$${htmlEscape(hit.symbol)}</div>
+            <div class="alert-dd">-${hit.entryDrawdownPct.toFixed(1)}%</div>
+          </div>
+          <div class="alert-metrics">
+            <div class="kv"><span>推送市值</span><b>${formatCap(hit.entryMcap)}</b></div>
+            <div class="kv"><span>当前市值</span><b>${formatCap(hit.currentMcap)}</b></div>
+          </div>
+          <div class="hit-tags">${hitTags(hit.item) || `<span class="tag hot">回撤命中</span>`}</div>
+          <div class="alert-actions">
+            <button class="mini-btn" type="button" onclick="openDrawerByAddress('${htmlEscape(hit.address)}'); stopEvent(event);">详情</button>
+            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(hit.address)}'); stopEvent(event);">复制</button>
+          </div>
+        </article>
       `).join("");
-      const more = hits.length > 4 ? `<div class="muted small">另有 ${hits.length - 4} 个 CA 在 30%-50% 回撤区间</div>` : "";
-      pullbackAlertDetailEl.innerHTML =
-        `<div>$${htmlEscape(top.symbol)} 当前回撤 -${top.entryDrawdownPct.toFixed(1)}%，市值 ${formatCap(top.entryMcap)} -> ${formatCap(top.currentMcap)}，后续刷新会同步更新回撤幅度和市值。</div>` +
-        `<div class="pullback-list">${topRows}${more}</div>`;
-      pullbackAlertEl.classList.add("show");
+      alertQueueEl.querySelectorAll(".alert-card").forEach(card => {
+        card.addEventListener("click", () => openDrawerByAddress(card.dataset.ca));
+      });
 
       const currentKeys = new Set(hits.map(hit => hit.address).filter(Boolean));
       if (!pullbackBaselineReady) {
@@ -915,32 +911,25 @@
       const hasNewHit = hits.some(hit => hit.address && !pullbackSeen.has(hit.address) && !pullbackNotified.has(hit.address));
       for (const key of currentKeys) pullbackSeen.add(key);
       if (hasNewHit) {
-        for (const hit of hits) {
-          if (hit.address) pullbackNotified.add(hit.address);
-        }
+        for (const hit of hits) if (hit.address) pullbackNotified.add(hit.address);
         playPullbackAudio();
       }
     }
-    function gmgnUrl(item) { return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`; }
-    function binanceUrl(item) { return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`; }
-    async function copyCA(addr) {
-      if (!addr) return;
-      try { await navigator.clipboard.writeText(addr); return; } catch (_) {}
-      const area = document.createElement("textarea");
-      area.value = addr;
-      area.style.position = "fixed";
-      area.style.opacity = "0";
-      document.body.appendChild(area);
-      area.select();
-      document.execCommand("copy");
-      area.remove();
+
+    function statusBadge(item) {
+      const status = item.status || "tracking";
+      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || "")}">已移除</span>`;
+      if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
+      return `<span class="status-badge tracking">追踪中</span>`;
     }
     function filteredItems() {
       const q = filterInput.value.trim().toLowerCase();
       return items.filter(item => {
-        if (hideRemovedEl.checked && item.status !== "tracking") return false;
-        const pct = safeNum((item.winrate_prediction || {}).predicted_winrate_pct, -1);
-        if (strongOnlyEl.checked && pct < 60) return false;
+        const isAlert = Boolean(pullbackInfo(item));
+        if (filterMode === "alert" && !isAlert) return false;
+        if (filterMode === "high" && !isHighConfidence(item)) return false;
+        if (filterMode === "active" && item.status !== "tracking") return false;
+        if (filterMode === "removed" && item.status === "tracking") return false;
         if (!q) return true;
         return [
           item.symbol,
@@ -953,8 +942,10 @@
         ].some(v => String(v || "").toLowerCase().includes(q));
       });
     }
-    function updateMetrics(active, removed, visible) {
-      const strong = active.filter(item => safeNum((item.winrate_prediction || {}).predicted_winrate_pct) >= 60).length;
+    function updateMetrics(active, visible) {
+      const now = Math.floor(Date.now() / 1000);
+      const high = active.filter(isHighConfidence).length;
+      const new24h = items.filter(item => now - safeNum(item.pushed_at, now) <= 86400).length;
       const peakPnls = active.map(item => {
         const entry = safeNum(item.entry_mcap);
         const peak = safeNum(item.peak_mcap);
@@ -962,55 +953,218 @@
       });
       const avgPeak = peakPnls.length ? peakPnls.reduce((a, b) => a + b, 0) / peakPnls.length : 0;
       metricActive.textContent = String(active.length);
-      metricStrong.textContent = String(strong);
+      metricHigh.textContent = String(high);
+      metricNew24h.textContent = String(new24h);
       metricPeak.textContent = peakPnls.length ? formatPnl(avgPeak) : "-";
-      metricRemoved.textContent = String(removed.length);
-      summaryEl.textContent = `显示 ${visible.length} / 总计 ${active.length + removed.length} · 每30秒刷新`;
+      metricPeak.className = `metric-value ${pnlClass(avgPeak)}`;
+      summaryEl.textContent = `显示 ${visible.length} / 总计 ${items.length}`;
+    }
+    function renderWinrate(item) {
+      const pct = predictedWinrate(item);
+      if (pct < 0) return `<span class="muted">等待数据</span>`;
+      const cls = pct >= 60 ? "pnl-positive" : pct >= 40 ? "pnl-zero" : "pnl-negative";
+      return `<div class="num-strong ${cls}">${pct.toFixed(1)}%</div><div class="muted small">${htmlEscape(confidenceText(prediction(item).confidence))}</div>`;
     }
     function render() {
       updateSortHeaders();
       const active = sortTrackItems(items.filter(i => i.status === "tracking"));
-      const removed = sortTrackItems(items.filter(i => i.status !== "tracking"));
       const sorted = sortTrackItems(filteredItems());
       const now = Math.floor(Date.now() / 1000);
-      updateMetrics(active, removed, sorted);
-      updatePullbackAlert(active);
+      updateMetrics(active, sorted);
+      renderAlertQueue(active);
       emptyEl.hidden = sorted.length > 0;
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
-        const remaining = Math.max(0, trackTtlSec - age);
-        const isRemoved = item.status !== "tracking";
-        const pnl = safeNum(item.pnl_pct);
         const entryMcap = safeNum(item.entry_mcap);
-      const peakMcap = safeNum(item.peak_mcap);
-      const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0;
-      const creationAge = formatCreationAge(item, now);
-        const pullback = pullbackInfo(item);
-        const rowClasses = [isRemoved ? "removed" : "", pullback ? "pullback-zone" : ""].filter(Boolean).join(" ");
+        const currentMcap = safeNum(item.current_mcap);
+        const peakMcap = safeNum(item.peak_mcap);
+        const pnl = safeNum(item.pnl_pct);
+        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0;
+        const isRemoved = item.status !== "tracking";
+        const rowClasses = [isRemoved ? "removed" : "", pullbackInfo(item) ? "pullback-zone" : ""].filter(Boolean).join(" ");
         return `
-          <tr class="${rowClasses}" data-ca="${htmlEscape(item.address)}">
+          <tr class="${rowClasses}" data-ca="${htmlEscape(item.address || "")}">
             <td>
               <div class="token-cell">
-                <div class="token-line"><span class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</span>${item.signal_type ? `<span class="signal-chip">${htmlEscape(item.signal_type)}</span>` : ""}</div>
+                <div class="token-line">
+                  <span class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</span>
+                  ${item.signal_type ? `<span class="tag">${htmlEscape(item.signal_type)}</span>` : ""}
+                </div>
                 <div class="token-addr">${htmlEscape(item.address || "")}</div>
-                ${creationAge ? `<div class="muted small">创建 ${htmlEscape(creationAge)}</div>` : ""}
               </div>
             </td>
-            <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)}前</div></td>
-            <td><div class="cap-main">${formatCap(item.entry_mcap)}</div></td>
-            <td><div class="cap-main">${formatCap(item.current_mcap)}</div>${mcapBarHtml(item.entry_mcap, item.current_mcap)}</td>
-            <td><div class="${pnlClass(pnl)}">${formatPnl(pnl)}</div></td>
-            <td>${narrativeHtml(item)}</td>
-            <td>${predictionHtml(item)}</td>
-            <td><div class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</div><div class="muted small">${formatCap(item.peak_mcap)} · ${formatTime(item.peak_mcap_at || item.pushed_at)}</div></td>
-            <td><div>${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
-            <td><div>${formatDuration(age)}</div>${!isRemoved ? `<div class="muted small">剩余 ${formatDuration(remaining)}</div>` : ""}</td>
+            <td>${renderWinrate(item)}</td>
+            <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">${formatCap(entryMcap)} 起</div></td>
+            <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div></td>
+            <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
+            <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
+            <td><div class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</div><div class="muted small">${formatCap(peakMcap)}</div></td>
             <td>${statusBadge(item)}</td>
-            <td><div class="actions"><button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button><a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a><a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a></div></td>
+            <td>
+              <div class="actions">
+                <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}'); stopEvent(event);">复制</button>
+                <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer" onclick="stopEvent(event);">GMGN</a>
+              </div>
+            </td>
           </tr>
         `;
       }).join("");
+      rowsEl.querySelectorAll("tr[data-ca]").forEach(row => {
+        row.addEventListener("click", () => openDrawerByAddress(row.dataset.ca));
+      });
     }
+
+    function arrayListHtml(values, emptyText = "暂无") {
+      const arr = Array.isArray(values) ? values.filter(Boolean).slice(0, 8) : [];
+      if (!arr.length) return `<span class="muted">${emptyText}</span>`;
+      return `<ul class="list">${arr.map(x => `<li>${htmlEscape(x)}</li>`).join("")}</ul>`;
+    }
+    function drawerMetric(label, value, cls = "") {
+      return `<div class="kv"><span>${htmlEscape(label)}</span><b class="${cls}">${value}</b></div>`;
+    }
+    function normalizeCandles(candles, item) {
+      const rows = Array.isArray(candles) ? candles : [];
+      const normalized = rows.map(c => ({
+        ts: safeNum(c.ts),
+        close: safeNum(c.close),
+        high: safeNum(c.high),
+        low: safeNum(c.low),
+      })).filter(c => c.ts > 0 && c.close > 0);
+      if (normalized.length >= 2) return normalized;
+      const entry = safeNum(item.entry_mcap);
+      const peak = Math.max(safeNum(item.peak_mcap), entry);
+      const current = safeNum(item.current_mcap);
+      const start = safeNum(item.pushed_at, Math.floor(Date.now() / 1000) - 3600);
+      return [
+        { ts: start, close: entry, high: entry, low: entry },
+        { ts: safeNum(item.peak_mcap_at, start + 1800), close: peak, high: peak, low: Math.min(entry, peak) },
+        { ts: safeNum(item.last_updated, Math.floor(Date.now() / 1000)), close: current, high: Math.max(current, peak), low: Math.min(current, entry) },
+      ].filter(c => c.close > 0);
+    }
+    function lineChartSvg(points, opts = {}) {
+      if (!points || points.length < 2) return `<div class="chart-empty">暂无可绘制数据</div>`;
+      const width = 480;
+      const height = 178;
+      const pad = 16;
+      const xs = points.map(p => safeNum(p.ts));
+      const ys = points.map(p => safeNum(p.value ?? p.close));
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      const spanX = Math.max(1, maxX - minX);
+      const spanY = Math.max(1, maxY - minY);
+      const path = points.map((p, idx) => {
+        const x = pad + ((safeNum(p.ts) - minX) / spanX) * (width - pad * 2);
+        const y = height - pad - ((safeNum(p.value ?? p.close) - minY) / spanY) * (height - pad * 2);
+        return `${idx === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+      const color = opts.color || "#38bdf8";
+      return `
+        <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img">
+          <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="rgba(148,163,184,.16)" />
+          <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="rgba(148,163,184,.16)" />
+          <path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" vector-effect="non-scaling-stroke" />
+          <text x="${pad}" y="14" fill="#8491a5" font-size="11">${htmlEscape(formatCap(maxY))}</text>
+          <text x="${pad}" y="${height - 4}" fill="#8491a5" font-size="11">${htmlEscape(formatCap(minY))}</text>
+        </svg>
+      `;
+    }
+    function candleChartSvg(candles) {
+      if (!candles || candles.length < 2) return `<div class="chart-empty">暂无 K 线缓存</div>`;
+      const points = candles.map(c => ({ ts: c.ts, value: c.close }));
+      return lineChartSvg(points, { color: "#22c55e" });
+    }
+    function buildDrawerHtml(item, detail = {}) {
+      const pred = prediction(item);
+      const plan = pred.strategy_plan || {};
+      const pInfo = pullbackInfo(item);
+      const candles = normalizeCandles(detail.candles, item);
+      const mcapPoints = [
+        { ts: safeNum(item.pushed_at), value: safeNum(item.entry_mcap) },
+        { ts: safeNum(item.peak_mcap_at, item.pushed_at), value: safeNum(item.peak_mcap) },
+        { ts: safeNum(item.last_updated, Date.now() / 1000), value: safeNum(item.current_mcap) },
+      ].filter(p => p.ts > 0 && p.value > 0).sort((a, b) => a.ts - b.ts);
+      const reasonList = [
+        ...(Array.isArray(pred.evidence) ? pred.evidence : []),
+        item.narrative_desc || item.narrative || "",
+      ].filter(Boolean);
+      const riskList = [
+        ...(Array.isArray(pred.risk_factors) ? pred.risk_factors : []),
+        ...(Array.isArray(plan.risk_points) ? plan.risk_points : []),
+        item.remove_reason || "",
+      ].filter(Boolean);
+      const walletTags = [
+        item.holders ? `Holders ${safeNum(item.holders)}` : "",
+        item.pool_liquidity ? `流动性 ${formatCap(item.pool_liquidity)}` : "",
+        item.narrative_category ? `叙事 ${item.narrative_category}` : "",
+        item.narrative_type ? `类型 ${item.narrative_type}` : "",
+      ].filter(Boolean);
+      return `
+        <div class="drawer-grid">
+          ${drawerMetric("胜率", predictedWinrate(item) >= 0 ? `${predictedWinrate(item).toFixed(1)}%` : "-", predictedWinrate(item) >= 60 ? "pnl-positive" : "")}
+          ${drawerMetric("盈亏", formatPnl(item.pnl_pct), pnlClass(item.pnl_pct))}
+          ${drawerMetric("推送市值", formatCap(item.entry_mcap))}
+          ${drawerMetric("当前市值", formatCap(item.current_mcap))}
+          ${drawerMetric("峰值市值", formatCap(item.peak_mcap))}
+          ${drawerMetric("回撤", pInfo ? `-${pInfo.entryDrawdownPct.toFixed(1)}%` : "-")}
+        </div>
+        <section class="detail-panel">
+          <h3>报警原因</h3>
+          <div class="detail-content">${arrayListHtml(reasonList)}</div>
+        </section>
+        <section class="detail-panel">
+          <h3>钱包标签</h3>
+          <div class="detail-content"><div class="hit-tags">${walletTags.map(x => `<span class="tag">${htmlEscape(x)}</span>`).join("") || `<span class="muted">暂无标签</span>`}</div></div>
+        </section>
+        <section class="detail-panel">
+          <h3>K线</h3>
+          <div class="detail-content">${candleChartSvg(candles)}</div>
+        </section>
+        <section class="detail-panel">
+          <h3>市值走势</h3>
+          <div class="detail-content">${lineChartSvg(mcapPoints, { color: safeNum(item.pnl_pct) >= 0 ? "#22c55e" : "#f43f5e" })}</div>
+        </section>
+        <section class="detail-panel">
+          <h3>可观察风险</h3>
+          <div class="detail-content">${arrayListHtml(riskList, "暂无明显风险字段")}</div>
+        </section>
+        <section class="detail-panel">
+          <h3>外部链接</h3>
+          <div class="detail-content actions">
+            <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
+            <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
+            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}')">复制 CA</button>
+          </div>
+        </section>
+      `;
+    }
+    function openDrawerByAddress(address) {
+      const item = items.find(x => x.address === address);
+      if (!item) return;
+      drawerTitle.textContent = `$${item.symbol || "UNKNOWN"}`;
+      drawerSubtitle.textContent = item.address || "";
+      drawerBody.innerHTML = buildDrawerHtml(item);
+      drawer.classList.add("show");
+      drawerBackdrop.classList.add("show");
+      drawer.setAttribute("aria-hidden", "false");
+      document.body.classList.add("drawer-open");
+
+      fetch(`/api/bottom-live-track/${encodeURIComponent(item.address)}/detail`)
+        .then(r => r.ok ? r.json() : null)
+        .then(detail => {
+          if (!detail) return;
+          drawerBody.innerHTML = buildDrawerHtml(item, detail);
+        })
+        .catch(() => {});
+    }
+    function closeDrawer() {
+      drawer.classList.remove("show");
+      drawerBackdrop.classList.remove("show");
+      drawer.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("drawer-open");
+    }
+
     function mergeItems(newItems) {
       const byAddr = {};
       for (const item of items) byAddr[item.address] = item;
@@ -1031,19 +1185,13 @@
           alertAudio.pause();
           alertAudio.currentTime = 0;
           alertAudio.muted = false;
-          const pullbackProbe = pullbackAudio.play();
-          if (pullbackProbe && typeof pullbackProbe.then === "function") {
-            pullbackProbe.then(() => {
+          const probe = pullbackAudio.play();
+          if (probe && typeof probe.then === "function") {
+            probe.then(() => {
               pullbackAudio.pause();
               pullbackAudio.currentTime = 0;
               pullbackAudio.muted = false;
-            }).catch(() => {
-              pullbackAudio.muted = false;
-            });
-          } else {
-            pullbackAudio.pause();
-            pullbackAudio.currentTime = 0;
-            pullbackAudio.muted = false;
+            }).catch(() => { pullbackAudio.muted = false; });
           }
           audioUnlocked = true;
           audioToggle.classList.add("unlocked");
@@ -1081,7 +1229,9 @@
       liveLabel.textContent = ok ? "实时连接" : "连接断开";
     }
     function connectSSE() {
-      if (evtSource) { try { evtSource.close(); } catch (_) {} }
+      if (evtSource) {
+        try { evtSource.close(); } catch (_) {}
+      }
       evtSource = new EventSource("/api/bottom-live-track/events");
       evtSource.addEventListener("snapshot", e => {
         try {
@@ -1120,9 +1270,21 @@
         render();
       });
     });
-    [filterInput, strongOnlyEl, hideRemovedEl].forEach(el => el.addEventListener("input", render));
+    document.querySelectorAll(".segment").forEach(btn => {
+      btn.addEventListener("click", () => {
+        filterMode = btn.dataset.filter || "all";
+        document.querySelectorAll(".segment").forEach(x => x.classList.toggle("active", x === btn));
+        render();
+      });
+    });
+    filterInput.addEventListener("input", render);
     audioToggle.addEventListener("click", unlockAudio);
     document.addEventListener("keydown", unlockAudio, { once: true });
+    drawerClose.addEventListener("click", closeDrawer);
+    drawerBackdrop.addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") closeDrawer();
+    });
 
     fetch("/api/bottom-live-track")
       .then(r => r.json())

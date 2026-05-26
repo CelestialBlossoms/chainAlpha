@@ -61,11 +61,11 @@ Use the `gmgn-cli` tool to query on-chain tracking data based on the user's requ
 
 - `gmgn-cli` installed globally — if missing, run: `npm install -g gmgn-cli`
 - `GMGN_API_KEY` configured in `~/.config/gmgn/.env` — required for all sub-commands
-- `GMGN_PRIVATE_KEY` — required for `track follow-wallet` only (critical auth); not needed for `kol` or `smartmoney`
+- `GMGN_PRIVATE_KEY` — required for `track follow-wallet` only (signed auth); not needed for `kol` or `smartmoney`
 
 ## Rate Limit Handling
 
-All tracking routes used by this skill go through GMGN's leaky-bucket limiter with `rate=10` and `capacity=10`. Sustained throughput is roughly `10 ÷ weight` requests/second, and the max burst is roughly `floor(10 ÷ weight)` when the bucket is full.
+All tracking routes used by this skill go through GMGN's leaky-bucket limiter with `rate=20` and `capacity=20`. Sustained throughput is roughly `20 ÷ weight` requests/second, and the max burst is roughly `floor(20 ÷ weight)` when the bucket is full.
 
 | Command | Route | Weight |
 |---------|-------|--------|
@@ -311,7 +311,7 @@ To research any token surfaced by smart money activity, follow [`docs/workflow-t
 
 ## Notes
 
-- `track follow-wallet` uses critical auth (API Key + private key signature); `track kol` and `track smartmoney` use normal auth (API Key only)
+- `track follow-wallet` uses signed auth (API Key + private key signature); `track kol` and `track smartmoney` use exist auth (API Key only)
 - `track follow-wallet` returns trades from wallets followed on the GMGN platform; the follow list is resolved automatically from the GMGN user account bound to the API Key — `--wallet` is optional
 - Use `--raw` to get single-line JSON for further processing
 - `track kol` / `track smartmoney` `--side` is a **client-side filter** — the CLI fetches all results then filters locally; it is NOT sent to the API
