@@ -146,6 +146,36 @@
       line-height: 1.45;
       overflow-wrap: anywhere;
     }
+    .pullback-list {
+      display: grid;
+      gap: 7px;
+      margin-top: 6px;
+    }
+    .pullback-item {
+      display: grid;
+      grid-template-columns: minmax(130px, 1.2fr) repeat(4, minmax(86px, .8fr));
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid rgba(243, 179, 66, .22);
+      border-radius: 7px;
+      background: rgba(11, 13, 16, .34);
+    }
+    .pullback-token {
+      font-weight: 850;
+      color: #fff7dc;
+      overflow-wrap: anywhere;
+    }
+    .pullback-metric {
+      color: #f8fafc;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .pullback-metric span {
+      display: block;
+      color: #d7b679;
+      font-size: 11px;
+    }
     .pullback-alert-note {
       color: #d7b679;
       font-size: 12px;
@@ -279,6 +309,10 @@
     .track-table th:nth-child(12), .track-table td:nth-child(12) { width: 5%; }
     .track-table tr:hover td { background: rgba(23, 28, 36, .78); }
     .track-table tr.removed td { opacity: .48; }
+    .track-table tr.pullback-zone td {
+      background: rgba(87, 55, 12, .34);
+      box-shadow: inset 3px 0 0 var(--amber);
+    }
 
     .token-cell {
       display: grid;
@@ -515,6 +549,8 @@
       .analysis-grid { grid-template-columns: 1fr; }
       .pullback-alert { align-items: flex-start; flex-direction: column; }
       .pullback-alert-note { white-space: normal; }
+      .pullback-item { grid-template-columns: 1fr 1fr; }
+      .pullback-token { grid-column: 1 / -1; }
       .track-table { font-size: 12px; }
       .track-table th, .track-table td { padding: 10px 5px; }
       .narrative-text { -webkit-line-clamp: 2; }
@@ -836,6 +872,9 @@
         peakGainPct,
         currentMcap: current,
         entryMcap: entry,
+        peakMcap: peak,
+        pnlPct: ((current - entry) / entry) * 100,
+        lastUpdated: safeNum(item.last_updated || item.pushed_at),
       };
     }
     function updatePullbackAlert(activeItems) {
@@ -852,10 +891,19 @@
       }
 
       const top = hits[0];
-      const more = hits.length > 1 ? `，另有 ${hits.length - 1} 个 CA 同区间` : "";
-      pullbackAlertDetailEl.textContent =
-        `$${top.symbol} ${top.address} 回撤到 -${top.entryDrawdownPct.toFixed(1)}% ` +
-        `(${formatCap(top.entryMcap)} -> ${formatCap(top.currentMcap)})，推送后最高涨幅 ${top.peakGainPct.toFixed(1)}%${more}`;
+      const topRows = hits.slice(0, 4).map(hit => `
+        <div class="pullback-item">
+          <div class="pullback-token">$${htmlEscape(hit.symbol)}<br><span class="muted small">${htmlEscape(hit.address)}</span></div>
+          <div class="pullback-metric"><span>当前回撤</span>-${hit.entryDrawdownPct.toFixed(1)}%</div>
+          <div class="pullback-metric"><span>推送市值</span>${formatCap(hit.entryMcap)}</div>
+          <div class="pullback-metric"><span>当前市值</span>${formatCap(hit.currentMcap)}</div>
+          <div class="pullback-metric"><span>最高涨幅 / 更新</span>${hit.peakGainPct.toFixed(1)}% · ${formatTime(hit.lastUpdated)}</div>
+        </div>
+      `).join("");
+      const more = hits.length > 4 ? `<div class="muted small">另有 ${hits.length - 4} 个 CA 在 30%-50% 回撤区间</div>` : "";
+      pullbackAlertDetailEl.innerHTML =
+        `<div>$${htmlEscape(top.symbol)} 当前回撤 -${top.entryDrawdownPct.toFixed(1)}%，市值 ${formatCap(top.entryMcap)} -> ${formatCap(top.currentMcap)}，后续刷新会同步更新回撤幅度和市值。</div>` +
+        `<div class="pullback-list">${topRows}${more}</div>`;
       pullbackAlertEl.classList.add("show");
 
       const currentKeys = new Set(hits.map(hit => hit.address).filter(Boolean));
@@ -934,11 +982,13 @@
         const isRemoved = item.status !== "tracking";
         const pnl = safeNum(item.pnl_pct);
         const entryMcap = safeNum(item.entry_mcap);
-        const peakMcap = safeNum(item.peak_mcap);
-        const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0;
-        const creationAge = formatCreationAge(item, now);
+      const peakMcap = safeNum(item.peak_mcap);
+      const peakPnl = entryMcap > 0 ? ((peakMcap - entryMcap) / entryMcap * 100) : 0;
+      const creationAge = formatCreationAge(item, now);
+        const pullback = pullbackInfo(item);
+        const rowClasses = [isRemoved ? "removed" : "", pullback ? "pullback-zone" : ""].filter(Boolean).join(" ");
         return `
-          <tr class="${isRemoved ? "removed" : ""}" data-ca="${htmlEscape(item.address)}">
+          <tr class="${rowClasses}" data-ca="${htmlEscape(item.address)}">
             <td>
               <div class="token-cell">
                 <div class="token-line"><span class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</span>${item.signal_type ? `<span class="signal-chip">${htmlEscape(item.signal_type)}</span>` : ""}</div>
