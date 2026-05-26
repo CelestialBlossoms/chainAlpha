@@ -827,7 +827,14 @@
       return (list || []).slice().sort((a, b) => {
         const diff = sortValue(a, sortState.key) - sortValue(b, sortState.key);
         if (diff !== 0) return diff * dir;
-        return (safeNum(a.pushed_at) - safeNum(b.pushed_at)) * -1;
+        return safeNum(b.pushed_at) - safeNum(a.pushed_at);
+      });
+    }
+    function sortByPushTimeDesc(list) {
+      return (list || []).slice().sort((a, b) => {
+        const diff = safeNum(b.pushed_at) - safeNum(a.pushed_at);
+        if (diff !== 0) return diff;
+        return String(a.address || "").localeCompare(String(b.address || ""));
       });
     }
     function updateSortHeaders() {
@@ -926,10 +933,9 @@
       return tags.slice(0, 3).join("");
     }
     function renderAlertQueue(activeItems) {
-      const hits = (activeItems || [])
+      const hits = sortByPushTimeDesc(activeItems || [])
         .map(pullbackInfo)
-        .filter(Boolean)
-        .sort((a, b) => b.entryDrawdownPct - a.entryDrawdownPct);
+        .filter(Boolean);
 
       alertNoteEl.textContent = hits.length
         ? `${hits.length} 个 CA 位于重点回撤区间`
