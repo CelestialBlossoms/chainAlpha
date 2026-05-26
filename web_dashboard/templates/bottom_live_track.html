@@ -197,7 +197,7 @@
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
-      min-width: 1420px;
+      min-width: 1580px;
       font-size: 13px;
     }
 
@@ -286,6 +286,32 @@
     .mcap-bar-fill.loss { background: linear-gradient(90deg, var(--red), #fda4af); }
 
     .prediction-cell { width: 330px; }
+    .narrative-cell {
+      width: 230px;
+      max-width: 260px;
+    }
+    .narrative-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 21px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 800;
+      margin: 0 5px 6px 0;
+      vertical-align: top;
+    }
+    .narrative-text {
+      color: #d7dee9;
+      font-size: 12px;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
     .prediction-top {
       display: flex;
       align-items: center;
@@ -474,7 +500,7 @@
 
       <section class="toolbar">
         <div class="toolbar-left">
-          <input id="filter-input" class="filter-input" type="search" placeholder="搜索 symbol / CA / signal type">
+          <input id="filter-input" class="filter-input" type="search" placeholder="搜索 symbol / CA / signal type / 叙事">
           <label class="toggle-row"><input id="strong-only" type="checkbox"> 只看偏强</label>
           <label class="toggle-row"><input id="hide-removed" type="checkbox" checked> 隐藏已移除</label>
         </div>
@@ -493,6 +519,7 @@
                 <th class="sortable" data-sort="entry_mcap">推送市值</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
                 <th>盈亏</th>
+                <th>叙事</th>
                 <th>胜率 / 入场计划</th>
                 <th>峰值</th>
                 <th>流动性</th>
@@ -695,6 +722,19 @@
       if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
       return `<span class="status-badge tracking">追踪中</span>`;
     }
+    function narrativeHtml(item) {
+      const desc = item.narrative_desc || item.narrative || "";
+      const type = item.narrative_type || "";
+      const category = item.narrative_category || "";
+      if (!desc && !type && !category) return `<span class="muted">-</span>`;
+      return `
+        <div class="narrative-cell" title="${htmlEscape([category, type, desc].filter(Boolean).join(" | "))}">
+          ${category ? `<span class="narrative-tag">${htmlEscape(category)}</span>` : ""}
+          ${type ? `<span class="narrative-tag">${htmlEscape(type)}</span>` : ""}
+          <div class="narrative-text">${htmlEscape(desc || type || category)}</div>
+        </div>
+      `;
+    }
     function mcapBarHtml(entry, current) {
       const e = safeNum(entry);
       const c = safeNum(current);
@@ -725,7 +765,15 @@
         const pct = safeNum((item.winrate_prediction || {}).predicted_winrate_pct, -1);
         if (strongOnlyEl.checked && pct < 60) return false;
         if (!q) return true;
-        return [item.symbol, item.address, item.signal_type].some(v => String(v || "").toLowerCase().includes(q));
+        return [
+          item.symbol,
+          item.address,
+          item.signal_type,
+          item.narrative,
+          item.narrative_desc,
+          item.narrative_type,
+          item.narrative_category,
+        ].some(v => String(v || "").toLowerCase().includes(q));
       });
     }
     function updateMetrics(active, removed, visible) {
@@ -772,6 +820,7 @@
             <td><div class="cap-main">${formatCap(item.entry_mcap)}</div></td>
             <td><div class="cap-main">${formatCap(item.current_mcap)}</div>${mcapBarHtml(item.entry_mcap, item.current_mcap)}</td>
             <td><div class="${pnlClass(pnl)}">${formatPnl(pnl)}</div></td>
+            <td>${narrativeHtml(item)}</td>
             <td>${predictionHtml(item)}</td>
             <td><div class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</div><div class="muted small">${formatCap(item.peak_mcap)} · ${formatTime(item.peak_mcap_at || item.pushed_at)}</div></td>
             <td><div>${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>

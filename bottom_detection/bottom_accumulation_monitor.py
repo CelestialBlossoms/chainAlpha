@@ -2099,6 +2099,9 @@ def start_bottom_live_tracking(
     created_ts: int = 0,
     launch_ts: int = 0,
     age_sec: int = 0,
+    narrative_desc: str = "",
+    narrative_type: str = "",
+    narrative_category: str = "",
     winrate_prediction: dict[str, Any] | None = None,
 ) -> None:
     """Store a bottom-abnormal CA in Redis for the configured real-time tracking window."""
@@ -2124,6 +2127,10 @@ def start_bottom_live_tracking(
         "peak_mcap": to_float(entry_mcap),
         "peak_mcap_at": now_ts(),
         "pool_liquidity": to_float(pool_liquidity),
+        "narrative": short_text(narrative_desc, 180),
+        "narrative_desc": short_text(narrative_desc, 180),
+        "narrative_type": short_text(narrative_type, 80),
+        "narrative_category": short_text(narrative_category, 40),
         "holders": 0,
         "volume_5m": 0,
         "volume_1h": 0,
@@ -2836,6 +2843,9 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
             created_ts=to_int(extra.get("created_ts")),
             launch_ts=to_int(extra.get("launch_ts")),
             age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+            narrative_desc=str(extra.get("narrative_desc") or extra.get("narrative") or ""),
+            narrative_type=str(extra.get("narrative_type") or ""),
+            narrative_category=str(extra.get("narrative_category") or ""),
             winrate_prediction=extra.get("winrate_prediction") or compute_historical_winrate_prediction(extra),
         )
         return int(message_id) if message_id else None
@@ -3231,6 +3241,9 @@ def publish_frontend_signal_update(
         created_ts=to_int(extra.get("created_ts")),
         launch_ts=to_int(extra.get("launch_ts")),
         age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+        narrative_desc=str(extra.get("narrative_desc") or extra.get("narrative") or ""),
+        narrative_type=str(extra.get("narrative_type") or ""),
+        narrative_category=str(extra.get("narrative_category") or ""),
         winrate_prediction=extra.get("winrate_prediction") or compute_historical_winrate_prediction(extra),
     )
 

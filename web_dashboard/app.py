@@ -2339,6 +2339,7 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
         and (
             not item.get("winrate_prediction")
             or not ((item.get("winrate_prediction") or {}).get("strategy_plan"))
+            or not (item.get("narrative") or item.get("narrative_desc"))
         )
         and str((item or {}).get("address") or "").strip()
     })
@@ -2376,6 +2377,30 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
 def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
     if not track:
         return track
+    extra = extra or {}
+    narrative_desc = (
+        track.get("narrative_desc")
+        or track.get("narrative")
+        or extra.get("narrative_desc")
+        or extra.get("narrative")
+        or extra.get("watchlist_narrative_desc")
+        or extra.get("alpha_abnormal_narrative_desc")
+        or ""
+    )
+    if narrative_desc:
+        track["narrative"] = str(narrative_desc)
+        track["narrative_desc"] = str(narrative_desc)
+    narrative_type = extra.get("narrative_type") or extra.get("watchlist_narrative_type") or extra.get("alpha_abnormal_narrative_type") or ""
+    narrative_category = (
+        extra.get("narrative_category")
+        or extra.get("watchlist_narrative_category")
+        or extra.get("alpha_abnormal_narrative_category")
+        or ""
+    )
+    if not track.get("narrative_type") and narrative_type:
+        track["narrative_type"] = str(narrative_type)
+    if not track.get("narrative_category") and narrative_category:
+        track["narrative_category"] = str(narrative_category)
     existing_prediction = track.get("winrate_prediction") or {}
     if existing_prediction and existing_prediction.get("strategy_plan"):
         return track
@@ -2384,7 +2409,7 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
     except Exception:
         return track
 
-    merged = {**(extra or {}), **track}
+    merged = {**extra, **track}
     current_mcap = _safe_float(merged.get("current_mcap")) or _safe_float(merged.get("entry_mcap"))
     pool_liquidity = _safe_float(merged.get("pool_liquidity") or merged.get("liquidity") or merged.get("pool_total_liquidity"))
     if current_mcap > 0 and pool_liquidity > 0 and not _safe_float(merged.get("pool_mcap_ratio")):
@@ -2400,8 +2425,11 @@ def _bottom_live_track_attach_predictions(items: list[dict[str, Any]]) -> list[d
         address = str((item or {}).get("address") or "").strip()
         current_prediction = (item or {}).get("winrate_prediction") or {}
         had_prediction = bool(current_prediction and current_prediction.get("strategy_plan"))
+        had_narrative = bool((item or {}).get("narrative") or (item or {}).get("narrative_desc"))
         next_item = _bottom_live_track_with_prediction(item, extra_by_address.get(address)) or item
-        if address and not had_prediction and next_item.get("winrate_prediction"):
+        has_new_prediction = not had_prediction and bool(next_item.get("winrate_prediction"))
+        has_new_narrative = not had_narrative and bool(next_item.get("narrative") or next_item.get("narrative_desc"))
+        if address and (has_new_prediction or has_new_narrative):
             _bottom_live_track_save(address, next_item)
         enriched.append(next_item)
     return enriched
