@@ -32,6 +32,8 @@ def init_bottom_accumulation_tables(conn):
             notified BOOLEAN DEFAULT FALSE,
             summary JSONB NOT NULL,
             holders JSONB NOT NULL,
+            top_profit_traders JSONB NOT NULL DEFAULT '[]'::jsonb,
+            top_loss_traders JSONB NOT NULL DEFAULT '[]'::jsonb,
             analysis JSONB,
             raw_token JSONB,
             created_at TIMESTAMPTZ DEFAULT NOW()
@@ -57,6 +59,8 @@ def init_bottom_accumulation_tables(conn):
         COMMENT ON COLUMN bottom_top100_snapshots.notified IS '历史兼容字段，当前推送状态以bottom_top100_push_records为准';
         COMMENT ON COLUMN bottom_top100_snapshots.summary IS '本次快照的市值、池子、Top10/20/50/100占比、买卖额等摘要JSON';
         COMMENT ON COLUMN bottom_top100_snapshots.holders IS '本次快照归一化后的GMGN Top100持仓明细JSON';
+        COMMENT ON COLUMN bottom_top100_snapshots.top_profit_traders IS 'GMGN token traders snapshot ordered by realized profit desc';
+        COMMENT ON COLUMN bottom_top100_snapshots.top_loss_traders IS 'GMGN token traders snapshot ordered by realized profit asc';
         COMMENT ON COLUMN bottom_top100_snapshots.analysis IS '本次异动检测分析结果JSON';
         COMMENT ON COLUMN bottom_top100_snapshots.raw_token IS '合并trending、watchlist、metadata后的原始代币数据JSON';
         COMMENT ON COLUMN bottom_top100_snapshots.created_at IS '数据库写入时间';

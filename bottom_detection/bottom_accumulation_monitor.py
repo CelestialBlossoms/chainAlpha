@@ -52,6 +52,7 @@ from bottom_detection.top100_push_record_store import (
 
 CHAIN = "sol"
 _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = False
+_BOTTOM_TOP100_TRADER_COLUMNS_READY = False
 TREND_INTERVALS = tuple(
     item.strip()
     for item in os.getenv("BOTTOM_TREND_INTERVALS", os.getenv("BOTTOM_TREND_INTERVAL", "1m,5m,1h,6h,24h")).split(",")
@@ -76,6 +77,7 @@ TREND_LIMIT = int(os.getenv("BOTTOM_TREND_LIMIT", "100"))
 MAX_TOKENS = int(os.getenv("BOTTOM_MAX_TOKENS", "0"))
 DEFAULT_INTERVAL_SEC = int(os.getenv("BOTTOM_SCAN_INTERVAL", "300"))
 TOP_HOLDER_LIMIT = int(os.getenv("BOTTOM_TOP_HOLDER_LIMIT", "100"))
+TOP_TRADER_SNAPSHOT_LIMIT = int(os.getenv("BOTTOM_TOP_TRADER_SNAPSHOT_LIMIT", "100"))
 RECENT_COMPARE_LIMIT = int(os.getenv("BOTTOM_RECENT_COMPARE_LIMIT", "100"))
 NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(48 * 3600)))
 MID_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_MID_TOKEN_AGE_CUTOFF_SEC", str(5 * 24 * 3600)))
@@ -790,6 +792,38 @@ def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
     return holders if isinstance(holders, list) else []
 
 
+def fetch_top_traders_by_profit(address: str, direction: str, limit: int | None = None) -> list[dict[str, Any]]:
+    if direction not in {"asc", "desc"}:
+        raise ValueError("direction must be asc or desc")
+    data = run_gmgn(
+        [
+            "token",
+            "traders",
+            "--chain",
+            CHAIN,
+            "--address",
+            address,
+            "--limit",
+            str(limit or TOP_TRADER_SNAPSHOT_LIMIT),
+            "--order-by",
+            "profit",
+            "--direction",
+            direction,
+        ],
+        timeout=90,
+    )
+    if not isinstance(data, dict):
+        return []
+    traders = data.get("list") or data.get("data", {}).get("list") or []
+    return traders if isinstance(traders, list) else []
+
+
+def fetch_profit_loss_trader_snapshots(address: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    top_profit_traders = fetch_top_traders_by_profit(address, "desc")
+    top_loss_traders = fetch_top_traders_by_profit(address, "asc")
+    return top_profit_traders, top_loss_traders
+
+
 def fetch_token_metadata(address: str) -> tuple[dict[str, Any], dict[str, Any]]:
     info = fetch_binance_token_metadata(address)
     return (info if isinstance(info, dict) else {}, {})
@@ -1457,6 +1491,29 @@ def ensure_bottom_top100_snapshot_comments() -> None:
     _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = True
 
 
+def ensure_bottom_top100_trader_columns() -> None:
+    global _BOTTOM_TOP100_TRADER_COLUMNS_READY
+    if _BOTTOM_TOP100_TRADER_COLUMNS_READY:
+        return
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            ALTER TABLE bottom_top100_snapshots
+                ADD COLUMN IF NOT EXISTS top_profit_traders JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ADD COLUMN IF NOT EXISTS top_loss_traders JSONB NOT NULL DEFAULT '[]'::jsonb;
+            COMMENT ON COLUMN bottom_top100_snapshots.top_profit_traders
+                IS 'GMGN token traders snapshot ordered by realized profit desc';
+            COMMENT ON COLUMN bottom_top100_snapshots.top_loss_traders
+                IS 'GMGN token traders snapshot ordered by realized profit asc';
+            """
+        )
+
+    db_op(_op)
+    _BOTTOM_TOP100_TRADER_COLUMNS_READY = True
+
+
 def latest_snapshot_ts(address: str) -> int | None:
     def _op(conn):
         cur = conn.cursor()
@@ -1859,9 +1916,18 @@ def analyze_abnormal_snapshot(
         "netflow_usd": holder_change["netflow_usd"],
     }
 
-def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], holders: list[dict[str, Any]], analysis: dict[str, Any]) -> int:
+def save_snapshot(
+    scan_id: str,
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    holders: list[dict[str, Any]],
+    analysis: dict[str, Any],
+    top_profit_traders: list[dict[str, Any]] | None = None,
+    top_loss_traders: list[dict[str, Any]] | None = None,
+) -> int:
     address = token_address(token)
     ensure_bottom_top100_snapshot_comments()
+    ensure_bottom_top100_trader_columns()
 
     def _op(conn):
         cur = conn.cursor()
@@ -1869,9 +1935,10 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
             """
             INSERT INTO bottom_top100_snapshots (
                 scan_id, chain, trend_interval, address, symbol, snapshot_ts,
-                signal_type, signal_score, summary, holders, analysis, raw_token
+                signal_type, signal_score, summary, holders, analysis, raw_token,
+                top_profit_traders, top_loss_traders
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id
             """,
             (
@@ -1887,6 +1954,8 @@ def save_snapshot(scan_id: str, token: dict[str, Any], summary: dict[str, Any], 
                 Json(json_safe(holders)),
                 Json(json_safe(analysis)),
                 Json(json_safe(token)),
+                Json(json_safe(top_profit_traders or [])),
+                Json(json_safe(top_loss_traders or [])),
             ),
         )
         return int(cur.fetchone()[0])
@@ -4265,6 +4334,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     if not raw_holders:
         print(f"{token_label(token)} no holders")
         return False
+    top_profit_traders, top_loss_traders = fetch_profit_loss_trader_snapshots(address)
     kline_resolution = token_kline_resolution(token)
     candles = fetch_kline(address, kline_resolution, token)
     # Also fetch 1m K-line for micro-structure volume analysis (DCB vs V-reversal)
@@ -4293,7 +4363,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))
     has_previous_bottom_signal = previous_bottom_signal_exists(address)
     baseline = first_signal_baseline(address, analysis.get("signal_type", ""))
-    snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis)
+    snapshot_id = save_snapshot(scan_id, token, summary, holders, analysis, top_profit_traders, top_loss_traders)
     analysis = {**analysis, "snapshot_id": snapshot_id}
     if analysis.get("signal_type") != "watch":
         print(
@@ -4393,7 +4463,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         quiet_already = previous_signal_exists(address, quiet_type)
         quiet_baseline = first_signal_baseline(address, quiet_type)
         if not quiet_already:
-            quiet_snapshot_id = save_snapshot(scan_id + "_quiet", token, summary, holders, quiet_breakout)
+            quiet_snapshot_id = save_snapshot(
+                scan_id + "_quiet",
+                token,
+                summary,
+                holders,
+                quiet_breakout,
+                top_profit_traders,
+                top_loss_traders,
+            )
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
             quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
@@ -4413,7 +4491,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         runup_already = previous_signal_exists(address, runup_type)
         runup_baseline = first_signal_baseline(address, runup_type)
         if not runup_already:
-            runup_snapshot_id = save_snapshot(scan_id + "_runup", token, summary, holders, quiet_runup)
+            runup_snapshot_id = save_snapshot(
+                scan_id + "_runup",
+                token,
+                summary,
+                holders,
+                quiet_runup,
+                top_profit_traders,
+                top_loss_traders,
+            )
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             runup_text = quiet_breakout_signal_text(token, quiet_runup)
@@ -4540,6 +4626,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     summary,
                     holders,
                     {"signal_type": crossover_signal_type, "score": 80, "crossover": crossover},
+                    top_profit_traders,
+                    top_loss_traders,
                 )
                 ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
                 # Push to frontend on first detection
