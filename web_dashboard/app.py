@@ -2345,6 +2345,17 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
     })
     if not addresses:
         return {}
+    address_set = set(addresses)
+    result: dict[str, dict[str, Any]] = {}
+
+    for signal in read_recent_plugin_signals(max(500, len(addresses) * 12)):
+        extra = signal.get("extra") if isinstance(signal, dict) else {}
+        if not isinstance(extra, dict):
+            continue
+        address = str(extra.get("address") or signal.get("ca") or "").strip()
+        if not address or address not in address_set or address in result:
+            continue
+        result[address] = extra
 
     def _query(conn):
         cur = conn.cursor()
@@ -2358,20 +2369,22 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
             [addresses],
         )
         rows = cur.fetchall()
-        result = {}
+        db_result = {}
         for address, extra in rows:
             if isinstance(extra, str):
                 try:
                     extra = json.loads(extra) if extra else {}
                 except json.JSONDecodeError:
                     extra = {}
-            result[str(address)] = extra if isinstance(extra, dict) else {}
-        return result
+            db_result[str(address)] = extra if isinstance(extra, dict) else {}
+        return db_result
 
     try:
-        return db_op(_query) or {}
+        for address, extra in (db_op(_query) or {}).items():
+            result.setdefault(address, extra)
+        return result
     except Exception:
-        return {}
+        return result
 
 
 def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
