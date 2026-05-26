@@ -792,9 +792,7 @@ def fetch_top100_holders(address: str) -> list[dict[str, Any]]:
     return holders if isinstance(holders, list) else []
 
 
-def fetch_top_traders_by_profit(address: str, direction: str, limit: int | None = None) -> list[dict[str, Any]]:
-    if direction not in {"asc", "desc"}:
-        raise ValueError("direction must be asc or desc")
+def fetch_token_traders_snapshot(address: str, order_by: str, limit: int | None = None) -> list[dict[str, Any]]:
     data = run_gmgn(
         [
             "token",
@@ -806,9 +804,9 @@ def fetch_top_traders_by_profit(address: str, direction: str, limit: int | None 
             "--limit",
             str(limit or TOP_TRADER_SNAPSHOT_LIMIT),
             "--order-by",
-            "profit",
+            order_by,
             "--direction",
-            direction,
+            "desc",
         ],
         timeout=90,
     )
@@ -818,9 +816,36 @@ def fetch_top_traders_by_profit(address: str, direction: str, limit: int | None 
     return traders if isinstance(traders, list) else []
 
 
+def trader_wallet_key(row: dict[str, Any]) -> str:
+    return str(row.get("address") or row.get("account_address") or row.get("wallet_address") or "").strip()
+
+
+def trader_loss_value(row: dict[str, Any]) -> float:
+    profit = to_float(row.get("profit") or row.get("realized_profit"))
+    unrealized = to_float(row.get("unrealized_profit"))
+    losses = [value for value in (profit, unrealized) if value < 0]
+    return min(losses) if losses else 0.0
+
+
+def build_top_loss_traders(address: str) -> list[dict[str, Any]]:
+    # GMGN currently rejects direction=asc for token_top_traders, so collect
+    # high-activity trader candidates and sort their negative PnL locally.
+    merged: dict[str, dict[str, Any]] = {}
+    for order_by in ("buy_volume_cur", "sell_volume_cur", "amount_percentage"):
+        for row in fetch_token_traders_snapshot(address, order_by):
+            if not isinstance(row, dict):
+                continue
+            key = trader_wallet_key(row)
+            if key and key not in merged:
+                merged[key] = row
+    loss_rows = [row for row in merged.values() if trader_loss_value(row) < 0]
+    loss_rows.sort(key=trader_loss_value)
+    return loss_rows[:TOP_TRADER_SNAPSHOT_LIMIT]
+
+
 def fetch_profit_loss_trader_snapshots(address: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    top_profit_traders = fetch_top_traders_by_profit(address, "desc")
-    top_loss_traders = fetch_top_traders_by_profit(address, "asc")
+    top_profit_traders = fetch_token_traders_snapshot(address, "profit")
+    top_loss_traders = build_top_loss_traders(address)
     return top_profit_traders, top_loss_traders
 
 
@@ -1506,7 +1531,7 @@ def ensure_bottom_top100_trader_columns() -> None:
             COMMENT ON COLUMN bottom_top100_snapshots.top_profit_traders
                 IS 'GMGN token traders snapshot ordered by realized profit desc';
             COMMENT ON COLUMN bottom_top100_snapshots.top_loss_traders
-                IS 'GMGN token traders snapshot ordered by realized profit asc';
+                IS 'GMGN token traders loss-candidate snapshot sorted locally by negative realized or unrealized PnL';
             """
         )
 
