@@ -117,6 +117,41 @@
       margin: 18px 0;
     }
 
+    .pullback-alert {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 16px 0 0;
+      padding: 14px 16px;
+      border: 1px solid rgba(243, 179, 66, .4);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(87, 55, 12, .68), rgba(23, 28, 36, .92));
+      box-shadow: 0 12px 34px rgba(0, 0, 0, .22);
+    }
+    .pullback-alert.show { display: flex; }
+    .pullback-alert-main {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .pullback-alert-title {
+      color: #ffe1a3;
+      font-size: 16px;
+      font-weight: 850;
+    }
+    .pullback-alert-detail {
+      color: #f8fafc;
+      font-size: 14px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .pullback-alert-note {
+      color: #d7b679;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
     .metric-box {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -478,6 +513,8 @@
       .summary-grid { grid-template-columns: repeat(2, 1fr); }
       .toolbar { align-items: stretch; flex-direction: column; }
       .analysis-grid { grid-template-columns: 1fr; }
+      .pullback-alert { align-items: flex-start; flex-direction: column; }
+      .pullback-alert-note { white-space: normal; }
       .track-table { font-size: 12px; }
       .track-table th, .track-table td { padding: 10px 5px; }
       .narrative-text { -webkit-line-clamp: 2; }
@@ -499,6 +536,14 @@
           <span class="status-pill">{{ (bottom_live_track_ttl_sec // 3600) if bottom_live_track_ttl_sec else 24 }}小时追踪窗口</span>
         </div>
       </header>
+
+      <section id="pullback-alert" class="pullback-alert" aria-live="polite">
+        <div class="pullback-alert-main">
+          <div class="pullback-alert-title">回撤观察触发</div>
+          <div id="pullback-alert-detail" class="pullback-alert-detail"></div>
+        </div>
+        <div class="pullback-alert-note">参考 quant_strategy_from_data.md：-30%~-40% 为均衡回撤区间，页面监控 30%-50%</div>
+      </section>
 
       <section class="summary-grid" aria-label="追踪概览">
         <div class="metric-box">
@@ -572,6 +617,8 @@
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
     const lastUpdateEl = document.getElementById("last-update");
+    const pullbackAlertEl = document.getElementById("pullback-alert");
+    const pullbackAlertDetailEl = document.getElementById("pullback-alert-detail");
     const filterInput = document.getElementById("filter-input");
     const strongOnlyEl = document.getElementById("strong-only");
     const hideRemovedEl = document.getElementById("hide-removed");
@@ -587,8 +634,13 @@
     let sortState = { key: "pushed_at", dir: "desc" };
     let hasInitialSnapshot = false;
     let audioUnlocked = false;
+    let pullbackBaselineReady = false;
+    const pullbackSeen = new Set();
+    const pullbackNotified = new Set();
     const alertAudio = new Audio("/static/ElevenLabs.mp3");
     alertAudio.preload = "auto";
+    const pullbackAudio = new Audio("/static/xm3527.mp3");
+    pullbackAudio.preload = "auto";
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
     function htmlEscape(v) {
@@ -769,6 +821,58 @@
       const cls = c >= e ? "gain" : "loss";
       return `<div class="mcap-bar"><div class="mcap-bar-fill ${cls}" style="width:${pct}%"></div></div>`;
     }
+    function pullbackInfo(item) {
+      const entry = safeNum(item.entry_mcap);
+      const current = safeNum(item.current_mcap);
+      const peak = Math.max(safeNum(item.peak_mcap), entry, current);
+      if (entry <= 0 || current <= 0 || item.status !== "tracking") return null;
+      const entryDrawdownPct = (1 - current / entry) * 100;
+      const peakGainPct = ((peak - entry) / entry) * 100;
+      if (entryDrawdownPct < 30 || entryDrawdownPct > 50 || peakGainPct > 30) return null;
+      return {
+        address: item.address || "",
+        symbol: item.symbol || "UNKNOWN",
+        entryDrawdownPct,
+        peakGainPct,
+        currentMcap: current,
+        entryMcap: entry,
+      };
+    }
+    function updatePullbackAlert(activeItems) {
+      const hits = (activeItems || [])
+        .map(pullbackInfo)
+        .filter(Boolean)
+        .sort((a, b) => b.entryDrawdownPct - a.entryDrawdownPct);
+
+      if (!hits.length) {
+        pullbackAlertEl.classList.remove("show");
+        pullbackAlertDetailEl.textContent = "";
+        pullbackSeen.clear();
+        return;
+      }
+
+      const top = hits[0];
+      const more = hits.length > 1 ? `，另有 ${hits.length - 1} 个 CA 同区间` : "";
+      pullbackAlertDetailEl.textContent =
+        `$${top.symbol} ${top.address} 回撤到 -${top.entryDrawdownPct.toFixed(1)}% ` +
+        `(${formatCap(top.entryMcap)} -> ${formatCap(top.currentMcap)})，推送后最高涨幅 ${top.peakGainPct.toFixed(1)}%${more}`;
+      pullbackAlertEl.classList.add("show");
+
+      const currentKeys = new Set(hits.map(hit => hit.address).filter(Boolean));
+      if (!pullbackBaselineReady) {
+        for (const key of currentKeys) pullbackSeen.add(key);
+        pullbackBaselineReady = true;
+        return;
+      }
+      const hasNewHit = hits.some(hit => hit.address && !pullbackSeen.has(hit.address) && !pullbackNotified.has(hit.address));
+      for (const key of currentKeys) pullbackSeen.add(key);
+      if (hasNewHit) {
+        for (const hit of hits) {
+          if (hit.address) pullbackNotified.add(hit.address);
+        }
+        playPullbackAudio();
+      }
+    }
     function gmgnUrl(item) { return `https://gmgn.ai/${item.chain || "sol"}/token/${item.address}`; }
     function binanceUrl(item) { return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`; }
     async function copyCA(addr) {
@@ -822,6 +926,7 @@
       const sorted = sortTrackItems(filteredItems());
       const now = Math.floor(Date.now() / 1000);
       updateMetrics(active, removed, sorted);
+      updatePullbackAlert(active);
       emptyEl.hidden = sorted.length > 0;
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
@@ -868,12 +973,28 @@
       if (audioUnlocked) return;
       alertAudio.volume = 0.86;
       alertAudio.muted = true;
+      pullbackAudio.volume = 0.9;
+      pullbackAudio.muted = true;
       const p = alertAudio.play();
       if (p && typeof p.then === "function") {
         p.then(() => {
           alertAudio.pause();
           alertAudio.currentTime = 0;
           alertAudio.muted = false;
+          const pullbackProbe = pullbackAudio.play();
+          if (pullbackProbe && typeof pullbackProbe.then === "function") {
+            pullbackProbe.then(() => {
+              pullbackAudio.pause();
+              pullbackAudio.currentTime = 0;
+              pullbackAudio.muted = false;
+            }).catch(() => {
+              pullbackAudio.muted = false;
+            });
+          } else {
+            pullbackAudio.pause();
+            pullbackAudio.currentTime = 0;
+            pullbackAudio.muted = false;
+          }
           audioUnlocked = true;
           audioToggle.classList.add("unlocked");
           audioToggle.textContent = "声音提醒已开启";
@@ -888,6 +1009,14 @@
       try {
         alertAudio.currentTime = 0;
         const p = alertAudio.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch (_) {}
+    }
+    function playPullbackAudio() {
+      if (!audioUnlocked) return;
+      try {
+        pullbackAudio.currentTime = 0;
+        const p = pullbackAudio.play();
         if (p && typeof p.catch === "function") p.catch(() => {});
       } catch (_) {}
     }
