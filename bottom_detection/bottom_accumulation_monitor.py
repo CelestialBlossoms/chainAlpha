@@ -83,10 +83,10 @@ NEW_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_AGE_CUTOFF_SEC", str(
 MID_TOKEN_AGE_CUTOFF_SEC = int(os.getenv("BOTTOM_MID_TOKEN_AGE_CUTOFF_SEC", str(5 * 24 * 3600)))
 NEW_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_NEW_TOKEN_SNAPSHOT_INTERVAL_SEC", "300"))
 OLD_TOKEN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_OLD_TOKEN_SNAPSHOT_INTERVAL_SEC", "900"))
-# Fast scan: 100K-300K watchlist tokens checked every 1 min
+# Fast scan: bottom-range watchlist tokens checked every 1 min.
 FAST_SCAN_ENABLED = os.getenv("BOTTOM_FAST_SCAN_ENABLED", "1") != "0"
 FAST_SCAN_INTERVAL_SEC = int(os.getenv("BOTTOM_FAST_SCAN_INTERVAL_SEC", "60"))
-FAST_SCAN_MIN_MCAP = float(os.getenv("BOTTOM_FAST_SCAN_MIN_MCAP", "100000"))
+FAST_SCAN_MIN_MCAP = float(os.getenv("BOTTOM_FAST_SCAN_MIN_MCAP", "40000"))
 FAST_SCAN_MAX_MCAP = float(os.getenv("BOTTOM_FAST_SCAN_MAX_MCAP", "300000"))
 FAST_SCAN_SNAPSHOT_INTERVAL_SEC = int(os.getenv("BOTTOM_FAST_SCAN_SNAPSHOT_INTERVAL_SEC", "60"))
 FAST_SCAN_TOKEN_DELAY = float(os.getenv("BOTTOM_FAST_SCAN_TOKEN_DELAY", "0.3"))
@@ -640,6 +640,9 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "watchlist_source": row.get("source"),
             "watchlist_peak_mcap": to_float(row.get("peak_mcap")),
             "watchlist_last_mcap": to_float(row.get("last_mcap")),
+            "watchlist_highest_mcap": to_float(row.get("highest_mcap")),
+            "watchlist_current_mcap": to_float(row.get("current_mcap")),
+            "watchlist_ath_mcap": to_float(row.get("ath_mcap")),
             "watchlist_last_pool_liquidity": to_float(row.get("last_pool_liquidity")),
             "watchlist_last_pool_mcap_ratio": to_float(row.get("last_pool_mcap_ratio")),
             "watchlist_narrative_desc": row.get("narrative_desc") or "",
@@ -651,6 +654,14 @@ def fetch_watchlist_tokens() -> list[dict[str, Any]]:
             "symbol": row.get("symbol") or "",
             "blacklisted": bool(row.get("blacklisted")),
         }
+        current_mcap = to_float(row.get("current_mcap")) or to_float(row.get("last_mcap"))
+        if current_mcap > 0:
+            token["market_cap"] = current_mcap
+            token["usd_market_cap"] = current_mcap
+            token["mcap"] = current_mcap
+        ath_mcap = to_float(row.get("ath_mcap")) or to_float(row.get("highest_mcap")) or to_float(row.get("peak_mcap"))
+        if ath_mcap > 0:
+            token["history_highest_market_cap"] = ath_mcap
         if row.get("token_created_at"):
             token["token_created_at"] = row.get("token_created_at")
         if row.get("gmgn_created_at"):
@@ -4961,7 +4972,7 @@ def scan_once(
 
 
 def _fast_snapshot_skip_reason(address: str, token: dict[str, Any]) -> str | None:
-    """Shorter interval check for fast-scan path (100K-300K tokens)."""
+    """Shorter interval check for fast-scan path."""
     latest_ts = latest_snapshot_ts(address)
     if not latest_ts:
         return None
@@ -5120,6 +5131,7 @@ def run_scheduled_scans(args: argparse.Namespace) -> None:
     schedules = parse_trend_interval_schedules()
     primary_interval = TREND_PRIMARY_INTERVAL or schedules[0][0]
     next_due = {interval: 0.0 for interval, _every_sec in schedules}
+    next_fast_scan_due = 0.0
     recent_seen: dict[str, float] = {}
     print(
         "trend scheduler enabled: "
@@ -5129,6 +5141,12 @@ def run_scheduled_scans(args: argparse.Namespace) -> None:
 
     while True:
         now = time.monotonic()
+        if FAST_SCAN_ENABLED and now >= next_fast_scan_due:
+            started_at = time.monotonic()
+            fast_scan_once(args)
+            next_fast_scan_due = started_at + max(1, FAST_SCAN_INTERVAL_SEC)
+            now = time.monotonic()
+
         due = [(interval, every_sec) for interval, every_sec in schedules if now >= next_due.get(interval, 0.0)]
         if not due:
             sleep_left = min(
@@ -5169,7 +5187,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-age-hours", type=float, default=MIN_TOKEN_AGE_SEC / 3600, help="Skip tokens younger than this many hours.")
     parser.add_argument("--min-fee-sol", type=float, default=MIN_FEE_SOL, help="Skip tokens below this SOL fee value.")
     parser.add_argument("--min-pool-liquidity", type=float, default=MIN_POOL_LIQUIDITY_USD, help="Skip non-watchlist tokens below this pool liquidity in USD.")
-    parser.add_argument("--fast-scan", action="store_true", default=FAST_SCAN_ENABLED, help="Enable 1-min fast scan for 100K-300K watchlist tokens.")
+    parser.add_argument("--fast-scan", action="store_true", default=FAST_SCAN_ENABLED, help="Enable 1-min fast scan for bottom-range watchlist tokens.")
     parser.add_argument("--fast-interval", type=int, default=FAST_SCAN_INTERVAL_SEC, help="Fast scan interval seconds.")
     parser.add_argument("--fast-min-mcap", type=float, default=FAST_SCAN_MIN_MCAP, help="Fast scan minimum MCap in USD.")
     parser.add_argument("--fast-max-mcap", type=float, default=FAST_SCAN_MAX_MCAP, help="Fast scan maximum MCap in USD.")

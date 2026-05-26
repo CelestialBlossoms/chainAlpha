@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from agents.signal_decision_agent import SignalDecisionAgent
+from bottom_detection import bottom_accumulation_monitor as bottom_monitor
 from bottom_detection.bottom_accumulation_monitor import compute_risk_tags, should_notify, summarize_kline
 
 
@@ -82,6 +83,36 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(push["action"], "push_tg_and_frontend")
         self.assertEqual(update["action"], "frontend_update")
         self.assertEqual(delete["action"], "delete_frontend")
+
+    def test_watchlist_low_mcap_tokens_are_fast_scan_candidates(self) -> None:
+        original_fetch = bottom_monitor.fetch_watchlist_records
+        original_min = bottom_monitor.FAST_SCAN_MIN_MCAP
+        original_max = bottom_monitor.FAST_SCAN_MAX_MCAP
+        try:
+            bottom_monitor.FAST_SCAN_MIN_MCAP = 40_000
+            bottom_monitor.FAST_SCAN_MAX_MCAP = 300_000
+            bottom_monitor.fetch_watchlist_records = lambda: [
+                {
+                    "ca": "2MBq3mrKSKf6NnG5x29rBK4B9f7CWR4N1EQJ18NsViRL",
+                    "source": "manual",
+                    "last_mcap": 60_000,
+                    "current_mcap": 60_000,
+                    "ath_mcap": 1_200_000,
+                    "highest_mcap": 1_200_000,
+                    "blacklisted": False,
+                }
+            ]
+
+            token = bottom_monitor.fetch_watchlist_tokens()[0]
+
+            self.assertEqual(bottom_monitor.calc_mcap(token), 60_000)
+            self.assertEqual(token["history_highest_market_cap"], 1_200_000)
+            self.assertTrue(bottom_monitor.is_fast_scan_watchlist_token(token))
+            self.assertEqual(bottom_monitor.token_snapshot_interval_sec(token), 60)
+        finally:
+            bottom_monitor.fetch_watchlist_records = original_fetch
+            bottom_monitor.FAST_SCAN_MIN_MCAP = original_min
+            bottom_monitor.FAST_SCAN_MAX_MCAP = original_max
 
 
 if __name__ == "__main__":
