@@ -2350,6 +2350,11 @@ def _bottom_live_track_extra_map(items: list[dict[str, Any]]) -> dict[str, dict[
 
     for signal in read_recent_plugin_signals(max(500, len(addresses) * 12)):
         extra = signal.get("extra") if isinstance(signal, dict) else {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra) if extra else {}
+            except json.JSONDecodeError:
+                extra = {}
         if not isinstance(extra, dict):
             continue
         address = str(extra.get("address") or signal.get("ca") or "").strip()
