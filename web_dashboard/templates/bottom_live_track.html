@@ -477,6 +477,27 @@
       font-size: 11px;
       text-align: right;
     }
+    .copy-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      z-index: 60;
+      display: none;
+      transform: translateX(-50%);
+      min-height: 34px;
+      padding: 8px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: rgba(10, 14, 20, .96);
+      color: #dbeafe;
+      font-size: 12px;
+      box-shadow: var(--shadow);
+    }
+    .copy-toast.show { display: block; }
+    .copy-toast.error {
+      border-color: rgba(244, 63, 94, .42);
+      color: #fecdd3;
+    }
 
     .drawer-backdrop {
       position: fixed;
@@ -677,6 +698,7 @@
   </div>
 
   <div id="drawer-backdrop" class="drawer-backdrop"></div>
+  <div id="copy-toast" class="copy-toast" role="status" aria-live="polite"></div>
   <aside id="detail-drawer" class="detail-drawer" aria-hidden="true">
     <div class="drawer-head">
       <div>
@@ -709,6 +731,7 @@
     const drawerTitle = document.getElementById("drawer-title");
     const drawerSubtitle = document.getElementById("drawer-subtitle");
     const drawerBody = document.getElementById("drawer-body");
+    const copyToast = document.getElementById("copy-toast");
 
     let items = [];
     let evtSource = null;
@@ -818,18 +841,57 @@
     function binanceUrl(item) {
       return `https://web3.binance.com/zh-CN/token/sol/${item.address}?ref=NHQT72EV`;
     }
-    function copyCA(addr) {
+    function fallbackCopyText(text) {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      area.style.top = "0";
+      document.body.appendChild(area);
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, area.value.length);
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (_) {
+        ok = false;
+      }
+      area.remove();
+      return ok;
+    }
+    function showCopyFeedback(trigger, ok) {
+      if (trigger) {
+        const oldText = trigger.textContent;
+        trigger.textContent = ok ? "已复制" : "失败";
+        trigger.classList.toggle("pnl-positive", ok);
+        trigger.classList.toggle("pnl-negative", !ok);
+        window.setTimeout(() => {
+          trigger.textContent = oldText;
+          trigger.classList.remove("pnl-positive", "pnl-negative");
+        }, 1200);
+      }
+      copyToast.textContent = ok ? "CA 已复制到剪贴板" : "复制失败，请手动选中 CA";
+      copyToast.classList.toggle("error", !ok);
+      copyToast.classList.add("show");
+      window.clearTimeout(showCopyFeedback.timer);
+      showCopyFeedback.timer = window.setTimeout(() => copyToast.classList.remove("show"), 1600);
+    }
+    async function copyCA(addr, trigger, event) {
+      if (event) event.stopPropagation();
       if (!addr) return;
-      navigator.clipboard?.writeText(addr).catch(() => {
-        const area = document.createElement("textarea");
-        area.value = addr;
-        area.style.position = "fixed";
-        area.style.opacity = "0";
-        document.body.appendChild(area);
-        area.select();
-        document.execCommand("copy");
-        area.remove();
-      });
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(addr);
+          ok = true;
+        }
+      } catch (err) {
+        console.warn("Clipboard API failed, falling back to textarea copy:", err);
+      }
+      if (!ok) ok = fallbackCopyText(addr);
+      showCopyFeedback(trigger, ok);
     }
     function stopEvent(event) {
       event.stopPropagation();
@@ -894,7 +956,7 @@
           <div class="hit-tags">${hitTags(hit.item) || `<span class="tag hot">回撤命中</span>`}</div>
           <div class="alert-actions">
             <button class="mini-btn" type="button" onclick="openDrawerByAddress('${htmlEscape(hit.address)}'); stopEvent(event);">详情</button>
-            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(hit.address)}'); stopEvent(event);">复制</button>
+            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(hit.address)}', this, event);">复制</button>
           </div>
         </article>
       `).join("");
@@ -1002,7 +1064,7 @@
             <td>${statusBadge(item)}</td>
             <td>
               <div class="actions">
-                <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}'); stopEvent(event);">复制</button>
+                <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}', this, event);">复制</button>
                 <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer" onclick="stopEvent(event);">GMGN</a>
               </div>
             </td>
@@ -1134,7 +1196,7 @@
           <div class="detail-content actions">
             <a class="mini-link" href="${htmlEscape(gmgnUrl(item))}" target="_blank" rel="noreferrer">GMGN</a>
             <a class="mini-link" href="${htmlEscape(binanceUrl(item))}" target="_blank" rel="noreferrer">Binance</a>
-            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}')">复制 CA</button>
+            <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}', this, event)">复制 CA</button>
           </div>
         </section>
       `;
