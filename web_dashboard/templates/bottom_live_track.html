@@ -268,6 +268,9 @@
     .tag.hot { border-color: rgba(244, 63, 94, .28); background: var(--red-soft); color: #fb7185; }
     .tag.good { border-color: rgba(34, 197, 94, .28); background: var(--green-soft); color: var(--green); }
     .tag.warn { border-color: rgba(245, 158, 11, .28); background: var(--amber-soft); color: var(--amber); }
+    .tag.value-high { border-color: rgba(34, 197, 94, .35); background: var(--green-soft); color: var(--green); }
+    .tag.value-mid { border-color: rgba(245, 158, 11, .32); background: var(--amber-soft); color: var(--amber); }
+    .tag.value-low { border-color: rgba(244, 63, 94, .3); background: var(--red-soft); color: #fb7185; }
     .alert-actions {
       display: flex;
       gap: 7px;
@@ -675,7 +678,7 @@
             <thead>
               <tr>
                 <th>Token / CA</th>
-                <th class="sortable" data-sort="winrate">胜率</th>
+                <th class="sortable" data-sort="winrate">购买价值</th>
                 <th class="sortable" data-sort="pnl">盈亏</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
                 <th class="sortable" data-sort="liquidity">流动性</th>
@@ -925,6 +928,7 @@
     function hitTags(item) {
       const pred = prediction(item);
       const tags = [];
+      tags.push(`<span class="tag ${valueClass(item)}">${htmlEscape(buyValueLabel(item))}</span>`);
       if (isHighConfidence(item)) tags.push(`<span class="tag good">${htmlEscape(confidenceText(pred.confidence))}</span>`);
       if (item.signal_type) tags.push(`<span class="tag">${htmlEscape(item.signal_type)}</span>`);
       if (item.narrative_category) tags.push(`<span class="tag">${htmlEscape(item.narrative_category)}</span>`);
@@ -1033,6 +1037,36 @@
       const cls = pct >= 60 ? "pnl-positive" : pct >= 40 ? "pnl-zero" : "pnl-negative";
       return `<div class="num-strong ${cls}">${pct.toFixed(1)}%</div><div class="muted small">${htmlEscape(confidenceText(prediction(item).confidence))}</div>`;
     }
+    function guidePlan(item) {
+      return prediction(item).strategy_plan || {};
+    }
+    function targetProbabilities(item) {
+      return prediction(item).profit_target_probabilities || {};
+    }
+    function buyValueLabel(item) {
+      const pred = prediction(item);
+      return pred.buy_value_label || pred.label || guidePlan(item).buy_value_label || "待观察";
+    }
+    function valueClass(item) {
+      const label = buyValueLabel(item);
+      const pct = predictedWinrate(item);
+      if (label.includes("高") || pct >= 70) return "value-high";
+      if (label.includes("低") || label.includes("回避") || pct < 45) return "value-low";
+      return "value-mid";
+    }
+    function renderValueCell(item) {
+      const pct = predictedWinrate(item);
+      const plan = guidePlan(item);
+      const p = targetProbabilities(item);
+      const wr = pct >= 0 ? `${pct.toFixed(1)}%` : "-";
+      const tp50 = safeNum(p.tp50_pct, -1);
+      const sub = tp50 >= 0 ? `WR50 ${tp50.toFixed(0)}% · PnL ${plan.historical_avg_pnl || "-"}` : confidenceText(prediction(item).confidence);
+      return `
+        <div class="hit-tags"><span class="tag ${valueClass(item)}">${htmlEscape(buyValueLabel(item))}</span></div>
+        <div class="num-strong ${pct >= 60 ? "pnl-positive" : pct >= 40 ? "pnl-zero" : "pnl-negative"}">${htmlEscape(wr)}</div>
+        <div class="muted small">${htmlEscape(sub)}</div>
+      `;
+    }
     function render() {
       updateSortHeaders();
       const active = sortTrackItems(items.filter(i => i.status === "tracking"));
@@ -1061,8 +1095,8 @@
                 <div class="token-addr">${htmlEscape(item.address || "")}</div>
               </div>
             </td>
-            <td>${renderWinrate(item)}</td>
-            <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">${formatCap(entryMcap)} 起</div></td>
+            <td>${renderValueCell(item)}</td>
+            <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">历史 ${htmlEscape(guidePlan(item).historical_avg_pnl || "-")}</div></td>
             <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div></td>
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
             <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
@@ -1146,6 +1180,7 @@
     function buildDrawerHtml(item, detail = {}) {
       const pred = prediction(item);
       const plan = pred.strategy_plan || {};
+      const probs = targetProbabilities(item);
       const pInfo = pullbackInfo(item);
       const candles = normalizeCandles(detail.candles, item);
       const mcapPoints = [
@@ -1170,15 +1205,31 @@
       ].filter(Boolean);
       return `
         <div class="drawer-grid">
-          ${drawerMetric("胜率", predictedWinrate(item) >= 0 ? `${predictedWinrate(item).toFixed(1)}%` : "-", predictedWinrate(item) >= 60 ? "pnl-positive" : "")}
-          ${drawerMetric("盈亏", formatPnl(item.pnl_pct), pnlClass(item.pnl_pct))}
+          ${drawerMetric("购买价值", htmlEscape(buyValueLabel(item)), valueClass(item).includes("high") ? "pnl-positive" : valueClass(item).includes("low") ? "pnl-negative" : "pnl-zero")}
+          ${drawerMetric("预测WR20", predictedWinrate(item) >= 0 ? `${predictedWinrate(item).toFixed(1)}%` : "-", predictedWinrate(item) >= 60 ? "pnl-positive" : "")}
+          ${drawerMetric("当前盈亏", formatPnl(item.pnl_pct), pnlClass(item.pnl_pct))}
+          ${drawerMetric("历史AvgPnL", htmlEscape(plan.historical_avg_pnl || "-"))}
           ${drawerMetric("推送市值", formatCap(item.entry_mcap))}
           ${drawerMetric("当前市值", formatCap(item.current_mcap))}
           ${drawerMetric("峰值市值", formatCap(item.peak_mcap))}
           ${drawerMetric("回撤", pInfo ? `-${pInfo.entryDrawdownPct.toFixed(1)}%` : "-")}
         </div>
         <section class="detail-panel">
-          <h3>报警原因</h3>
+          <h3>后续判断</h3>
+          <div class="detail-content">
+            <div class="drawer-grid">
+              ${drawerMetric("观察窗口", htmlEscape(plan.entry_window || "-"))}
+              ${drawerMetric("出场窗口", htmlEscape(plan.exit_window || "-"))}
+              ${drawerMetric("+20%到达率", safeNum(probs.tp20_pct, -1) >= 0 ? `${safeNum(probs.tp20_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("+50%到达率", safeNum(probs.tp50_pct, -1) >= 0 ? `${safeNum(probs.tp50_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("+100%到达率", safeNum(probs.tp100_pct, -1) >= 0 ? `${safeNum(probs.tp100_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("历史AvgPeak", htmlEscape(plan.historical_avg_peak || "-"))}
+            </div>
+            <p class="muted">${htmlEscape(plan.timing_note || "暂无窗口说明")}</p>
+          </div>
+        </section>
+        <section class="detail-panel">
+          <h3>判断依据</h3>
           <div class="detail-content">${arrayListHtml(reasonList)}</div>
         </section>
         <section class="detail-panel">
