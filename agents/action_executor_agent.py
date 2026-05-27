@@ -40,7 +40,7 @@ class ActionExecutorAgent(BaseAgent):
         action = decision.get("action") or "observe"
         plan: list[str] = []
         if action == "push_tg_and_frontend":
-            plan = ["send_tg", "publish_frontend"]
+            plan = ["publish_frontend", "send_tg"]
         elif action == "frontend_update":
             plan = ["publish_frontend"]
         elif action == "delete_frontend":
@@ -72,12 +72,14 @@ class ActionExecutorAgent(BaseAgent):
                     bottom.send_tg(observation["signal_text"], extra=observation["extra"])
                     results.append({"step": step, "status": "ok"})
                 elif step == "publish_frontend":
-                    bottom.publish_frontend_signal_update(
+                    published = bottom.publish_frontend_signal_update(
                         observation["signal_text"],
                         observation["extra"],
                         status="frontend_update",
                     )
-                    results.append({"step": step, "status": "ok"})
+                    results.append({"step": step, "status": "ok" if published else "skipped"})
+                    if not published and "send_tg" in plan:
+                        break
                 elif step == "delete_frontend":
                     publish_tg_alert(
                         f"delete {context.ca}",

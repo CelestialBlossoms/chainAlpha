@@ -2928,7 +2928,7 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
         extra = {**extra, "format_error": str(exc)}
         tg_text = text
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        publish_tg_alert(tg_text, "bottom_abnormal", status="dry_run", chat_id=TG_CHAT_ID, extra=extra)
+        publish_tg_alert(tg_text, "bottom_abnormal", status="dry_run", ca=address, chat_id=TG_CHAT_ID, extra=extra)
         return None
     try:
         resp = requests.post(
@@ -2938,11 +2938,11 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
         )
         if not resp.ok:
             print(f"tg failed: {resp.status_code} {resp.text[:200]}")
-            publish_tg_alert(tg_text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", chat_id=TG_CHAT_ID, extra=extra)
+            publish_tg_alert(tg_text, "bottom_abnormal", status=f"failed_http_{resp.status_code}", ca=address, chat_id=TG_CHAT_ID, extra=extra)
             return None
         payload = resp.json()
         message_id = payload.get("result", {}).get("message_id") if isinstance(payload, dict) else None
-        publish_tg_alert(tg_text, "bottom_abnormal", status="sent", chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
+        publish_tg_alert(tg_text, "bottom_abnormal", status="sent", ca=address, chat_id=TG_CHAT_ID, message_id=message_id, extra=extra)
         register_post_push_track(address, extra, message_id)
         # Live-track: push to Redis for frontend real-time dashboard
         start_bottom_live_tracking(
@@ -2963,7 +2963,7 @@ def send_tg(text: str, extra: dict[str, Any] | None = None) -> int | None:
         return int(message_id) if message_id else None
     except Exception as exc:
         print(f"tg exception: {exc}")
-        publish_tg_alert(tg_text, "bottom_abnormal", status="exception", chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
+        publish_tg_alert(tg_text, "bottom_abnormal", status="exception", ca=address, chat_id=TG_CHAT_ID, extra={**extra, "error": str(exc)})
         return None
 
 
@@ -3311,35 +3311,35 @@ def publish_frontend_signal_update(
     extra: dict[str, Any],
     status: str = "frontend_update",
     snapshot_id: int = 0,
-) -> None:
+) -> bool:
     if snapshot_id and not (extra or {}).get("snapshot_id"):
         extra = {**(extra or {}), "snapshot_id": snapshot_id}
     address = str((extra or {}).get("address") or "").strip()
     if not address:
-        return
+        return False
     signal_type = str((extra or {}).get("signal_type") or "").strip()
     if top100_signal_push_record_exists(address, signal_type, source="bottom_abnormal", chain=CHAIN):
         print(f"{address[:8]} skip frontend push: {signal_type} push already recorded")
-        return
+        return False
     extra = enrich_signal_strategy_extra(extra)
     risk_tags = extra.get("risk_tags") or []
     try:
         inserted = record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
     except Exception as exc:
         print(f"{address[:8]} top100 push record failed: {exc}")
-        inserted = True
+        inserted = False
     if not inserted:
         print(f"{address[:8]} skip frontend push: duplicate first push record")
-        return
+        return False
     # Filter 1: ceiling + dead_vol = ~0% success (21 failures, 8 successes killed)
     if "天花板" in risk_tags and "无量" in risk_tags:
         print(f"{address[:8]} skip push: ceiling+dead_vol combo")
-        return
+        return False
     # Filter 2: extreme dead volume (<$5K) = 78% failure rate, kills only 5/131 successes
     vol = to_float(extra.get("breakout_volume_usd", 0) or extra.get("volume_usd", 0))
     if 0 < vol < 5_000:
         print(f"{address[:8]} skip push: extreme dead vol ${vol:,.0f} < $5K")
-        return
+        return False
     publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
     # Live-track: push to Redis for frontend real-time dashboard
@@ -3365,6 +3365,7 @@ def publish_frontend_signal_update(
         args=(address, extra),
         daemon=True,
     ).start()
+    return True
 
 
 QUICK_VERDICT_BARS = int(os.getenv("BOTTOM_QUICK_VERDICT_BARS", "6"))
@@ -4459,8 +4460,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         else:
             web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
             signal_text = abnormal_signal_text(token, analysis)
-            publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id)
-            send_tg(signal_text, extra=web_extra)
+            if publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id):
+                send_tg(signal_text, extra=web_extra)
     elif notify and should_notify(analysis) and already_notified:
         print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified, skip repeat push")
     elif notify and has_previous_bottom_signal:
@@ -4511,8 +4512,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
             quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
-            publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id)
-            send_tg(quiet_text, extra=quiet_extra)
+            if publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id):
+                send_tg(quiet_text, extra=quiet_extra)
             print(
                 f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
                 f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "
@@ -4667,8 +4668,8 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 )
                 ema_extra = {**ema_extra, "snapshot_id": ema_snapshot_id}
                 # Push to frontend on first detection
-                publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id)
-                send_tg(signal_text, extra=ema_extra)
+                if publish_frontend_signal_update(signal_text, ema_extra, status="frontend_update", snapshot_id=ema_snapshot_id):
+                    send_tg(signal_text, extra=ema_extra)
                 print(f"{token_label(token)} EMA golden cross detected! bars_below={crossover.get('bars_below_before_cross', 0)} crossover_ts={crossover_ts}")
             else:
                 print(
