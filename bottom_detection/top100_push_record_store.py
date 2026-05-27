@@ -140,21 +140,43 @@ def record_top100_push(
         cur.execute(
             """
             INSERT INTO bottom_top100_push_records (
-                event_ts, snapshot_id, chain, source, status, address, symbol, signal_type,
+                pushed_at, event_ts, snapshot_id, chain, source, status, address, symbol, signal_type,
                 abnormal_rule, trend_interval, current_mcap, first_signal_mcap,
                 first_signal_ts, first_signal_change_pct, price_change_pct,
                 max_abnormal_mcap, ath_mcap, liquidity, pool_total_liquidity,
                 pool_mcap_ratio, age_sec, text, extra
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s
             )
-            ON CONFLICT (chain, source, address, signal_type) DO NOTHING
+            ON CONFLICT (chain, source, address, signal_type) DO UPDATE SET
+                pushed_at = EXCLUDED.pushed_at,
+                event_ts = EXCLUDED.event_ts,
+                snapshot_id = EXCLUDED.snapshot_id,
+                status = EXCLUDED.status,
+                symbol = EXCLUDED.symbol,
+                abnormal_rule = EXCLUDED.abnormal_rule,
+                trend_interval = EXCLUDED.trend_interval,
+                current_mcap = EXCLUDED.current_mcap,
+                first_signal_mcap = EXCLUDED.first_signal_mcap,
+                first_signal_ts = EXCLUDED.first_signal_ts,
+                first_signal_change_pct = EXCLUDED.first_signal_change_pct,
+                price_change_pct = EXCLUDED.price_change_pct,
+                max_abnormal_mcap = EXCLUDED.max_abnormal_mcap,
+                ath_mcap = EXCLUDED.ath_mcap,
+                liquidity = EXCLUDED.liquidity,
+                pool_total_liquidity = EXCLUDED.pool_total_liquidity,
+                pool_mcap_ratio = EXCLUDED.pool_mcap_ratio,
+                age_sec = EXCLUDED.age_sec,
+                text = EXCLUDED.text,
+                extra = EXCLUDED.extra
+            WHERE bottom_top100_push_records.status = 'backfilled'
             RETURNING id
             """,
             (
-                event_ts,
+                event_ts,  # for to_timestamp(pushed_at)
+                event_ts,  # for event_ts column
                 snapshot_id or None,
                 chain,
                 source,
@@ -202,6 +224,7 @@ def top100_push_record_exists(
             SELECT 1
             FROM bottom_top100_push_records
             WHERE chain = %s AND source = %s AND address = %s
+              AND status <> 'backfilled'
             LIMIT 1
             """,
             (chain, source, address),
@@ -234,6 +257,7 @@ def top100_signal_push_record_exists(
               AND source = %s
               AND address = %s
               AND signal_type = %s
+              AND status <> 'backfilled'
             LIMIT 1
             """,
             (chain, source, address, signal_type),
