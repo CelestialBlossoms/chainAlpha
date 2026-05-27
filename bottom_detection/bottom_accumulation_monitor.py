@@ -2333,6 +2333,10 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     buy_value = str(pred.get("buy_value_label") or pred.get("label") or extra.get("strategy_profile") or "待观察")
     confidence_text = {"high": "高", "medium": "中", "low": "低"}.get(str(pred.get("confidence") or ""), str(pred.get("confidence") or "未知"))
     guide_pnl = str(plan.get("historical_avg_pnl") or "-")
+    guide_peak = str(plan.get("historical_avg_peak") or "-")
+    peak_window = str(plan.get("peak_time_window") or "-")
+    strategy_wr = str(plan.get("strategy_winrate_summary") or "-")
+    kline_forecast = short_text(plan.get("kline_forecast") or "", 120)
     guide_entry = str(plan.get("entry_window") or extra.get("strategy_action") or "-")
     guide_exit = str(plan.get("exit_window") or "-")
     guide_note = short_text(plan.get("timing_note") or "", 110)
@@ -2359,8 +2363,10 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         f"底部异动 | ${symbol}\n"
         f"类型: {signal_label} | 档位: {extra.get('abnormal_rule') or '-'}\n"
         f"购买价值: {buy_value} | 预测WR20: {pred_winrate:.1f}% | 基准WR20: {baseline_winrate:.1f}% | 置信: {confidence_text}\n"
-        f"历史盈利: AvgPnL {guide_pnl} | 止盈到达率: {tp_text}\n"
-        f"观察窗口: {guide_entry} | 出场窗口: {guide_exit}\n"
+        f"策略胜率: {strategy_wr} | 止盈到达率: {tp_text}\n"
+        f"峰值预测: 中位峰值 {guide_peak} | 峰值窗口 {peak_window}\n"
+        f"走势预测: {kline_forecast or '-'}\n"
+        f"确认窗口: {guide_entry} | 出场观察: {guide_exit} | 固定PnL: {guide_pnl}\n"
         f"K线走势: {journey_line}\n"
         f"窗口说明: {guide_note or '-'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
@@ -3353,62 +3359,73 @@ def _mcap_bucket(mcap: float) -> str:
 
 def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
     bucket = _mcap_bucket(mcap)
+    peak_window = {
+        "new_revival": "P25 10min / Median 90min / P75 410min",
+        "abnormal": "P25 20min / Median 150min / P75 620min",
+    }.get(signal_type, "-")
     table: dict[tuple[str, str], dict[str, Any]] = {
         ("abnormal", "<50K"): {
-            "wr20": 89.5, "wr50": 63.2, "wr100": 31.6, "samples": 19,
-            "avg_peak": "+76%", "avg_pnl": "+8.7~10.9%",
-            "entry_window": "推送后约8h观察入场，提前追入历史PnL为负",
-            "exit_window": "入场后4-8h观察，配合分批止盈",
-            "priority": "最高", "buy_value": "高价值观察",
-            "timing_note": "文档最强组合；8h入场行全系列PnL为正，WR20最高。",
+            "wr20": 50.0, "wr50": 35.0, "wr100": 23.0, "samples": 26,
+            "avg_peak": "+23%", "avg_pnl": "固定时间PnL不作主指标",
+            "entry_window": "1-4h确认窗口；仅后4h暴涨/强涨守住才提高可信度",
+            "exit_window": "以+30/+50/+100%到达率和回吐速度判断",
+            "priority": "低", "buy_value": "低价值观察",
+            "timing_note": "v3显示 abnormal <50K 是弱档，除非前置底部反弹启动且后4h确认走强。",
+            "kline_forecast": "基础峰值偏弱；若后4h温和上涨或持续阴跌，WR20会明显下修。",
         },
         ("abnormal", "50K-100K"): {
-            "wr20": 51.0, "wr50": 27.0, "wr100": 16.0, "samples": 37,
-            "avg_peak": "+56%", "avg_pnl": "+3.9%",
-            "entry_window": "推送后约1h观察，30min短窗口确认",
-            "exit_window": "短线30min-2h观察，冲高后回吐快",
+            "wr20": 61.0, "wr50": 39.0, "wr100": 24.0, "samples": 38,
+            "avg_peak": "+38%", "avg_pnl": "看确认后止盈到达",
+            "entry_window": "15-30min先看结构，1-4h确认是否守住",
+            "exit_window": "冲高后主动看回吐，固定时间持有容易失真",
             "priority": "中", "buy_value": "低到中价值观察",
-            "timing_note": "该档是 abnormal 弱势区间，WR20仅约49-54%。",
+            "timing_note": "v3中 abnormal 50K-100K WR20=61%，需要叠加后4h走势过滤。",
+            "kline_forecast": "高位加速拉升或强涨守住可加分；温和上涨/持续阴跌降级。",
         },
         ("abnormal", "100K-300K"): {
-            "wr20": 77.0, "wr50": 46.0, "wr100": 29.0, "samples": 52,
-            "avg_peak": "+75%", "avg_pnl": "+7~10%",
-            "entry_window": "推送后15-30min观察，等待短线确认",
-            "exit_window": "30min-1h短线窗口，超过2h收益回落",
+            "wr20": 66.0, "wr50": 39.0, "wr100": 22.0, "samples": 59,
+            "avg_peak": "+33%", "avg_pnl": "看确认后止盈到达",
+            "entry_window": "15-30min识别高位加速，1-4h确认暴涨/强涨守住",
+            "exit_window": "以分批止盈锁峰值，避免时间出场回吐",
             "priority": "中高", "buy_value": "短线高弹性观察",
-            "timing_note": "短线最优但极值偏斜，需要叠加流动性、筹码和量能过滤。",
+            "timing_note": "v3中 abnormal 100K-300K WR20=66%，高于<50K但仍弱于new_revival。",
+            "kline_forecast": "后4h暴涨/强涨守住是核心加分；持续阴跌WR20约26%。",
         },
         ("abnormal", "300K+"): {
-            "wr20": 66.0, "wr50": 37.0, "wr100": 11.0, "samples": 38,
-            "avg_peak": "+59%", "avg_pnl": "+1.2~1.4%",
-            "entry_window": "不作为主观察窗口",
-            "exit_window": "仅观察，不纳入主策略",
+            "wr20": 60.0, "wr50": 30.0, "wr100": 22.0, "samples": 40,
+            "avg_peak": "+34%", "avg_pnl": "不作主策略",
+            "entry_window": "不作为主确认窗口",
+            "exit_window": "仅观察，除非K线和量能明显超预期",
             "priority": "低", "buy_value": "低价值",
-            "timing_note": "WR20不低但AvgPnL接近0，Peak守不住。",
+            "timing_note": "v3显示 abnormal 300K+ 中位峰值仅+34%，拉盘弹性有限。",
+            "kline_forecast": "高市值需要更强量能和更低持仓集中度，否则回吐风险高。",
         },
         ("new_revival", "<50K"): {
-            "wr20": 79.0, "wr50": 60.4, "wr100": 35.0, "samples": 48,
-            "avg_peak": "+90~113%", "avg_pnl": "+0.8~3.5%",
-            "entry_window": "立即/30min内观察一段，2h再观察第二段",
-            "exit_window": "只看止盈到达，不适合固定时间死拿",
+            "wr20": 77.0, "wr50": 39.0, "wr100": 25.0, "samples": 69,
+            "avg_peak": "+34%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "entry_window": "0-30min先判断；底部结构可等1-2h回调确认",
+            "exit_window": "分批看+30/+50/+100%，固定时间出场易回吐",
             "priority": "高", "buy_value": "高价值观察",
-            "timing_note": "76%峰值在30min后，只有约9%是真瞬爆。",
+            "timing_note": "v3显示 new_revival <50K WR20=77%；峰值中位90min，8h后多数行情已结束。",
+            "kline_forecast": "底部持续下跌/底部横盘更优；后4h暴涨或冲高急跌分支WR20接近100%。",
         },
         ("new_revival", "50K-100K"): {
-            "wr20": 74.0, "wr50": 55.6, "wr100": 33.0, "samples": 27,
-            "avg_peak": "+76%", "avg_pnl": "+5.2%",
-            "entry_window": "推送后约2h观察",
-            "exit_window": "30min-1h短线窗口，必须主动止盈",
+            "wr20": 71.0, "wr50": 55.0, "wr100": 29.0, "samples": 31,
+            "avg_peak": "+65%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "entry_window": "0-30min判断第一段，1-2h看回调/企稳",
+            "exit_window": "分批止盈优先，峰值后回吐快",
             "priority": "高", "buy_value": "高价值观察",
-            "timing_note": "new_revival在50K-100K仍保持较高WR20，2h入场+短线闪出历史PnL较好。",
+            "timing_note": "v3显示 new_revival 50K-100K WR50=55%，中位峰值+65%，属于质量较高档。",
+            "kline_forecast": "若前置底部结构配合后4h暴涨，+50%到达率更有参考价值。",
         },
         ("new_revival", "100K-300K"): {
-            "wr20": 61.0, "wr50": 37.0, "wr100": 20.0, "samples": 46,
-            "avg_peak": "+101~107%", "avg_pnl": "+1.0%",
-            "entry_window": "推送后8h才相对更优，实操效率低",
-            "exit_window": "1h短窗口观察，收益边际弱",
-            "priority": "低", "buy_value": "低价值",
-            "timing_note": "胜率和PnL均弱于<100K区间，不适合作为主观察对象。",
+            "wr20": 77.0, "wr50": 52.0, "wr100": 35.0, "samples": 52,
+            "avg_peak": "+65%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "entry_window": "0-30min看第一段，1-2h看回调/企稳，不能等8h",
+            "exit_window": "分批止盈优先，避免峰值后利润回吐",
+            "priority": "高", "buy_value": "高价值观察",
+            "timing_note": "v3修正：new_revival 100K-300K WR20=77%，不是低价值；但峰值中位仍约90min。",
+            "kline_forecast": "高点下跌回落/底部持续下跌后若转暴涨，是重点跟踪结构。",
         },
     }
     default = {
@@ -3418,15 +3435,18 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         "exit_window": "仅观察",
         "priority": "低", "buy_value": "回避/仅观察",
         "timing_note": "05-data-driven-strategy.md 未将该组合列为有效主策略。",
+        "kline_forecast": "缺少v3统计映射，仅保留观察。",
+        "peak_window": peak_window,
     }
     if signal_type in {"quiet_runup", "quiet_breakout"}:
         return {
             **default,
             "wr20": 0.0 if signal_type == "quiet_runup" else 0.0,
             "buy_value": "回避/仅观察",
-            "timing_note": "文档5/27验证中 quiet_runup 胜率为0%，推送时常已明显拉升。",
+            "timing_note": "v3不碰清单包含 quiet_runup，推送时通常已明显拉升。",
+            "kline_forecast": "追高失效风险高，不纳入底部异动主策略。",
         }
-    return {**default, **table.get((signal_type, bucket), {})}
+    return {**default, **table.get((signal_type, bucket), {}), "peak_window": peak_window}
 
 
 def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[str] | None = None) -> dict[str, Any]:
@@ -3450,7 +3470,7 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
 
     risk_points = list(risk_factors or [])
     risk_points.extend([
-        "05文档显示各组合Avg Peak远高于Avg PnL，冲高后回吐是核心风险",
+        "05 v3显示峰值中位时间较短：new_revival约90min，abnormal约150min",
         "固定时间出场历史收益弱，后续判断必须结合止盈到达率和回撤速度",
         "若推送时已大幅拉升或池/市值过低，WR会被明显折损",
     ])
@@ -3463,6 +3483,13 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
         "priority": bucket["priority"],
         "historical_avg_pnl": bucket["avg_pnl"],
         "historical_avg_peak": bucket["avg_peak"],
+        "peak_time_window": bucket.get("peak_window", "-"),
+        "kline_forecast": bucket.get("kline_forecast", ""),
+        "strategy_winrate_summary": (
+            f"WR20 {to_float(bucket['wr20']):.0f}% / "
+            f"WR50 {to_float(bucket['wr50']):.0f}% / "
+            f"WR100 {to_float(bucket['wr100']):.0f}%"
+        ),
         "entry_window": bucket["entry_window"],
         "exit_window": bucket["exit_window"],
         "timing_note": bucket["timing_note"],
@@ -3521,8 +3548,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
     score = float(bucket["wr20"])
     sample_count = int(bucket["samples"])
     evidence = [
-        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 文档WR20 {bucket['wr20']:.1f}%",
-        f"历史AvgPnL {bucket['avg_pnl']}，AvgPeak {bucket['avg_peak']}",
+        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 05v3 WR20 {bucket['wr20']:.1f}%",
+        f"05v3中位峰值 {bucket['avg_peak']}，峰值窗口 {bucket.get('peak_window') or '-'}",
     ]
     risk_factors: list[str] = []
 
@@ -3557,15 +3584,18 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         if mcap < 30_000:
             score -= 6
             risk_factors.append("当前市值<30K，深度不足")
-        elif signal_type == "new_revival" and mcap < 100_000:
+        elif signal_type == "new_revival" and mcap < 300_000:
             score += 3
-            evidence.append("new_revival<100K 属于文档高胜率区间")
-        elif signal_type == "abnormal" and (mcap < 50_000 or 100_000 <= mcap < 300_000):
+            evidence.append("new_revival<300K 在05v3中WR20均>=71%")
+        elif signal_type == "abnormal" and 100_000 <= mcap < 300_000:
             score += 3
-            evidence.append("abnormal 市值档位贴近文档优势区间")
+            evidence.append("abnormal 100K-300K 是05v3中相对较优档")
+        elif signal_type == "abnormal" and mcap < 50_000:
+            score -= 6
+            risk_factors.append("05v3显示 abnormal <50K WR20仅50%，属于弱档")
         elif mcap >= 300_000:
             score -= 8
-            risk_factors.append("市值>=300K，文档中PnL守不住")
+            risk_factors.append("市值>=300K，弹性和回吐风险需要更严格过滤")
 
     if entry_mcap > 0 and mcap > 0:
         pnl_from_signal = (mcap - entry_mcap) / entry_mcap * 100
@@ -3701,7 +3731,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "predicted_winrate_pct": round(predicted, 1),
         "baseline_winrate_pct": round(float(bucket["wr20"]), 1),
         "baseline_sample_count": sample_count,
-        "overall_sample_count": 267,
+        "overall_sample_count": 315,
         "winner_definition": "入场后任意时间价格涨到>=20%",
         "label": label,
         "buy_value_label": label,
