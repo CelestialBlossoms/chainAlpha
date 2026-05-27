@@ -1583,6 +1583,137 @@ def enrich_kline_journey_for_signal(journey: dict[str, Any] | None, signal_type:
     return journey
 
 
+def classify_1m_micro_strategy(
+    candles: list[dict[str, Any]],
+    signal_type: str,
+    current_mcap: float,
+) -> dict[str, Any]:
+    """
+    Classify the 1m micro setup using the 05 v3 rule:
+    recent 5m average volume / prior 30m average volume.
+    """
+    valid = [
+        c
+        for c in candles
+        if to_float(c.get("open")) > 0 and to_float(c.get("close")) > 0 and to_float(c.get("high")) > 0 and to_float(c.get("low")) > 0
+    ]
+    if len(valid) < 10:
+        return {"ready": False, "reason": "need_more_1m_candles", "resolution": "1m", "count": len(valid)}
+    post = valid[-5:] if len(valid) >= 5 else valid
+    pre = valid[-35:-5] if len(valid) >= 35 else valid[: max(1, len(valid) - len(post))]
+    if not pre or not post:
+        return {"ready": False, "reason": "no_pre_or_post_window", "resolution": "1m", "count": len(valid)}
+
+    pre_avg_vol = sum(to_float(c.get("volume")) for c in pre) / max(1, len(pre))
+    post_avg_vol = sum(to_float(c.get("volume")) for c in post) / max(1, len(post))
+    volume_ratio = post_avg_vol / pre_avg_vol if pre_avg_vol > 0 else 0.0
+    if volume_ratio >= 4:
+        volume_label = "天量"
+    elif volume_ratio >= 2:
+        volume_label = "放量"
+    elif volume_ratio >= 0.5:
+        volume_label = "平量"
+    elif volume_ratio > 0:
+        volume_label = "缩量"
+    else:
+        volume_label = "未知"
+
+    open_price = to_float(post[0].get("open"))
+    close_price = to_float(post[-1].get("close"))
+    change_pct = _pct_change_from_prices(open_price, close_price)
+    up_bars = sum(1 for c in post if to_float(c.get("close")) >= to_float(c.get("open")))
+    down_bars = len(post) - up_bars
+    if change_pct <= -3 or down_bars >= 4:
+        direction = "跌为主"
+    elif change_pct >= 3 or up_bars >= 4:
+        direction = "涨为主"
+    else:
+        direction = "涨跌互现"
+
+    label = f"{direction}+{volume_label}"
+    score_delta = 0.0
+    doc_wr20 = 0.0
+    doc_med_peak = "-"
+    decision = "观察"
+    note = "05 v3 1m规则：推送后5分钟量价用于短线确认。"
+    if signal_type == "new_revival":
+        if volume_label == "天量":
+            score_delta = -18
+            doc_wr20 = 40
+            doc_med_peak = "+13.8%"
+            decision = "回避/仅观察"
+            note = "推送后5分钟天量>4x，05 v3标记为接盘风险。"
+        elif direction == "跌为主" and volume_label == "平量":
+            score_delta = 12
+            doc_wr20 = 83
+            doc_med_peak = "+66.8%"
+            decision = "高价值确认"
+            note = "跌为主+平量是05 v3最佳1m确认：恐慌下跌但量能正常。"
+        elif direction == "跌为主" and volume_label == "缩量":
+            score_delta = 8
+            doc_wr20 = 78
+            doc_med_peak = "+53.8%"
+            decision = "高价值确认"
+            note = "跌为主+缩量：缩量跌不是真砸盘，后续Hit20较高。"
+        elif direction == "涨跌互现" and volume_label == "缩量":
+            score_delta = 7
+            doc_wr20 = 77
+            doc_med_peak = "+59.1%"
+            decision = "中高价值确认"
+            note = "震荡缩量在05 v3中后4h稳健上涨概率高。"
+        elif direction == "涨跌互现" and volume_label == "平量":
+            score_delta = 5
+            doc_wr20 = 70
+            doc_med_peak = "+89.9%"
+            decision = "中等价值确认"
+            note = "横盘平量可能突破，但需要配合5m前置结构。"
+        elif direction == "涨为主" and volume_label == "平量":
+            score_delta = 2
+            doc_wr20 = 67
+            doc_med_peak = "+90.6%"
+            decision = "追高确认"
+            note = "涨为主+平量空间仍大，但胜率低于回调确认。"
+        elif volume_label == "放量":
+            score_delta = -5
+            decision = "放量观察"
+            note = "05 v3将2-4x放量列为异常量，需等5m/后4h确认。"
+    elif signal_type == "abnormal":
+        if direction == "跌为主" and volume_label in {"平量", "放量"}:
+            score_delta = -14
+            doc_wr20 = 17
+            decision = "低价值/回避"
+            note = "05 v3红灯：abnormal 后5min跌+正常量，WR20约17%。"
+        elif volume_label == "天量":
+            score_delta = -16
+            decision = "低价值/回避"
+            note = "abnormal推送后天量容易形成顶部接盘。"
+        elif direction == "涨为主" and volume_label in {"平量", "缩量"}:
+            score_delta = 4
+            decision = "短线确认"
+            note = "abnormal需要后4h暴涨/强涨守住确认，1m只作为初筛。"
+
+    return {
+        "ready": True,
+        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md",
+        "resolution": "1m",
+        "count": len(valid),
+        "pre_minutes": len(pre),
+        "post_minutes": len(post),
+        "pre_avg_volume_usd": round(pre_avg_vol, 2),
+        "post_avg_volume_usd": round(post_avg_vol, 2),
+        "volume_ratio": round(volume_ratio, 2),
+        "volume_label": volume_label,
+        "direction": direction,
+        "label": label,
+        "change_pct": round(change_pct, 1),
+        "doc_wr20_pct": doc_wr20,
+        "doc_med_peak": doc_med_peak,
+        "score_delta": score_delta,
+        "decision": decision,
+        "note": note,
+    }
+
+
 def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
     if not candles:
         return {"resolution": resolution, "count": 0}
@@ -2368,6 +2499,9 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     journey = pred.get("kline_journey") if isinstance(pred.get("kline_journey"), dict) else {}
     if not journey and isinstance(extra.get("kline_journey"), dict):
         journey = extra.get("kline_journey") or {}
+    micro_1m = pred.get("kline_1m_micro") if isinstance(pred.get("kline_1m_micro"), dict) else {}
+    if not micro_1m and isinstance(extra.get("kline_1m_micro"), dict):
+        micro_1m = extra.get("kline_1m_micro") or {}
     journey_line = "-"
     if journey.get("ready"):
         journey_line = (
@@ -2376,6 +2510,18 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
             f"MedPeak {journey.get('doc_med_peak') or '-'} | "
             f"量能 {journey.get('volume_label') or '-'} {to_float(journey.get('volume_ratio')):.2f}x"
         )
+    micro_line = "-"
+    if micro_1m.get("ready"):
+        micro_wr = to_float(micro_1m.get("doc_wr20_pct"))
+        micro_line = (
+            f"{micro_1m.get('label') or '-'} | "
+            f"5min涨跌 {to_float(micro_1m.get('change_pct')):.1f}% | "
+            f"量比 {to_float(micro_1m.get('volume_ratio')):.2f}x"
+        )
+        if micro_wr > 0:
+            micro_line += f" | 05WR20 {micro_wr:.0f}%"
+        if micro_1m.get("decision"):
+            micro_line += f" | {micro_1m.get('decision')}"
     tp_text = (
         f"+20% {to_float(tp.get('tp20_pct')):.0f}% | "
         f"+50% {to_float(tp.get('tp50_pct')):.0f}% | "
@@ -2392,7 +2538,8 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         f"峰值预测: 中位峰值 {guide_peak} | 峰值窗口 {peak_window}\n"
         f"走势预测: {kline_forecast or '-'}\n"
         f"确认窗口: {guide_entry} | 出场观察: {guide_exit} | 固定PnL: {guide_pnl}\n"
-        f"K线走势: {journey_line}\n"
+        f"1m确认: {micro_line}\n"
+        f"5m前置: {journey_line}\n"
         f"窗口说明: {guide_note or '-'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
@@ -3664,6 +3811,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         evidence.append("信号涨幅处于非极端区间")
 
     vol_1m_ratio = to_float(extra.get("vol_1m_ratio"))
+    micro_1m = extra.get("kline_1m_micro") if isinstance(extra.get("kline_1m_micro"), dict) else {}
     breakout_volume = to_float(extra.get("breakout_volume_usd"))
     breakout_ratio = to_float(extra.get("breakout_volume_ratio"))
     if vol_1m_ratio > 0:
@@ -3673,6 +3821,20 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         elif vol_1m_ratio < 0.6:
             score -= 8
             risk_factors.append("1m量能衰减明显")
+    if micro_1m.get("ready"):
+        micro_delta = to_float(micro_1m.get("score_delta"))
+        if micro_delta:
+            score += micro_delta
+        label_1m = str(micro_1m.get("label") or "")
+        doc_wr20_1m = to_float(micro_1m.get("doc_wr20_pct"))
+        if doc_wr20_1m > 0:
+            evidence.append(f"05 1m确认: {label_1m}，WR20 {doc_wr20_1m:.0f}%")
+        else:
+            evidence.append(f"05 1m确认: {label_1m}")
+        if micro_1m.get("note") and micro_delta < 0:
+            risk_factors.append(str(micro_1m.get("note")))
+        elif micro_1m.get("note"):
+            evidence.append(str(micro_1m.get("note")))
     if 0 < breakout_volume < 5_000:
         score -= 8
         risk_factors.append("突破量能<$5K，历史过滤项偏弱")
@@ -3770,6 +3932,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             "tp100_pct": round(float(bucket["wr100"]), 1),
         },
         "kline_journey": journey,
+        "kline_1m_micro": micro_1m,
         "strategy_plan": strategy_plan,
         "source_doc": "onchain_trading_guides/05-data-driven-strategy.md + onchain_trading_guides/08-kline-journey-encyclopedia.md",
     }
@@ -4307,6 +4470,7 @@ def build_bottom_signal_extra(
     signal_ts = now_ts()
     kline_summary = summary.get("kline") if isinstance(summary.get("kline"), dict) else {}
     kline_journey = enrich_kline_journey_for_signal(kline_summary.get("journey"), signal_type)
+    micro_1m = summary.get("_1m_micro") if isinstance(summary.get("_1m_micro"), dict) else {}
     return {
         "snapshot_id": analysis.get("snapshot_id", 0),
         "event_ts": signal_ts,
@@ -4395,6 +4559,12 @@ def build_bottom_signal_extra(
         "kline_doc_med_peak": kline_journey.get("doc_med_peak") if kline_journey else "",
         "kline_volume_label": kline_journey.get("volume_label") if kline_journey else "",
         "kline_volume_ratio": kline_journey.get("volume_ratio") if kline_journey else 0,
+        "kline_1m_micro": micro_1m,
+        "kline_1m_label": micro_1m.get("label") if micro_1m else "",
+        "kline_1m_decision": micro_1m.get("decision") if micro_1m else "",
+        "kline_1m_doc_wr20_pct": micro_1m.get("doc_wr20_pct") if micro_1m else 0,
+        "kline_1m_volume_ratio": micro_1m.get("volume_ratio") if micro_1m else 0,
+        "kline_1m_change_pct": micro_1m.get("change_pct") if micro_1m else 0,
         "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
         "vol_1m_early": to_float(summary.get("_1m_vol_early", 0)),
         "vol_1m_late": to_float(summary.get("_1m_vol_late", 0)),
@@ -4886,6 +5056,12 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         summary["_1m_candles"] = len(candles_1m)
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
+    if candles_1m and len(candles_1m) >= 6:
+        summary["_1m_micro"] = classify_1m_micro_strategy(
+            candles_1m,
+            str(analysis.get("signal_type") or ""),
+            to_float(analysis.get("current_mcap", calc_mcap(token))),
+        )
     if analysis.get("signal_type") == "abnormal" and is_watchlist_token(token):
         analysis["signal_type"] = "watchlist_abnormal"
     already_notified = previous_signal_exists(address, analysis.get("signal_type", ""))

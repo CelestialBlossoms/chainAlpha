@@ -810,6 +810,11 @@
       if (predJourney.ready) return predJourney;
       return item.kline_journey || {};
     }
+    function kline1mMicro(item) {
+      const predMicro = prediction(item).kline_1m_micro || {};
+      if (predMicro.ready) return predMicro;
+      return item.kline_1m_micro || {};
+    }
     function predictedWinrate(item) {
       return safeNum(prediction(item).predicted_winrate_pct, -1);
     }
@@ -1186,6 +1191,7 @@
       const pred = prediction(item);
       const plan = pred.strategy_plan || {};
       const journey = klineJourney(item);
+      const micro1m = kline1mMicro(item);
       const probs = targetProbabilities(item);
       const pInfo = pullbackInfo(item);
       const candles = normalizeCandles(detail.candles, item);
@@ -1228,6 +1234,10 @@
               ${drawerMetric("出场窗口", htmlEscape(plan.exit_window || "-"))}
               ${drawerMetric("策略胜率", htmlEscape(plan.strategy_winrate_summary || "-"))}
               ${drawerMetric("峰值窗口", htmlEscape(plan.peak_time_window || "-"))}
+              ${drawerMetric("1m确认", htmlEscape(micro1m.ready ? (micro1m.label || "-") : "-"))}
+              ${drawerMetric("1m量比", micro1m.ready ? `${safeNum(micro1m.volume_ratio).toFixed(2)}x` : "-")}
+              ${drawerMetric("1m涨跌", micro1m.ready ? formatPnl(micro1m.change_pct) : "-")}
+              ${drawerMetric("1m策略", htmlEscape(micro1m.ready ? (micro1m.decision || "-") : "-"))}
               ${drawerMetric("+20%到达率", safeNum(probs.tp20_pct, -1) >= 0 ? `${safeNum(probs.tp20_pct).toFixed(1)}%` : "-")}
               ${drawerMetric("+50%到达率", safeNum(probs.tp50_pct, -1) >= 0 ? `${safeNum(probs.tp50_pct).toFixed(1)}%` : "-")}
               ${drawerMetric("+100%到达率", safeNum(probs.tp100_pct, -1) >= 0 ? `${safeNum(probs.tp100_pct).toFixed(1)}%` : "-")}
@@ -1238,6 +1248,7 @@
               ${drawerMetric("末段量能", journey.ready ? `${htmlEscape(journey.volume_label || "-")} ${safeNum(journey.volume_ratio).toFixed(2)}x` : "-")}
             </div>
             ${plan.kline_forecast ? `<p class="muted">${htmlEscape(plan.kline_forecast)}</p>` : ""}
+            ${micro1m.ready ? `<p class="muted">${htmlEscape(micro1m.note || "")}</p>` : ""}
             <p class="muted">${htmlEscape(plan.timing_note || "暂无窗口说明")}</p>
             ${journey.ready ? `<p class="muted">${htmlEscape(journey.doc_note || "")}</p>` : ""}
           </div>
