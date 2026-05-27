@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backfill 5m kline cache around historical bottom abnormal push times."""
+"""Backfill kline cache around historical bottom abnormal push times."""
 
 from __future__ import annotations
 
@@ -45,6 +45,21 @@ def resolution_seconds(resolution: str) -> int:
     if normalized.endswith("h"):
         return max(1, to_int(normalized[:-1])) * 3600
     return 300
+
+
+def interval_from_resolution(resolution: str) -> str:
+    normalized = str(resolution or "").strip().lower()
+    if normalized in {"1", "1m", "1min"}:
+        return "1min"
+    if normalized in {"5", "5m", "5min"}:
+        return "5min"
+    if normalized in {"15", "15m", "15min"}:
+        return "15min"
+    if normalized in {"30", "30m", "30min"}:
+        return "30min"
+    if normalized in {"1h", "60m", "60min"}:
+        return "1h"
+    return normalized or "5min"
 
 
 def parse_binance_kline(raw: Any) -> list[dict[str, Any]]:
@@ -360,11 +375,11 @@ def fmt_ts(ts: int) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Backfill 5m kline cache for historical bottom push CAs.")
+    parser = argparse.ArgumentParser(description="Backfill kline cache for historical bottom push CAs.")
     parser.add_argument("--limit", type=int, default=0, help="Max push records to process. 0 means all.")
     parser.add_argument("--window-hours", type=float, default=12, help="Hours before and after push time to fetch.")
-    parser.add_argument("--resolution", default="5m", help="Cache resolution label.")
-    parser.add_argument("--interval", default="5min", help="Binance kline interval.")
+    parser.add_argument("--resolution", default="5m", help="Cache resolution label. 1m writes bottom_kline_cache_1m; others write bottom_kline_cache.")
+    parser.add_argument("--interval", default="", help="Binance kline interval. Empty means infer from --resolution.")
     parser.add_argument("--delay", type=float, default=0.25, help="Delay between API requests.")
     parser.add_argument("--min-event-ts", type=int, default=0, help="Only process pushes at or after this unix timestamp.")
     parser.add_argument("--max-event-ts", type=int, default=0, help="Only process pushes at or before this unix timestamp.")
@@ -376,6 +391,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    args.resolution = str(args.resolution or "5m").strip().lower()
+    args.interval = str(args.interval or interval_from_resolution(args.resolution)).strip()
+    target_table = kline_cache_table_for_resolution(args.resolution)
     window_sec = int(max(0, args.window_hours) * 3600)
     if window_sec <= 0:
         raise SystemExit("--window-hours must be positive")
@@ -383,7 +401,10 @@ def main() -> None:
     ensure_kline_cache_table()
     ensure_backfill_progress_table()
     records = fetch_push_records(args.limit, args.min_event_ts, args.max_event_ts)
-    print(f"backfill records={len(records)} window=+/-{args.window_hours:g}h resolution={args.resolution}")
+    print(
+        f"backfill records={len(records)} window=+/-{args.window_hours:g}h "
+        f"resolution={args.resolution} interval={args.interval} table={target_table}"
+    )
     if args.dry_run:
         for row in records[:20]:
             event_ts = to_int(row.get("event_ts"))
