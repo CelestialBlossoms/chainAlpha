@@ -1318,6 +1318,246 @@ def summarize_rebound_after_high(candles: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+KLINE_JOURNEY_BASELINES: dict[str, dict[str, dict[str, Any]]] = {
+    "new_revival": {
+        "底部持续下跌": {
+            "wr20": 84,
+            "med_peak": "+86%",
+            "boom_prob": 59,
+            "downtrend_prob": 12,
+            "score_delta": 10,
+            "note": "08文档最优结构，推送后4h暴涨分支占比高，阴跌分支低",
+        },
+        "高点下跌回落中": {
+            "wr20": 77,
+            "med_peak": "+113%",
+            "boom_prob": 31,
+            "downtrend_prob": 23,
+            "score_delta": 8,
+            "note": "跌深后反弹空间大，MedPeak为new_revival优势结构",
+        },
+        "底部横盘": {
+            "wr20": 74,
+            "med_peak": "+102%",
+            "boom_prob": 42,
+            "downtrend_prob": 21,
+            "score_delta": 6,
+            "note": "底部窄幅后突破型结构，需观察后续方向确认",
+        },
+        "持续拉升中": {
+            "wr20": 74,
+            "med_peak": "+99%",
+            "boom_prob": 33,
+            "downtrend_prob": 30,
+            "score_delta": -2,
+            "note": "分化最大，0-1h转弱时后续阴跌概率升高",
+        },
+        "底部反弹启动": {
+            "wr20": 67,
+            "med_peak": "+27%",
+            "boom_prob": 17,
+            "downtrend_prob": 39,
+            "score_delta": -4,
+            "note": "反弹可能夭折，文档要求等待后4h确认",
+        },
+        "强势拉升后高位": {
+            "wr20": 80,
+            "med_peak": "+78%",
+            "boom_prob": 30,
+            "downtrend_prob": 40,
+            "score_delta": -3,
+            "note": "高位触发分化明显，到峰后回吐风险需要单独看",
+        },
+        "其他结构": {
+            "wr20": 77,
+            "med_peak": "-",
+            "boom_prob": 27,
+            "downtrend_prob": 22,
+            "score_delta": 0,
+            "note": "形态不够清晰，不作为独立强信号",
+        },
+    },
+    "abnormal": {
+        "底部反弹启动": {
+            "wr20": 80,
+            "med_peak": "+456%",
+            "boom_prob": 20,
+            "downtrend_prob": 40,
+            "score_delta": 8,
+            "note": "abnormal文档最优前置结构，但少数大赢家拉高均值",
+        },
+        "高位加速拉升": {
+            "wr20": 83,
+            "med_peak": "+89%",
+            "boom_prob": 17,
+            "downtrend_prob": 0,
+            "score_delta": 6,
+            "note": "样本小但WR20高，关键看后4h是否守住",
+        },
+        "持续拉升中": {
+            "wr20": 65,
+            "med_peak": "+123%",
+            "boom_prob": 21,
+            "downtrend_prob": 19,
+            "score_delta": -5,
+            "note": "abnormal主力结构，只有暴涨/强涨守住分支更优",
+        },
+        "底部持续下跌": {
+            "wr20": 57,
+            "med_peak": "-",
+            "boom_prob": 14,
+            "downtrend_prob": 0,
+            "score_delta": -6,
+            "note": "同名结构在abnormal中明显弱于new_revival",
+        },
+        "其他结构": {
+            "wr20": 57,
+            "med_peak": "-",
+            "boom_prob": 0,
+            "downtrend_prob": 0,
+            "score_delta": -8,
+            "note": "信号不清晰，08文档中没有稳定规律",
+        },
+    },
+}
+
+
+def _pct_change_from_prices(start: float, end: float) -> float:
+    return ((end - start) / start * 100) if start > 0 else 0.0
+
+
+def _segment_change_pct(segment: list[dict[str, Any]]) -> float:
+    if not segment:
+        return 0.0
+    return _pct_change_from_prices(to_float(segment[0].get("open")), to_float(segment[-1].get("close")))
+
+
+def _volume_journey_label(ratio: float) -> str:
+    if ratio >= 1.5:
+        return "放量"
+    if ratio <= 0.65 and ratio > 0:
+        return "缩量"
+    if ratio > 0:
+        return "平量"
+    return "未知"
+
+
+def classify_kline_journey(
+    candles: list[dict[str, Any]],
+    resolution: str,
+    signal_type: str = "",
+) -> dict[str, Any]:
+    """
+    Classify the 5m pre-signal 4h structure from
+    onchain_trading_guides/08-kline-journey-encyclopedia.md.
+    """
+    valid = [
+        c
+        for c in candles
+        if to_float(c.get("open")) > 0 and to_float(c.get("close")) > 0 and to_float(c.get("high")) > 0 and to_float(c.get("low")) > 0
+    ]
+    if not valid:
+        return {"ready": False, "reason": "no_valid_candles"}
+    if str(resolution).lower() not in {"5m", "5min", "5"}:
+        return {"ready": False, "reason": "requires_5m", "resolution": resolution, "count": len(valid)}
+    pre = valid[-48:] if len(valid) >= 48 else valid
+    if len(pre) < 24:
+        return {"ready": False, "reason": "need_at_least_24_5m_candles", "resolution": resolution, "count": len(valid)}
+
+    chunk_size = max(1, len(pre) // 4)
+    segments = [
+        pre[0:chunk_size],
+        pre[chunk_size : chunk_size * 2],
+        pre[chunk_size * 2 : chunk_size * 3],
+        pre[chunk_size * 3 :],
+    ]
+    q = [_segment_change_pct(seg) for seg in segments]
+    lows = [to_float(c.get("low")) for c in pre]
+    highs = [to_float(c.get("high")) for c in pre]
+    close = to_float(pre[-1].get("close"))
+    first_open = to_float(pre[0].get("open"))
+    low = min(lows) if lows else 0.0
+    high = max(highs) if highs else 0.0
+    total_change = _pct_change_from_prices(first_open, close)
+    close_position = (close - low) / (high - low) if high > low and close > 0 else 0.0
+    range_pct = ((high - low) / low * 100) if low > 0 else 0.0
+
+    recent = pre[-12:] if len(pre) >= 24 else pre[len(pre) // 2 :]
+    previous = pre[-24:-12] if len(pre) >= 24 else pre[: len(pre) // 2]
+    recent_vol = sum(to_float(c.get("volume")) for c in recent)
+    previous_vol = sum(to_float(c.get("volume")) for c in previous)
+    volume_ratio = recent_vol / previous_vol if previous_vol > 0 else 0.0
+    volume_label = _volume_journey_label(volume_ratio)
+
+    structure = "其他结构"
+    if close_position <= 0.35 and q[3] <= -18:
+        structure = "底部持续下跌"
+    elif close_position <= 0.40 and abs(q[3]) <= 6 and range_pct <= 45:
+        structure = "底部横盘"
+    elif close_position <= 0.55 and q[2] <= -12 and q[3] >= 12:
+        structure = "底部反弹启动"
+    elif q[0] <= -15 and q[1] <= -5 and q[2] <= 2 and q[3] >= 5:
+        structure = "高点下跌回落中"
+    elif close_position >= 0.70 and q[3] >= 20 and q[2] <= 10:
+        structure = "高位加速拉升"
+    elif close_position >= 0.70 and (q[0] >= 25 or total_change >= 40):
+        structure = "强势拉升后高位"
+    elif q[1] >= 0 and q[2] >= 0 and q[3] >= 10 and total_change >= 20:
+        structure = "持续拉升中"
+    elif sum(1 for item in q if item < -3) >= 3 and close_position > 0.35:
+        structure = "持续下跌中"
+    elif range_pct <= 15:
+        structure = "长期横盘震荡"
+
+    signal_key = signal_type if signal_type in KLINE_JOURNEY_BASELINES else ""
+    doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get(structure)
+    if not doc:
+        doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
+    return {
+        "ready": True,
+        "source_doc": "onchain_trading_guides/08-kline-journey-encyclopedia.md",
+        "resolution": resolution,
+        "count": len(valid),
+        "pre_bars": len(pre),
+        "pre_structure": structure,
+        "q_changes_pct": [round(item, 1) for item in q],
+        "total_change_pct": round(total_change, 1),
+        "range_pct": round(range_pct, 1),
+        "close_position_pct": round(close_position * 100, 1),
+        "volume_label": volume_label,
+        "volume_ratio": round(volume_ratio, 2),
+        "doc_wr20_pct": to_float(doc.get("wr20")),
+        "doc_med_peak": doc.get("med_peak") or "-",
+        "doc_boom_prob_pct": to_float(doc.get("boom_prob")),
+        "doc_downtrend_prob_pct": to_float(doc.get("downtrend_prob")),
+        "score_delta": to_float(doc.get("score_delta")),
+        "doc_note": doc.get("note") or "",
+    }
+
+
+def enrich_kline_journey_for_signal(journey: dict[str, Any] | None, signal_type: str) -> dict[str, Any]:
+    journey = dict(journey or {})
+    if not journey.get("ready"):
+        return journey
+    signal_key = signal_type if signal_type in KLINE_JOURNEY_BASELINES else ""
+    structure = str(journey.get("pre_structure") or "其他结构")
+    doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get(structure)
+    if not doc:
+        doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
+    journey.update(
+        {
+            "source_doc": "onchain_trading_guides/08-kline-journey-encyclopedia.md",
+            "doc_wr20_pct": to_float(doc.get("wr20")),
+            "doc_med_peak": doc.get("med_peak") or "-",
+            "doc_boom_prob_pct": to_float(doc.get("boom_prob")),
+            "doc_downtrend_prob_pct": to_float(doc.get("downtrend_prob")),
+            "score_delta": to_float(doc.get("score_delta")),
+            "doc_note": doc.get("note") or "",
+        }
+    )
+    return journey
+
+
 def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str, Any]:
     if not candles:
         return {"resolution": resolution, "count": 0}
@@ -1350,6 +1590,7 @@ def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str,
         "volume_usd": total_volume,
         "last_volume_usd": to_float(last.get("volume")),
         "rebound_after_high": summarize_rebound_after_high(candles),
+        "journey": classify_kline_journey(candles, resolution),
     }
 
 
@@ -2095,6 +2336,17 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     guide_entry = str(plan.get("entry_window") or extra.get("strategy_action") or "-")
     guide_exit = str(plan.get("exit_window") or "-")
     guide_note = short_text(plan.get("timing_note") or "", 110)
+    journey = pred.get("kline_journey") if isinstance(pred.get("kline_journey"), dict) else {}
+    if not journey and isinstance(extra.get("kline_journey"), dict):
+        journey = extra.get("kline_journey") or {}
+    journey_line = "-"
+    if journey.get("ready"):
+        journey_line = (
+            f"{journey.get('pre_structure') or '-'} | "
+            f"08WR20 {to_float(journey.get('doc_wr20_pct')):.0f}% | "
+            f"MedPeak {journey.get('doc_med_peak') or '-'} | "
+            f"量能 {journey.get('volume_label') or '-'} {to_float(journey.get('volume_ratio')):.2f}x"
+        )
     tp_text = (
         f"+20% {to_float(tp.get('tp20_pct')):.0f}% | "
         f"+50% {to_float(tp.get('tp50_pct')):.0f}% | "
@@ -2109,6 +2361,7 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         f"购买价值: {buy_value} | 预测WR20: {pred_winrate:.1f}% | 基准WR20: {baseline_winrate:.1f}% | 置信: {confidence_text}\n"
         f"历史盈利: AvgPnL {guide_pnl} | 止盈到达率: {tp_text}\n"
         f"观察窗口: {guide_entry} | 出场窗口: {guide_exit}\n"
+        f"K线走势: {journey_line}\n"
         f"窗口说明: {guide_note or '-'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
@@ -3393,6 +3646,32 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         score += 3
         evidence.append("池子流动性>=30K")
 
+    journey_raw = extra.get("kline_journey") if isinstance(extra.get("kline_journey"), dict) else {}
+    journey = enrich_kline_journey_for_signal(journey_raw, signal_type) if journey_raw else {}
+    if journey.get("ready"):
+        structure = str(journey.get("pre_structure") or "其他结构")
+        doc_wr20 = to_float(journey.get("doc_wr20_pct"))
+        score_delta = to_float(journey.get("score_delta"))
+        if score_delta:
+            score += score_delta
+        evidence.append(
+            f"08 K线结构: {structure}，文档WR20 {doc_wr20:.0f}%"
+            f"，MedPeak {journey.get('doc_med_peak') or '-'}"
+        )
+        if journey.get("volume_label"):
+            evidence.append(
+                f"前4h末段量能: {journey.get('volume_label')} "
+                f"({to_float(journey.get('volume_ratio')):.2f}x)"
+            )
+        note = str(journey.get("doc_note") or "")
+        downtrend_prob = to_float(journey.get("doc_downtrend_prob_pct"))
+        if downtrend_prob >= 30:
+            risk_factors.append(f"{structure} 后4h持续阴跌分支约{downtrend_prob:.0f}%")
+        if note and score_delta < 0:
+            risk_factors.append(note)
+        elif note:
+            evidence.append(note)
+
     predicted = _bounded_winrate(score)
     if bucket["buy_value"].startswith("回避") or predicted < 35:
         label = "低价值/回避"
@@ -3435,8 +3714,9 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             "tp50_pct": round(float(bucket["wr50"]), 1),
             "tp100_pct": round(float(bucket["wr100"]), 1),
         },
+        "kline_journey": journey,
         "strategy_plan": strategy_plan,
-        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md",
+        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md + onchain_trading_guides/08-kline-journey-encyclopedia.md",
     }
 
 
@@ -3970,6 +4250,8 @@ def build_bottom_signal_extra(
     pool_summary = summary.get("pool") or {}
     pool_liquidity = to_float(analysis.get("pool_total_liquidity")) or to_float(pool_summary.get("total_liquidity"))
     signal_ts = now_ts()
+    kline_summary = summary.get("kline") if isinstance(summary.get("kline"), dict) else {}
+    kline_journey = enrich_kline_journey_for_signal(kline_summary.get("journey"), signal_type)
     return {
         "snapshot_id": analysis.get("snapshot_id", 0),
         "event_ts": signal_ts,
@@ -4052,6 +4334,12 @@ def build_bottom_signal_extra(
         "watchlist_narrative_type": watchlist_narrative_type,
         "watchlist_narrative_category": watchlist_narrative_category,
         # 1m K-line volume data for micro-structure DCB detection
+        "kline_journey": kline_journey,
+        "kline_pre_structure": kline_journey.get("pre_structure") if kline_journey else "",
+        "kline_doc_wr20_pct": kline_journey.get("doc_wr20_pct") if kline_journey else 0,
+        "kline_doc_med_peak": kline_journey.get("doc_med_peak") if kline_journey else "",
+        "kline_volume_label": kline_journey.get("volume_label") if kline_journey else "",
+        "kline_volume_ratio": kline_journey.get("volume_ratio") if kline_journey else 0,
         "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
         "vol_1m_early": to_float(summary.get("_1m_vol_early", 0)),
         "vol_1m_late": to_float(summary.get("_1m_vol_late", 0)),

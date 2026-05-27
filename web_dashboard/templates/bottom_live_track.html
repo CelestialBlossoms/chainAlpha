@@ -805,6 +805,11 @@
     function prediction(item) {
       return item.winrate_prediction || {};
     }
+    function klineJourney(item) {
+      const predJourney = prediction(item).kline_journey || {};
+      if (predJourney.ready) return predJourney;
+      return item.kline_journey || {};
+    }
     function predictedWinrate(item) {
       return safeNum(prediction(item).predicted_winrate_pct, -1);
     }
@@ -1180,6 +1185,7 @@
     function buildDrawerHtml(item, detail = {}) {
       const pred = prediction(item);
       const plan = pred.strategy_plan || {};
+      const journey = klineJourney(item);
       const probs = targetProbabilities(item);
       const pInfo = pullbackInfo(item);
       const candles = normalizeCandles(detail.candles, item);
@@ -1224,8 +1230,13 @@
               ${drawerMetric("+50%到达率", safeNum(probs.tp50_pct, -1) >= 0 ? `${safeNum(probs.tp50_pct).toFixed(1)}%` : "-")}
               ${drawerMetric("+100%到达率", safeNum(probs.tp100_pct, -1) >= 0 ? `${safeNum(probs.tp100_pct).toFixed(1)}%` : "-")}
               ${drawerMetric("历史AvgPeak", htmlEscape(plan.historical_avg_peak || "-"))}
+              ${drawerMetric("K线结构", htmlEscape(journey.ready ? (journey.pre_structure || "-") : "-"))}
+              ${drawerMetric("08文档WR20", journey.ready && safeNum(journey.doc_wr20_pct, -1) >= 0 ? `${safeNum(journey.doc_wr20_pct).toFixed(0)}%` : "-")}
+              ${drawerMetric("08 MedPeak", htmlEscape(journey.ready ? (journey.doc_med_peak || "-") : "-"))}
+              ${drawerMetric("末段量能", journey.ready ? `${htmlEscape(journey.volume_label || "-")} ${safeNum(journey.volume_ratio).toFixed(2)}x` : "-")}
             </div>
             <p class="muted">${htmlEscape(plan.timing_note || "暂无窗口说明")}</p>
+            ${journey.ready ? `<p class="muted">${htmlEscape(journey.doc_note || "")}</p>` : ""}
           </div>
         </section>
         <section class="detail-panel">

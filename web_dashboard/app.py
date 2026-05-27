@@ -2421,7 +2421,14 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
         track["narrative_category"] = str(narrative_category)
     existing_prediction = track.get("winrate_prediction") or {}
     existing_doc = str(existing_prediction.get("source_doc") or "")
-    if existing_prediction and existing_prediction.get("strategy_plan") and "05-data-driven-strategy.md" in existing_doc:
+    has_journey = bool(
+        isinstance(existing_prediction.get("kline_journey"), dict)
+        and existing_prediction.get("kline_journey", {}).get("ready")
+    )
+    extra_has_journey = bool(isinstance(extra.get("kline_journey"), dict) and extra.get("kline_journey", {}).get("ready"))
+    if existing_prediction and existing_prediction.get("strategy_plan") and "05-data-driven-strategy.md" in existing_doc and (
+        has_journey or not extra_has_journey
+    ):
         return track
     try:
         from bottom_detection.bottom_accumulation_monitor import compute_historical_winrate_prediction
