@@ -710,6 +710,22 @@ def ensure_dashboard_kline_cache_table() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
                 ON bottom_kline_cache(address, resolution, ts);
+            CREATE TABLE IF NOT EXISTS bottom_kline_cache_1m (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_1m_addr_res_ts
+                ON bottom_kline_cache_1m(address, resolution, ts);
             """
         )
 
@@ -717,17 +733,22 @@ def ensure_dashboard_kline_cache_table() -> None:
     _DASHBOARD_KLINE_CACHE_TABLE_READY = True
 
 
+def _bottom_kline_cache_table(resolution: str) -> str:
+    return "bottom_kline_cache_1m" if str(resolution or "").lower() in {"1m", "1min", "1"} else "bottom_kline_cache"
+
+
 def load_dashboard_kline_cache(address: str, resolution: str, from_ts: int, to_ts: int) -> list[dict[str, float]]:
     if not address:
         return []
     ensure_dashboard_kline_cache_table()
+    table = _bottom_kline_cache_table(resolution)
 
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT ts, open, high, low, close, volume, amount
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE chain=%s
               AND address=%s
               AND resolution=%s
@@ -763,13 +784,14 @@ def load_dashboard_kline_cache_many(
     if not addresses:
         return {}
     ensure_dashboard_kline_cache_table()
+    table = _bottom_kline_cache_table(resolution)
 
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT address, ts, open, high, low, close, volume, amount
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE chain=%s
               AND address = ANY(%s)
               AND resolution=%s
@@ -814,6 +836,7 @@ def load_dashboard_kline_stats_many(
     if not rows:
         return {}
     ensure_dashboard_kline_cache_table()
+    table = _bottom_kline_cache_table(resolution)
     values_sql = ",".join(["(%s,%s,%s)"] * len(rows))
     params: list[Any] = []
     for row in rows:
@@ -837,7 +860,7 @@ def load_dashboard_kline_stats_many(
                     k.close,
                     k.volume
                 FROM inputs i
-                JOIN bottom_kline_cache k
+                JOIN {table} k
                   ON k.chain = %s
                  AND k.address = i.address
                  AND k.resolution = %s
@@ -881,6 +904,7 @@ def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict
     if not address or not candles:
         return 0
     ensure_dashboard_kline_cache_table()
+    table = _bottom_kline_cache_table(resolution)
 
     def _op(conn):
         cur = conn.cursor()
@@ -903,8 +927,8 @@ def save_dashboard_kline_cache(address: str, resolution: str, candles: list[dict
         if not rows:
             return 0
         cur.executemany(
-            """
-            INSERT INTO bottom_kline_cache (
+            f"""
+            INSERT INTO {table} (
                 chain, address, resolution, ts, open, high, low, close, volume, amount
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (chain, address, resolution, ts) DO UPDATE SET
@@ -927,6 +951,7 @@ def insert_dashboard_kline_cache_missing_only(address: str, resolution: str, can
     if not address or not candles:
         return 0
     ensure_dashboard_kline_cache_table()
+    table = _bottom_kline_cache_table(resolution)
 
     def _op(conn):
         cur = conn.cursor()
@@ -949,8 +974,8 @@ def insert_dashboard_kline_cache_missing_only(address: str, resolution: str, can
         if not rows:
             return 0
         cur.executemany(
-            """
-            INSERT INTO bottom_kline_cache (
+            f"""
+            INSERT INTO {table} (
                 chain, address, resolution, ts, open, high, low, close, volume, amount
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (chain, address, resolution, ts) DO NOTHING

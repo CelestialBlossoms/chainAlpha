@@ -16,6 +16,10 @@ sys.path.insert(0, str(ROOT))
 from db_client import db_op
 
 
+def kline_cache_table_for_resolution(resolution: str) -> str:
+    return "bottom_kline_cache_1m" if str(resolution or "").lower() in {"1m", "1min", "1"} else "bottom_kline_cache"
+
+
 def fetch_push_records_with_klines(days=14, top_n=300):
     """拉取推送记录，每条都带上完整K线"""
     def _q(conn):
@@ -36,11 +40,13 @@ def fetch_push_records_with_klines(days=14, top_n=300):
 
 def fetch_all_klines_for_addr(address, resolution="5m"):
     """拉取一个CA的全部K线"""
+    table = kline_cache_table_for_resolution(resolution)
+
     def _q(conn):
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             SELECT ts, open, high, low, close, volume, amount
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE address = %s AND resolution = %s
             ORDER BY ts
         """, [address, resolution])

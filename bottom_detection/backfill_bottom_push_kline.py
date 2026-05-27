@@ -95,10 +95,30 @@ def ensure_kline_cache_table() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
                 ON bottom_kline_cache(address, resolution, ts);
+            CREATE TABLE IF NOT EXISTS bottom_kline_cache_1m (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_1m_addr_res_ts
+                ON bottom_kline_cache_1m(address, resolution, ts);
             """
         )
 
     db_op(_op)
+
+
+def kline_cache_table_for_resolution(resolution: str) -> str:
+    return "bottom_kline_cache_1m" if str(resolution or "").lower() in {"1m", "1min", "1"} else "bottom_kline_cache"
 
 
 def ensure_backfill_progress_table() -> None:
@@ -148,12 +168,14 @@ def completed_backfill_keys(resolution: str) -> set[tuple[int, int, int]]:
 
 
 def cached_kline_window(address: str, resolution: str, from_ts: int, to_ts: int) -> dict[str, int]:
+    table = kline_cache_table_for_resolution(resolution)
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT COUNT(*), COALESCE(MIN(ts), 0), COALESCE(MAX(ts), 0)
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE chain = 'sol'
               AND address = %s
               AND resolution = %s
@@ -295,6 +317,7 @@ def fetch_binance_kline_range(address: str, from_ts: int, to_ts: int, interval: 
 def insert_missing_kline(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
     if not address or not candles:
         return 0
+    table = kline_cache_table_for_resolution(resolution)
 
     def _op(conn):
         cur = conn.cursor()
@@ -318,8 +341,8 @@ def insert_missing_kline(address: str, resolution: str, candles: list[dict[str, 
             return 0
         psycopg2.extras.execute_values(
             cur,
-            """
-            INSERT INTO bottom_kline_cache (
+            f"""
+            INSERT INTO {table} (
                 chain, address, resolution, ts, open, high, low, close, volume, amount
             ) VALUES %s
             ON CONFLICT (chain, address, resolution, ts) DO NOTHING

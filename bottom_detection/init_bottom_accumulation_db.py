@@ -16,6 +16,7 @@ def init_bottom_accumulation_tables(conn):
         DROP TABLE IF EXISTS bottom_holder_wallets;
         DROP TABLE IF EXISTS bottom_holder_snapshots;
         DROP TABLE IF EXISTS bottom_holder_scan_runs;
+        DROP TABLE IF EXISTS bottom_kline_cache_1m;
         DROP TABLE IF EXISTS bottom_kline_cache;
         DROP TABLE IF EXISTS bottom_top100_snapshots;
 
@@ -147,6 +148,24 @@ def init_bottom_accumulation_tables(conn):
 
         CREATE INDEX idx_bottom_kline_cache_addr_res_ts
             ON bottom_kline_cache(address, resolution, ts);
+
+        CREATE TABLE bottom_kline_cache_1m (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            resolution TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            amount NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, resolution, ts)
+        );
+
+        CREATE INDEX idx_bottom_kline_cache_1m_addr_res_ts
+            ON bottom_kline_cache_1m(address, resolution, ts);
         """
     )
     print("Initialized Top100 holder snapshot monitor and kline cache")

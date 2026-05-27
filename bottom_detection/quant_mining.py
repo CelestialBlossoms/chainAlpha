@@ -13,6 +13,10 @@ sys.path.insert(0, str(ROOT))
 from db_client import db_op
 
 
+def kline_cache_table_for_resolution(resolution: str) -> str:
+    return "bottom_kline_cache_1m" if str(resolution or "").lower() in {"1m", "1min", "1"} else "bottom_kline_cache"
+
+
 def fetch_push_records(days=14):
     def _q(conn):
         cur = conn.cursor()
@@ -29,11 +33,13 @@ def fetch_push_records(days=14):
 
 
 def fetch_klines(address, resolution="5m"):
+    table = kline_cache_table_for_resolution(resolution)
+
     def _q(conn):
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             SELECT ts, open, high, low, close, volume
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE address = %s AND resolution = %s ORDER BY ts
         """, [address, resolution])
         return [(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in cur.fetchall()]

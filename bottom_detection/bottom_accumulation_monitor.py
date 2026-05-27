@@ -1071,6 +1071,22 @@ def ensure_kline_cache_table() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_addr_res_ts
                 ON bottom_kline_cache(address, resolution, ts);
+            CREATE TABLE IF NOT EXISTS bottom_kline_cache_1m (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_bottom_kline_cache_1m_addr_res_ts
+                ON bottom_kline_cache_1m(address, resolution, ts);
             """
         )
 
@@ -1078,13 +1094,19 @@ def ensure_kline_cache_table() -> None:
     _KLINE_CACHE_TABLE_READY = True
 
 
+def kline_cache_table_for_resolution(resolution: str) -> str:
+    return "bottom_kline_cache_1m" if str(resolution or "").lower() in {"1m", "1min", "1"} else "bottom_kline_cache"
+
+
 def latest_cached_kline_ts(address: str, resolution: str) -> int:
+    table = kline_cache_table_for_resolution(resolution)
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT MAX(ts)
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE chain=%s AND address=%s AND resolution=%s
             """,
             (CHAIN, address, resolution),
@@ -1098,6 +1120,7 @@ def latest_cached_kline_ts(address: str, resolution: str) -> int:
 def save_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]]) -> int:
     if not candles:
         return 0
+    table = kline_cache_table_for_resolution(resolution)
 
     def _op(conn):
         cur = conn.cursor()
@@ -1120,8 +1143,8 @@ def save_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]
         if not rows:
             return 0
         cur.executemany(
-            """
-            INSERT INTO bottom_kline_cache (
+            f"""
+            INSERT INTO {table} (
                 chain, address, resolution, ts, open, high, low, close, volume, amount
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (chain, address, resolution, ts) DO UPDATE SET
@@ -1141,12 +1164,14 @@ def save_kline_cache(address: str, resolution: str, candles: list[dict[str, Any]
 
 
 def load_kline_cache(address: str, resolution: str) -> list[dict[str, Any]]:
+    table = kline_cache_table_for_resolution(resolution)
+
     def _op(conn):
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT ts, open, high, low, close, volume, amount
-            FROM bottom_kline_cache
+            FROM {table}
             WHERE chain=%s AND address=%s AND resolution=%s
             ORDER BY ts ASC
             """,
