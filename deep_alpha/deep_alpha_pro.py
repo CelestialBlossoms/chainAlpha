@@ -1404,8 +1404,7 @@ def analyze_trending_snapshot(trend_row):
         f"榜单风险: Rug{format_optional_pct(rug_ratio * 100)} | Wash{wash_text} | "
         f"捆绑{format_optional_pct(bundler_rate * 100)} | 老鼠仓{format_optional_pct(rat_trader_amount_rate * 100)} | "
         f"Top10{format_optional_pct(top10_holder_rate * 100)}\n"
-        f"榜单资金: Smart{smart_degen_count} | KOL{renowned_count} | "
-        f"1m{format_optional_pct(change1m, signed=True)} | 5m{format_optional_pct(change5m, signed=True)} | "
+        f"榜单涨跌: 1m{format_optional_pct(change1m, signed=True)} | 5m{format_optional_pct(change5m, signed=True)} | "
         f"1h{format_optional_pct(change1h, signed=True)}"
     )
 

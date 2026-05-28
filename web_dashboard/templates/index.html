@@ -610,7 +610,7 @@
           <h3>热门榜</h3>
           <p>Gas: ${safeNum(signal.trend.gas_fee).toFixed(2)} SOL | 流动性: ${formatCap(signal.trend.liquidity)}</p>
           <p>Rug: ${(safeNum(signal.trend.rug_ratio) * 100).toFixed(1)}% | Wash: ${signal.trend.is_wash_trading ? "是" : "否"} | 捆绑: ${(safeNum(signal.trend.bundler_rate) * 100).toFixed(1)}% | 老鼠仓: ${(safeNum(signal.trend.rat_trader_amount_rate) * 100).toFixed(1)}%</p>
-          <p>Smart: ${safeNum(signal.trend.smart_degen_count)} | KOL: ${safeNum(signal.trend.renowned_count)} | 1m ${formatPct(signal.trend.change1m)} | 5m ${formatPct(signal.trend.change5m)} | 1h ${formatPct(signal.trend.change1h)}</p>
+          <p>1m ${formatPct(signal.trend.change1m)} | 5m ${formatPct(signal.trend.change5m)} | 1h ${formatPct(signal.trend.change1h)}</p>
         </section>
         <section class="detail-section">
           <h3>标签钱包</h3>
