@@ -3495,8 +3495,6 @@ def scan_pro():
                             f"{sm_detail}\n"
                             f"{kol_detail}\n"
                             f"{s['holder_tag_desc']}\n\n"
-                            f"📊 *基础结构*\n"
-                            f"{s['rank_bucket_desc']}\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )
