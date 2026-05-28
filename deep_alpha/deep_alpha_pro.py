@@ -2103,6 +2103,7 @@ def analyze_top10_holders(holders_list):
             "sell_tx": int(sell_tx),
             "netflow": netflow,
         }
+    size = 20
     lines = [
         (
             f"Top{size}: 持仓{buckets[size]['supply']:.1f}% | "
@@ -2111,7 +2112,6 @@ def analyze_top10_holders(holders_list):
             f"卖出进度{buckets[size]['sell_progress']:.1f}% | "
             f"次数{buckets[size]['buy_tx']}/{buckets[size]['sell_tx']}"
         )
-        for size in (10, 20, 50, 100)
     ]
     top10 = buckets[10]
     return {
@@ -3494,6 +3494,8 @@ def scan_pro():
                             f"{sm_detail}\n"
                             f"{kol_detail}\n"
                             f"{s['holder_tag_desc']}\n\n"
+                            f"📊 *基础结构*\n"
+                            f"{s['rank_bucket_desc']}\n"
                             f"CA: `{addr}`\n"
                             f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
                         )

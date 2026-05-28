@@ -2227,6 +2227,8 @@ def build_chip_alert_message(chain, address, stats, bottom_analysis=None, deepse
         f"{sm_detail}\n"
         f"{kol_detail}\n"
         f"{holder_tag_desc}\n\n"
+        f"基础结构\n"
+        f"{stats.get('rank_bucket_desc')}\n\n"
         f"Dev数据\n"
         f"{dev_detail}\n\n"
         f"{bottom_chip_history_text(bottom_analysis)}\n\n"

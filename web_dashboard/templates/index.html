@@ -214,7 +214,7 @@
     }
 
     function topSummary(stats, prefix) {
-      const bucketKey = prefix === "top10" ? "10" : "100";
+      const bucketKey = prefix === "top10" ? "10" : (prefix === "top20" ? "20" : "100");
       const bucket = (stats.rank_bucket_stats && stats.rank_bucket_stats[bucketKey]) || {};
       return {
         hold: safeNum(bucket.supply ?? stats[`${prefix}_holder_supply`] ?? stats[`${prefix}_supply`] ?? stats[`${prefix}_rate`]),
@@ -246,7 +246,7 @@
             capPath: `EMA26下方${extra.bars_below || 0}根后金叉`, holderDelta: 0,
             pool: "", liquidity: safeNum(extra.pool_liquidity),
             createdTime: fmtTime(extra.created_ts), age: fmtAge(extra.age_sec), verdict: "ema_golden_cross",
-            trend: {}, tags: {}, top10: {}, top100: {}, bottomProfit: {},
+            trend: {}, tags: {}, top10: {}, top20: {}, top100: {}, bottomProfit: {},
             rawText: item.text || "", rawStats: extra,
             isNew: false, isBottom: true,
             narrativeType: extra.narrative_type || "",
@@ -361,7 +361,7 @@
           capPath: `峰值 ${formatCap(peak)}`, holderDelta: 0,
           pool: "", liquidity: safeNum(extra.liquidity),
           createdTime: "", age: "", verdict: zone,
-          trend: {}, tags: {}, top10: {}, top100: {}, bottomProfit: {},
+          trend: {}, tags: {}, top10: {}, top20: {}, top100: {}, bottomProfit: {},
           rawText: item.text || "", rawStats: extra,
           isNew: false, isBottom: false,
           isDaily1m: true,
@@ -414,6 +414,7 @@
           cluster: (stats.holder_tag_stats && stats.holder_tag_stats.same_creation_cluster_summary) || {},
         },
         top10: topSummary(stats, "top10"),
+        top20: topSummary(stats, "top20"),
         top100: topSummary(stats, "top100"),
         bottomProfit: stats.bottom_profit_wallets || {},
         rawText: item.text || "",
@@ -629,10 +630,8 @@
         <section class="detail-section">
           <h3>基础结构</h3>
           <div class="metric-grid two">
-            ${metric("Top10持仓", `${safeNum(signal.top10.hold).toFixed(2)}%`)}
-            ${metric("Top10盈利", formatPct(signal.top10.profit))}
-            ${metric("Top100持仓", `${safeNum(signal.top100.hold).toFixed(2)}%`)}
-            ${metric("Top100盈利", formatPct(signal.top100.profit))}
+            ${metric("Top20持仓", `${safeNum(signal.top20.hold).toFixed(2)}%`)}
+            ${metric("Top20盈利", formatPct(signal.top20.profit))}
           </div>
         </section>
         <section class="detail-section">
