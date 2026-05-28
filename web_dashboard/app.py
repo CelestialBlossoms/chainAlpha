@@ -2050,25 +2050,66 @@ def _alpha_deleted_today_save(address: str, track: dict[str, Any]) -> None:
 
 def _alpha_deleted_today_list() -> list[dict[str, Any]]:
     client = get_redis_client()
+    by_address: dict[str, dict[str, Any]] = {}
     if client is None:
-        return []
+        return _alpha_deleted_today_plugin_events()
     try:
         index_key = _alpha_deleted_today_index_key()
         members = client.smembers(index_key)
         addresses = [str(m.decode() if isinstance(m, bytes) else m) for m in members if m]
-        
-        items = []
+
         for addr in addresses:
             raw = client.get(_alpha_deleted_today_redis_key(addr))
             if raw:
                 try:
-                    items.append(json.loads(raw))
+                    item = json.loads(raw)
+                    address = str(item.get("address") or addr)
+                    by_address[address] = item
                 except Exception:
                     pass
-        items.sort(key=lambda x: int(x.get("last_updated") or 0), reverse=True)
-        return items
     except Exception:
-        return []
+        pass
+
+    for item in _alpha_deleted_today_plugin_events():
+        address = str(item.get("address") or "")
+        if address:
+            by_address.setdefault(address, item)
+
+    items = list(by_address.values())
+    items.sort(key=lambda x: int(x.get("last_updated") or 0), reverse=True)
+    return items
+
+
+def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]:
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    items: list[dict[str, Any]] = []
+    for event in read_recent_plugin_signals(limit):
+        if event.get("source") != "deep_alpha_removal":
+            continue
+        extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+        address = str(extra.get("address") or event.get("ca") or "").strip()
+        if not address:
+            continue
+        ts = _safe_int(event.get("ts")) or _safe_int(extra.get("ts")) or int(time.time())
+        if ts < today_start:
+            continue
+        current_mcap = _safe_float(extra.get("mcap"))
+        items.append({
+            "address": address,
+            "chain": extra.get("chain") or "sol",
+            "symbol": extra.get("symbol") or event.get("title") or "UNKNOWN",
+            "entry_mcap": current_mcap,
+            "current_mcap": current_mcap,
+            "peak_mcap": current_mcap,
+            "peak_mcap_at": ts,
+            "pool_liquidity": 0,
+            "holders": 0,
+            "pnl_pct": 0,
+            "status": "removed",
+            "remove_reason": extra.get("reason") or "前端展示清退",
+            "last_updated": ts,
+        })
+    return items
 
 
 def _live_track_remove(address: str, reason: str = "") -> None:

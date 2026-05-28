@@ -606,6 +606,33 @@ def alert_candidate_miss_redis_key(address):
 def frontend_removal_redis_key(address):
     return redis_key("deep_alpha:frontend_removal", address)
 
+
+def archive_frontend_removal_for_deleted_today(address, symbol=None, mcap=0, reason=""):
+    now_ts = int(time.time())
+    candidate = get_candidate_snapshot(address) or {}
+    live_track = load_live_track(address) or {}
+    entry_mcap = safe_float(live_track.get("entry_mcap")) or safe_float(candidate.get("mcap")) or safe_float(mcap)
+    current_mcap = safe_float(mcap) or safe_float(live_track.get("current_mcap"))
+    peak_mcap = max(safe_float(live_track.get("peak_mcap")), entry_mcap, current_mcap)
+    pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
+    track = {
+        **live_track,
+        "address": address,
+        "chain": live_track.get("chain") or "sol",
+        "symbol": symbol or live_track.get("symbol") or "UNKNOWN",
+        "entry_mcap": entry_mcap,
+        "current_mcap": current_mcap,
+        "peak_mcap": peak_mcap,
+        "peak_mcap_at": int(live_track.get("peak_mcap_at") or now_ts),
+        "pool_liquidity": safe_float(live_track.get("pool_liquidity")),
+        "holders": int(safe_float(live_track.get("holders")) or safe_float(candidate.get("holder_count"))),
+        "pnl_pct": round(pnl_pct, 2),
+        "status": "removed",
+        "remove_reason": reason or f"当前市值 ${current_mcap:,.0f} < ${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}",
+        "last_updated": now_ts,
+    }
+    save_live_track_deleted_today(address, track)
+
 def publish_frontend_removal_once(address, symbol=None, mcap=0, reason=""):
     if not address:
         return False
@@ -613,9 +640,11 @@ def publish_frontend_removal_once(address, symbol=None, mcap=0, reason=""):
     if client is not None:
         try:
             if not client.set(frontend_removal_redis_key(address), "1", nx=True, ex=ALERT_REDIS_TTL_SEC):
+                archive_frontend_removal_for_deleted_today(address, symbol=symbol, mcap=mcap, reason=reason)
                 return False
         except Exception as exc:
             print(f"  [Redis] 前端移除去重失败 {address[:8]}: {exc}")
+    archive_frontend_removal_for_deleted_today(address, symbol=symbol, mcap=mcap, reason=reason)
     text = f"移除前端展示 | ${symbol or 'UNKNOWN'}\n市值: ${safe_float(mcap):,.0f}\nCA: {address}"
     publish_tg_alert(
         text,
@@ -805,6 +834,48 @@ def live_track_redis_key(address):
 
 def live_track_index_key():
     return redis_key(LIVE_TRACK_REDIS_PREFIX, "__index__")
+
+
+def live_track_deleted_today_key(address):
+    return redis_key(LIVE_TRACK_REDIS_PREFIX, "deleted_today", address)
+
+
+def live_track_deleted_today_index_key():
+    return redis_key(LIVE_TRACK_REDIS_PREFIX, "deleted_today", "__index__")
+
+
+def seconds_until_midnight():
+    now = time.time()
+    next_midnight = time.mktime((datetime.fromtimestamp(now + 86400)).replace(hour=0, minute=0, second=0, microsecond=0).timetuple())
+    ttl = int(next_midnight - now)
+    return ttl if ttl > 0 else 86400
+
+
+def save_live_track_deleted_today(address, track):
+    if not address or not isinstance(track, dict):
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        ttl = seconds_until_midnight()
+        client.setex(live_track_deleted_today_key(address), ttl, json.dumps(track, ensure_ascii=False))
+        index_key = live_track_deleted_today_index_key()
+        client.sadd(index_key, address)
+        client.expire(index_key, ttl)
+    except Exception as exc:
+        print(f"  [LiveTrack] deleted-today写入失败 {address[:8]}: {exc}")
+
+
+def load_live_track(address):
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(live_track_redis_key(address))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
 
 
 def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0):
