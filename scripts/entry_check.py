@@ -1,13 +1,13 @@
-"""Quick entry check for a CA against historical drawdown recovery patterns."""
+"""Entry check for a CA — uses push-time baseline, pre-push pump analysis."""
 import sys,io,json,requests
 sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace')
 sys.path.insert(0,'.')
 from db_client import db_op
 from datetime import datetime,timezone
 
-addr = sys.argv[1] if len(sys.argv)>1 else 'CBi3Cm3XVbSeKuvi4qTZaZpLVZ84CN8TMLMgpJVPpump'
+addr = sys.argv[1] if len(sys.argv)>1 else '54pHes6YaeL99S4eUVJxu6vhULZQsFcoDiCgHqt8pump'
 
-# 1. Push records
+# 1. Push record
 def _op(conn):
     cur=conn.cursor()
     cur.execute("""SELECT symbol,signal_type,event_ts,current_mcap,ath_mcap,price_change_pct,
@@ -19,22 +19,19 @@ def _op(conn):
 rec=db_op(_op)
 
 if not rec:
-    print('No push record found for this CA')
+    print('No push record for this CA')
     sys.exit(1)
 
-ets=rec['event_ts']
-ts_str=datetime.fromtimestamp(ets,tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+ets=rec['event_ts']; rec_mcap=float(rec['current_mcap'])
+ts_str=datetime.fromtimestamp(ets,tz=timezone.utc).strftime('%m-%d %H:%M UTC')
 mins_ago=(datetime.now(timezone.utc).timestamp()-ets)/60
-print(f'Symbol: {rec["symbol"]}  [{rec["signal_type"]}]')
-print(f'Pushed: {ts_str}  ({mins_ago:.0f}min ago)')
-print(f'MCap: ${float(rec["current_mcap"]):,.0f}  ATH: ${float(rec["ath_mcap"]):,.0f}')
-print(f'Liq: ${float(rec["liquidity"]):,.0f}  PoolRatio: {float(rec["pool_mcap_ratio"]):.1%}')
-print(f'PriceChg: {float(rec["price_change_pct"]):.1f}%  Age: {float(rec["age_sec"])/3600:.0f}h')
+print(f'{rec["symbol"]} [{rec["signal_type"]}]  推送: {ts_str} ({mins_ago:.0f}min ago)')
+print(f'推送MCap: ${rec_mcap:,.0f}  ATH: ${float(rec["ath_mcap"]):,.0f}  涨幅: {float(rec["price_change_pct"]):.1f}%')
+print(f'Liq: ${float(rec["liquidity"]):,.0f}  PoolRatio: {float(rec["pool_mcap_ratio"]):.1%}  Age: {float(rec["age_sec"])/3600:.0f}h')
 
-# 2. Fetch latest K-line from Binance API
+# 2. Fetch K-line
 url='https://dquery.sintral.io/u-kline/v1/k-line/candles'
 hdr={'Accept-Encoding':'identity','User-Agent':'binance-web3/1.1'}
-
 def fetch(interval,limit):
     r=requests.get(url,params={'address':addr,'platform':'solana','interval':interval,'limit':limit},headers=hdr,timeout=15)
     bars=[]
@@ -45,100 +42,111 @@ def fetch(interval,limit):
     bars.sort(key=lambda x:x['t'])
     return bars
 
-bars5=fetch('5min',48); bars1=fetch('1min',60)
-pre5=[b for b in bars5 if b['t']<=ets]; post5=[b for b in bars5 if b['t']>ets]
-pre1=[b for b in bars1 if b['t']<=ets]; post1=[b for b in bars1 if b['t']>ets]
+k5=fetch('5min',48); k1=fetch('1min',60)
+pre5=[b for b in k5 if b['t']<=ets]; post5=[b for b in k5 if b['t']>ets]
+pre1=[b for b in k1 if b['t']<=ets]; post1=[b for b in k1 if b['t']>ets]
 print(f'Kline: 5m pre={len(pre5)} post={len(post5)}  1m pre={len(pre1)} post={len(post1)}')
 
-if not post5:
-    print('No post-push K-line data yet')
-    sys.exit(0)
+# 3. Push-time baseline
+bl = pre5[-1]['c'] if pre5 else (post5[0]['o'] if post5 else 0)
+if bl <= 0: print('No valid baseline'); sys.exit(1)
 
-bl=pre5[-1]['c'] if pre5 else post5[0]['o']
-peak=max(b['h'] for b in post5)
-trough=min(b['l'] for b in post5)
-cur=post5[-1]['c']
-peak_pct=(peak-bl)/bl*100; trough_pct=(trough-bl)/bl*100; cur_pct=(cur-bl)/bl*100
-peak_i=max(range(len(post5)),key=lambda i:post5[i]['h'])
-trough_i=min(range(len(post5)),key=lambda i:post5[i]['l'])
-dd_from_peak=(cur-peak)/peak*100 if peak>0 else 0
-recovery=(cur-trough)/trough*100 if trough>0 else 0
+# ---- Step A: Pre-push pump analysis ----
+if pre5:
+    pre_high=max(b['h'] for b in pre5); pre_low=min(b['l'] for b in pre5)
+    pre_pump_pct=(pre_high-pre_low)/pre_low*100
+    pullback=(bl-pre_high)/pre_high*100
+    mcap_pre_low=rec_mcap*(pre_low/bl)
+    mcap_pre_high=rec_mcap*(pre_high/bl)
+    print(f'\n=== Step1: 推送前涨幅 (Pre-Push Pump) ===')
+    print(f'Pre最低: MCap≈${mcap_pre_low:,.0f}   Pre最高: MCap≈${mcap_pre_high:,.0f}')
+    print(f'推送前已涨: {pre_pump_pct:+.0f}%  (${mcap_pre_low:,.0f} → ${mcap_pre_high:,.0f})')
+    status = '已从高点回落' if pullback<-5 else '正在高点附近'
+    print(f'推送价 vs Pre高点: {pullback:+.1f}%  ({status})')
+else:
+    pre_pump_pct=0; pullback=0
 
-print(f'\n=== Post-Push 5m ({len(post5)}bars={len(post5)*5}min) ===')
-print(f'Peak: {peak_pct:+.1f}% (t+{peak_i*5}min)  Trough: {trough_pct:+.1f}% (t+{trough_i*5}min)')
-print(f'Current: {cur_pct:+.1f}%  Peak回撤: {dd_from_peak:.1f}%  底部反弹: {recovery:+.1f}%')
+# ---- Step B: Post-push change ----
+pk=max(b['h'] for b in post5) if post5 else bl
+tr=min(b['l'] for b in post5) if post5 else bl
+cur=post5[-1]['c'] if post5 else bl
+pk_pct=(pk-bl)/bl*100; tr_pct=(tr-bl)/bl*100; cur_pct=(cur-bl)/bl*100
+post_tr_i=min(range(len(post5)),key=lambda i:post5[i]['l']) if post5 else 0
+recovery=(cur-tr)/tr*100 if tr>0 else 0
 
-for i,b in enumerate(post5):
+print(f'\n=== Step2: 推送后变化 (Post-Push) ===')
+print(f'推送MCap: ${rec_mcap:,.0f}')
+print(f'Post峰值: {pk_pct:+.1f}% → MCap≈${rec_mcap*(1+pk_pct/100):,.0f}')
+print(f'Post最低: {tr_pct:+.1f}% → MCap≈${rec_mcap*(1+tr_pct/100):,.0f}')
+print(f'当前:     {cur_pct:+.1f}% → MCap≈${rec_mcap*(1+cur_pct/100):,.0f}')
+print(f'底部反弹: {recovery:+.0f}%')
+
+# ---- Step C: Combined view ----
+print(f'\n=== Step3: 综合分析 ===')
+total_pump=(cur-pre_low)/pre_low*100 if pre5 and pre_low>0 else 0
+print(f'全程涨幅(Pre最低→当前): {total_pump:+.0f}%')
+print(f'推送前已涨: {pre_pump_pct:+.0f}%  |  推送后变动: {cur_pct:+.1f}%')
+
+# Drawdown zone from push
+zone='轻度' if tr_pct>-20 else ('中度' if tr_pct>-50 else ('重度' if tr_pct>-80 else '极端'))
+print(f'回撤(从推送价): {zone}({tr_pct:+.0f}%)')
+
+# ---- Bar print ----
+push_i=len(pre5)-1 if pre5 else -1
+print(f'\n=== 5m K-line (push at bar {push_i}) ===')
+for i,b in enumerate(k5):
     t=datetime.fromtimestamp(b['t'],tz=timezone.utc).strftime('%H:%M')
-    body=b['c']-b['o']; body_pct=body/b['o']*100 if b['o']>0 else 0
-    ref=(b['c']-bl)/bl*100 if bl>0 else 0
-    d='+' if body>0 else '-'
-    uw=b['h']-max(b['c'],b['o']); lw=min(b['c'],b['o'])-b['l']
-    notes=[]
-    if lw>abs(body)*2: notes.append('L')
-    if uw>abs(body)*2: notes.append('U')
-    n=' ['+','.join(notes)+']' if notes else ''
-    print(f'  [{i*5:3d}min] {t} {d}{abs(body_pct):.1f}% ref={ref:+.1f}% V=${b["v"]:,.0f}{n}')
+    body=b['c']-b['o']; bp=body/b['o']*100; d='+' if body>0 else '-'
+    ref=(b['c']-bl)/bl*100
+    m=' PUSH' if i==push_i else (' POST_TROUGH' if (post5 and i-push_i-1==post_tr_i) else (' POST_PEAK' if (post5 and i-push_i-1==max(range(len(post5)),key=lambda x:post5[x]['h'])) else ''))
+    print(f'  [{i*5:3d}min] {t} {d}{abs(bp):.1f}% ref={ref:+.1f}% V=${b["v"]:,.0f}{m}')
 
-# 1m
+# ---- 1m ----
 if post1:
     bl1=post1[0]['o']
-    chg5=(post1[4]['c']-bl1)/bl1*100 if len(post1)>=5 else 0
-    chg30=(post1[29]['c']-bl1)/bl1*100 if len(post1)>=30 else 0
-    print(f'\n1m: 5min={chg5:+.1f}%  30min={chg30:+.1f}%')
+    print(f'\n=== 1m 最近10根 ===')
+    for b in post1[:10]:
+        t=datetime.fromtimestamp(b['t'],tz=timezone.utc).strftime('%H:%M:%S')
+        body=b['c']-b['o']; bp=body/b['o']*100; d='+' if body>0 else '-'
+        ref=(b['c']-bl1)/bl1*100
+        print(f'  {t} {d}{abs(bp):.1f}% ref={ref:+.1f}% V=${b["v"]:,.0f}')
+    if len(post1)>=5:
+        chg5=(post1[4]['c']-bl)/bl*100
+        chg30=(post1[29]['c']-bl)/bl*100 if len(post1)>=30 else 0
+        post5v=sum(b['v'] for b in post1[:5])/5
+        pre10v=sum(b['v'] for b in pre1[-10:])/10 if len(pre1)>=10 else 1
+        vr=post5v/pre10v if pre10v>0 else 0
+        print(f'5min: {chg5:+.1f}%  30min: {chg30:+.1f}%  VolRatio: {vr:.2f}x')
 
-# 3. Pre-push fingerprint
-cap_bars=0
-for i in range(1,len(pre5)):
-    body_pct=(pre5[i]['c']-pre5[i]['o'])/pre5[i]['o']*100 if pre5[i]['o']>0 else 0
-    prev_v=pre5[i-1]['v']; vol_ratio=pre5[i]['v']/prev_v if prev_v>0 else 1
-    if body_pct<-8 and vol_ratio>3: cap_bars+=1
-
-all_h=[b['h'] for b in pre5]; all_l=[b['l'] for b in pre5]
-pos=(pre5[-1]['c']-min(all_l))/(max(all_h)-min(all_l))*100 if max(all_h)>min(all_l) else 50
-
-# Volume trend
-vol_trend=1.0
-if len(post5)>=4:
-    early_v=sum(b['v'] for b in post5[:2])/2
-    late_v=sum(b['v'] for b in post5[-2:])/2
-    vol_trend=late_v/early_v if early_v>0 else 1
-
-print(f'\n=== 前置指纹 ===')
-print(f'投降Bar: {cap_bars}个  pos: {pos:.0f}%  量趋势: {vol_trend:.2f}x')
-
-# 4. Compare against historical
-with open('data/deepseek_discovery/signal_kline_records.jsonl','r',encoding='utf-8') as f:
+# ---- Historical ----
+with open('data/deepseek_discovery/signal_kline_records.jsonl','r',encoding='utf-8',errors='replace') as f:
     hist=[json.loads(line) for line in f if line.strip()]
 
-def get_zone(tp):
-    if tp>-20: return '轻度',-20,999
-    if tp>-50: return '中度',-50,-20
-    if tp>-80: return '重度',-80,-50
-    return '极端',-999,-80
+for zl,lo,hi in [('轻度',-20,999),('中度',-50,-20),('重度',-80,-50),('极端',-999,-80)]:
+    if lo<tr_pct<=hi: zone=zl; break
 
-zone,lo,hi=get_zone(trough_pct)
-group=[h for h in hist if lo<h['outcome']['trough_pct']<=hi]
-wr20_all=sum(1 for h in group if h['outcome']['wr20'])/max(len(group),1)*100
-same_sig=[h for h in group if h['signal_type']==rec['signal_type']]
-wr20_same=sum(1 for h in same_sig if h['outcome']['wr20'])/max(len(same_sig),1)*100
+g=[h for h in hist if lo<tr_pct<=hi and h['signal_type']==rec['signal_type']]
+wr20=sum(1 for h in g if h['outcome']['wr20'])/max(len(g),1)*100 if g else 0
+st=rec['signal_type']
+print(f'\n历史同类({st}+{zone}回撤): n={len(g)}, WR20={wr20:.0f}%')
 
-print(f'\n=== 历史同类 ===')
-st = rec['signal_type']
-print(f'{zone}回撤: n={len(group)}, WR20={wr20_all:.0f}%')
-print(f'{zone}回撤+{st}: n={len(same_sig)}, WR20={wr20_same:.0f}%')
+# ---- Verdict ----
+print(f'\n=== 判断 ===')
+signal=''
+if pre_pump_pct>200: signal+=f'推送前已暴涨{pre_pump_pct:.0f}%,信号滞后! '
+if pullback<-20: signal+=f'已从高点回落{abs(pullback):.0f}%,可能是回调买入机会 '
+elif pullback>-5: signal+='推送在高点附近,追高风险 '
+if rec['signal_type']=='new_revival' and tr_pct>-20: signal+='new_revival+轻度回撤→高质量 '
+if rec_mcap<30000: signal+='市值过小(<30K),深度不足 '
+elif rec_mcap>300000: signal+='大市值(>300K),弹性受限 '
 
-# 5. Verdict
-print(f'\n=== 结论 ===')
-if cap_bars>0 and pos<30 and recovery>20:
-    print('有投降Bar+地板价+底部反弹 -> 可试错入场, 止损-15%')
-elif trough_pct<-70 and recovery<20:
-    print('回撤过深+反弹弱 -> 不建议入场')
-elif pos>70 and cap_bars==0:
-    print('天花板价+无投降清洗 -> 不建议入场')
-elif zone=='极端':
-    print('极端回撤(>80%) -> WR20仅25%, 不建议入场')
-elif recovery>50 and cur_pct>-30:
-    print('已大幅反弹, 错过最佳入场点。追入需严格止损-10%')
+if tr_pct>-20 and rec['signal_type']=='new_revival':
+    print(f'轻度回撤+new_revival → 历史WR20={wr20:.0f}% → 可入场')
+elif tr_pct>-20 and wr20>50:
+    print(f'轻度回撤+WR20={wr20:.0f}% → 可入场')
+elif tr_pct>-50 and post5 and cur_pct>0:
+    print(f'中度回撤+已反弹至正 → 可轻仓试错')
+elif tr_pct<-80:
+    print(f'极端回撤 → WR20=25%, 不碰')
 else:
-    print('信号不明确 -> 等缩量横盘至少10min+锤子线/放量阳线后再决定')
+    print(f'信号需确认 → {signal}')

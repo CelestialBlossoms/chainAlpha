@@ -37,27 +37,48 @@ FROM bottom_top100_push_records WHERE address = <CA>
 
 **判断**: 如果 `price_change_pct > 200%` → 推送时已经暴涨过，信号可能滞后。
 
-### Step 2: 拉取实时5m+1m K线 → 计算当前状态
+### Step 2: 拉取实时5m+1m K线 → 三步分析
+
+**关键: baseline必须是推送时刻的价格，不是K线第一根bar!**
 
 ```
-5m K线: 48根, 覆盖推送前后各约2h
-1m K线: 60根, 覆盖推送后约1h
+5m K线: 48根, 取推送前最后一根bar的close作为baseline
+1m K线: 60根, 用于推送后微观确认
 ```
 
-计算核心指标:
-- **baseline** = 推送前最后一根5m收盘价
-- **peak** = 推送后最高价 → `peak_pct = (peak-baseline)/baseline*100`
-- **trough** = 推送后最低价 → `trough_pct = (trough-baseline)/baseline*100`  
-- **current** = 最新收盘价 → `cur_pct = (current-baseline)/baseline*100`
-- **recovery** = 从最低点反弹幅度 → `(current-trough)/trough*100`
+**Step 2a: 推送前涨幅 (Pre-Push Pump)**
 
-**判断回撤深度区间**:
-| trough_pct | 区间 | 含义 |
-|-----------|------|------|
-| > -20% | 轻度 | 优质 |
-| -20% ~ -50% | 中度 | 一半恢复一半死 |
-| -50% ~ -80% | 重度 | 64%死亡 |
-| < -80% | 极端 | WR50=0%, 不碰 |
+```
+pre_low  = 推送前K线的最低价
+pre_high = 推送前K线的最高价
+pre_pump_pct = (pre_high - pre_low) / pre_low × 100
+pullback     = (baseline - pre_high) / pre_high × 100
+```
+
+含义:
+- `pre_pump_pct` — 推送前已经涨了多少。>200%=信号滞后, 追高风险
+- `pullback` — 推送时是否已从高点回落。负值=回调中(好), 正值或接近0=追在尖上(坏)
+
+**Step 2b: 推送后变化 (Post-Push Change)**
+
+```
+post_peak   = 推送后最高价
+post_trough = 推送后最低价
+cur_pct     = (当前价 - baseline) / baseline × 100
+trough_pct  = (post_trough - baseline) / baseline × 100  ← 这才是真正的回撤深度
+recovery    = (当前价 - post_trough) / post_trough × 100
+```
+
+**Step 2c: 综合判断**
+
+```
+总涨幅 = (当前价 - pre_low) / pre_low × 100
+       = 推送前已涨 pre_pump_pct% + 推送后变动 cur_pct%
+
+回撤区间 = 按 trough_pct 判断 (轻度/中度/重度/极端)
+```
+
+**注意**: 回撤区间只看推送后的trough，不包括推送前的最低点。推送前的涨跌已经反映在 `pre_pump_pct` 里。
 
 ### Step 3: 查历史同类 → 得到胜率基准
 
