@@ -4090,8 +4090,103 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
             extra["risk_tags"] = risk_tags
     strategy = compute_strategy_profile(extra, risk_tags)
     extra.update(strategy)
-    extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
+
+    # Prefer DeepSeek prediction; fall back to hardcoded only when DeepSeek unavailable
+    ds_pred = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
+    if ds_pred.get("ready"):
+        extra["winrate_prediction"] = _build_winrate_from_deepseek(extra, ds_pred)
+    else:
+        extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
     return extra
+
+
+def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any]) -> dict[str, Any]:
+    """Build winrate_prediction exclusively from DeepSeek analysis; no hardcoded lookups."""
+    ds_bias = str(ds_pred.get("bias") or "unknown")
+    ds_confidence = str(ds_pred.get("confidence") or "low")
+    ds_summary = str(ds_pred.get("summary") or "")
+    pattern_5m = ds_pred.get("pattern_5m") if isinstance(ds_pred.get("pattern_5m"), dict) else {}
+    micro_1m = ds_pred.get("micro_1m") if isinstance(ds_pred.get("micro_1m"), dict) else {}
+    forecast = ds_pred.get("forecast") if isinstance(ds_pred.get("forecast"), dict) else {}
+    local_fp = ds_pred.get("local_fingerprints") if isinstance(ds_pred.get("local_fingerprints"), dict) else {}
+    signal_type = str(extra.get("signal_type") or "")
+
+    # Map DeepSeek bias to predicted WR20
+    wr20_map = {"bullish": 67.0, "neutral": 52.0, "bearish": 30.0, "volatile": 45.0, "unknown": 52.0}
+    wr50_map = {"bullish": 40.0, "neutral": 27.0, "bearish": 12.0, "volatile": 25.0, "unknown": 27.0}
+    predicted_wr20 = wr20_map.get(ds_bias, 52.0)
+    predicted_wr50 = wr50_map.get(ds_bias, 27.0)
+
+    # Adjust by confidence
+    if ds_confidence == "high":
+        predicted_wr20 = min(85, predicted_wr20 * 1.2)
+        predicted_wr50 = min(60, predicted_wr50 * 1.3)
+    elif ds_confidence == "low":
+        predicted_wr20 = max(20, predicted_wr20 * 0.8)
+        predicted_wr50 = max(5, predicted_wr50 * 0.7)
+
+    # Adjust by local fingerprints
+    if local_fp.get("has_capitulation"):
+        predicted_wr20 += 10
+        predicted_wr50 += 8
+    if local_fp.get("position_zone") == "floor":
+        predicted_wr20 += 8
+        predicted_wr50 += 5
+    elif local_fp.get("position_zone") == "ceiling":
+        predicted_wr20 -= 10
+        predicted_wr50 -= 8
+
+    predicted_wr20 = max(10, min(85, predicted_wr20))
+    predicted_wr50 = max(3, min(60, predicted_wr50))
+
+    evidence = [f"DeepSeek: {ds_summary}"]
+    if pattern_5m.get("label"):
+        evidence.append(f"5m结构: {pattern_5m.get('label')}")
+    if micro_1m.get("label"):
+        evidence.append(f"1m微结构: {micro_1m.get('label')}")
+    if local_fp.get("quick_verdict"):
+        evidence.append(f"本地指纹: {local_fp.get('quick_verdict')}")
+
+    risk_factors = list(ds_pred.get("risk_factors") or [])
+    if ds_bias == "bearish":
+        risk_factors.append("DeepSeek偏向看跌")
+    if pattern_5m.get("risk_level") == "high":
+        risk_factors.append("5m结构高风险")
+
+    label = "高价值" if ds_bias == "bullish" and ds_confidence in ("high","medium") else \
+           "中等价值" if ds_bias in ("bullish","neutral") else \
+           "低价值/回避"
+
+    return {
+        "target": "max_gain_gte_20pct",
+        "predicted_winrate_pct": round(predicted_wr20, 1),
+        "predicted_wr50_pct": round(predicted_wr50, 1),
+        "baseline_winrate_pct": round(predicted_wr20, 1),
+        "label": label,
+        "buy_value_label": label,
+        "confidence": ds_confidence,
+        "source": "deepseek",
+        "evidence": evidence[:6],
+        "risk_factors": risk_factors[:6],
+        "profit_target_probabilities": {
+            "tp20_pct": round(predicted_wr20, 1),
+            "tp50_pct": round(predicted_wr50, 1),
+            "tp100_pct": round(predicted_wr20 * 0.35, 1),
+        },
+        "deepseek_kline_prediction": ds_pred,
+        "kline_journey": pattern_5m,
+        "kline_1m_micro": micro_1m,
+        "strategy_plan": {
+            "signal_label": f"{signal_type} (DeepSeek)",
+            "strategy_profile": f"DeepSeek {ds_bias}/{ds_confidence}",
+            "strategy_action": "参考DeepSeek建议" if ds_bias == "bullish" else "谨慎/观望" if ds_bias == "neutral" else "回避",
+            "kline_forecast": forecast.get("next_4h", ds_summary),
+            "deepseek_forecast": forecast,
+            "deepseek_bias": ds_bias,
+            "deepseek_confidence": ds_confidence,
+        },
+        "source_doc": "deepseek_kline_predictor + 08-5m-fingerprint-encyclopedia.md + 09-bar-level-strategy.md",
+    }
 
 
 def publish_frontend_signal_update(
