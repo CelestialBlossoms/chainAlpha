@@ -1812,6 +1812,9 @@ def maybe_attach_deepseek_kline_prediction(
     signal_type = str((analysis or {}).get("signal_type") or "")
     if not signal_type or signal_type == "watch" or analysis.get("deepseek_kline_prediction"):
         return analysis
+    # Only new_revival and abnormal get DeepSeek analysis
+    if signal_type not in {"new_revival", "abnormal"}:
+        return analysis
     address = token_address(token)
     if not address:
         return analysis

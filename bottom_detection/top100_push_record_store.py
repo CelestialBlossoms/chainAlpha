@@ -52,6 +52,8 @@ def ensure_top100_push_records_table() -> None:
                 ADD COLUMN IF NOT EXISTS snapshot_id BIGINT;
             ALTER TABLE bottom_top100_push_records
                 ADD COLUMN IF NOT EXISTS liquidity NUMERIC DEFAULT 0;
+            ALTER TABLE bottom_top100_push_records
+                ADD COLUMN IF NOT EXISTS deepseek_prediction JSONB DEFAULT NULL;
             CREATE INDEX IF NOT EXISTS idx_bottom_top100_push_records_addr_ts
                 ON bottom_top100_push_records(address, event_ts DESC);
             CREATE INDEX IF NOT EXISTS idx_bottom_top100_push_records_signal_ts
@@ -90,6 +92,7 @@ def ensure_top100_push_records_table() -> None:
             COMMENT ON COLUMN bottom_top100_push_records.age_sec IS '推送时代币年龄，秒';
             COMMENT ON COLUMN bottom_top100_push_records.text IS '推送给TG或插件前端的文本内容';
             COMMENT ON COLUMN bottom_top100_push_records.extra IS '推送时的完整结构化扩展数据JSON，不包含Top100 holders明细';
+            COMMENT ON COLUMN bottom_top100_push_records.deepseek_prediction IS 'DeepSeek K线预测结果JSON，仅new_revival和abnormal信号有此数据；包含bias/confidence/pattern_5m/micro_1m/forecast/local_fingerprints等字段';
             """
         )
 
@@ -134,6 +137,7 @@ def record_top100_push(
     snapshot_id = _int(extra, "snapshot_id")
     liquidity = _num(extra, "liquidity") or _num(extra, "pool_total_liquidity") or _num(extra, "pool_liquidity")
     event_ts = _int(extra, "event_ts") or _int(extra, "signal_ts") or int(time.time())
+    deepseek_prediction = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else None
 
     def _op(conn):
         cur = conn.cursor()
@@ -144,11 +148,11 @@ def record_top100_push(
                 abnormal_rule, trend_interval, current_mcap, first_signal_mcap,
                 first_signal_ts, first_signal_change_pct, price_change_pct,
                 max_abnormal_mcap, ath_mcap, liquidity, pool_total_liquidity,
-                pool_mcap_ratio, age_sec, text, extra
+                pool_mcap_ratio, age_sec, text, extra, deepseek_prediction
             )
             VALUES (
                 to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (chain, source, address, signal_type) DO UPDATE SET
                 pushed_at = EXCLUDED.pushed_at,
@@ -170,7 +174,8 @@ def record_top100_push(
                 pool_mcap_ratio = EXCLUDED.pool_mcap_ratio,
                 age_sec = EXCLUDED.age_sec,
                 text = EXCLUDED.text,
-                extra = EXCLUDED.extra
+                extra = EXCLUDED.extra,
+                deepseek_prediction = EXCLUDED.deepseek_prediction
             WHERE bottom_top100_push_records.status = 'backfilled'
             RETURNING id
             """,
@@ -199,6 +204,7 @@ def record_top100_push(
                 _int(extra, "age_sec"),
                 text or "",
                 Json(extra),
+                Json(deepseek_prediction) if deepseek_prediction else None,
             ),
         )
         return cur.fetchone() is not None
