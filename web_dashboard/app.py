@@ -309,6 +309,9 @@ def compact_bottom_abnormal_item(item: dict[str, Any]) -> dict[str, Any]:
             "watchlist_low_mcap_threshold": extra.get("watchlist_low_mcap_threshold") or PLUGIN_BOTTOM_WATCHLIST_HIGHLIGHT_MCAP_USD,
             "watchlist_low_mcap_highlight": bool(extra.get("watchlist_low_mcap_highlight")),
             "risk_tags": extra.get("risk_tags") or [],
+            "winrate_prediction": extra.get("winrate_prediction") if isinstance(extra.get("winrate_prediction"), dict) else {},
+            "deepseek_kline_prediction": extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {},
+            "kline_prediction_summary": extra.get("kline_prediction_summary") or "",
         },
     }
 
@@ -2481,7 +2484,9 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
         and existing_prediction.get("kline_journey", {}).get("ready")
     )
     extra_has_journey = bool(isinstance(extra.get("kline_journey"), dict) and extra.get("kline_journey", {}).get("ready"))
-    if existing_prediction and existing_prediction.get("strategy_plan") and "05-data-driven-strategy.md" in existing_doc and (
+    if existing_prediction and existing_prediction.get("strategy_plan") and (
+        "05-data-driven-strategy.md" in existing_doc or "09-bar-level-strategy.md" in existing_doc
+    ) and (
         has_journey or not extra_has_journey
     ):
         return track

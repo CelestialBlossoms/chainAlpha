@@ -260,6 +260,8 @@
           poolMcapRatioText: "", accumulationPct: 0, distributionPct: 0, netflowUsd: 0,
           top20Pct: 0, top50Pct: 0, top100Pct: 0,
           historyCount: 0, reasons: [`EMA9(${extra.ema9?.toFixed(10)}) 上穿 EMA26(${extra.ema26?.toFixed(10)})`],
+          winratePrediction: extra.winrate_prediction || {},
+          klinePrediction: extra.deepseek_kline_prediction || extra.winrate_prediction?.deepseek_kline_prediction || {},
           };
         }
 
@@ -336,6 +338,8 @@
           quietDurationSec: safeNum(extra.quiet_duration_sec),
           historyCount: safeNum(extra.history_count),
           reasons: extra.reasons || [],
+          winratePrediction: extra.winrate_prediction || {},
+          klinePrediction: extra.deepseek_kline_prediction || extra.winrate_prediction?.deepseek_kline_prediction || {},
         };
       }
 
@@ -560,6 +564,12 @@
       }
 
       if (signal.isBottom) {
+        const pred = signal.winratePrediction || {};
+        const ds = signal.klinePrediction || pred.deepseek_kline_prediction || {};
+        const dsPattern = ds.pattern_5m || {};
+        const dsMicro = ds.micro_1m || {};
+        const dsForecast = ds.forecast || {};
+        const dsReady = Boolean(ds.ready);
         return `
           <div class="metric-grid">
             ${metric("当前市值", formatCap(signal.mcap))}
@@ -573,6 +583,8 @@
             ${metric("首次异动市值", formatCap(signal.firstSignalMcap || signal.mcap))}
             ${metric("首次异动时间", htmlEscape(signal.firstSignalTime || signal.time || "-"))}
             ${metric("相对首次", formatPct(signal.firstSignalChangePct), signal.firstSignalChangePct >= 0 ? "green-text" : "red-text")}
+            ${metric("预测WR20", pred.predicted_winrate_pct != null ? `${safeNum(pred.predicted_winrate_pct).toFixed(1)}%` : "-")}
+            ${metric("DeepSeek", dsReady ? `${htmlEscape(ds.bias || "unknown")} / ${htmlEscape(ds.confidence || "low")}` : "-")}
           </div>
           <div class="metric-grid two">
             ${metric("Top20增持", `${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%`, safeNum(signal.top20Pct) >= 0 ? "green-text" : "red-text")}
@@ -585,6 +597,13 @@
             <p>Top20 增持: ${safeNum(signal.top20Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top20Pct * 100).toFixed(2)}%</p>
             <p>Top50 增持: ${safeNum(signal.top50Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top50Pct * 100).toFixed(2)}% | Top100 增持: ${safeNum(signal.top100Pct * 100) >= 0 ? "+" : ""}${safeNum(signal.top100Pct * 100).toFixed(2)}%</p>
             <p>净流入: ${formatCap(signal.netflowUsd)}</p>
+          </section>
+          <section class="detail-section">
+            <h3>K线预测</h3>
+            <p>${htmlEscape(dsReady ? (ds.summary || "-") : "等待 DeepSeek K线分析")}</p>
+            <p>5m结构: ${htmlEscape(dsPattern.label || "-")} | 1m确认: ${htmlEscape(dsMicro.label || "-")}</p>
+            <p>5m: ${htmlEscape(dsForecast.next_5m || "-")} | 30m: ${htmlEscape(dsForecast.next_30m || "-")} | 4h: ${htmlEscape(dsForecast.next_4h || "-")}</p>
+            <p>风险: ${htmlEscape((ds.risk_factors || []).slice(0, 2).join("；") || "-")}</p>
           </section>
         `;
       }

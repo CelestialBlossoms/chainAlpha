@@ -1053,6 +1053,10 @@
     function targetProbabilities(item) {
       return prediction(item).profit_target_probabilities || {};
     }
+    function deepseekPrediction(item) {
+      const pred = prediction(item);
+      return pred.deepseek_kline_prediction || item.deepseek_kline_prediction || {};
+    }
     function buyValueLabel(item) {
       const pred = prediction(item);
       return pred.buy_value_label || pred.label || guidePlan(item).buy_value_label || "待观察";
@@ -1068,9 +1072,12 @@
       const pct = predictedWinrate(item);
       const plan = guidePlan(item);
       const p = targetProbabilities(item);
+      const ds = deepseekPrediction(item);
       const wr = pct >= 0 ? `${pct.toFixed(1)}%` : "-";
       const tp50 = safeNum(p.tp50_pct, -1);
-      const sub = tp50 >= 0 ? `WR50 ${tp50.toFixed(0)}% · PnL ${plan.historical_avg_pnl || "-"}` : confidenceText(prediction(item).confidence);
+      const sub = ds.ready
+        ? `DS ${ds.bias || "unknown"} · ${ds.confidence || "low"}`
+        : (tp50 >= 0 ? `WR50 ${tp50.toFixed(0)}% · PnL ${plan.historical_avg_pnl || "-"}` : confidenceText(prediction(item).confidence));
       return `
         <div class="hit-tags"><span class="tag ${valueClass(item)}">${htmlEscape(buyValueLabel(item))}</span></div>
         <div class="num-strong ${pct >= 60 ? "pnl-positive" : pct >= 40 ? "pnl-zero" : "pnl-negative"}">${htmlEscape(wr)}</div>
@@ -1190,6 +1197,10 @@
     function buildDrawerHtml(item, detail = {}) {
       const pred = prediction(item);
       const plan = pred.strategy_plan || {};
+      const ds = deepseekPrediction(item);
+      const dsPattern = ds.pattern_5m || {};
+      const dsMicro = ds.micro_1m || {};
+      const dsForecast = ds.forecast || {};
       const journey = klineJourney(item);
       const micro1m = kline1mMicro(item);
       const probs = targetProbabilities(item);
@@ -1246,8 +1257,13 @@
               ${drawerMetric("08文档WR20", journey.ready && safeNum(journey.doc_wr20_pct, -1) >= 0 ? `${safeNum(journey.doc_wr20_pct).toFixed(0)}%` : "-")}
               ${drawerMetric("08 MedPeak", htmlEscape(journey.ready ? (journey.doc_med_peak || "-") : "-"))}
               ${drawerMetric("末段量能", journey.ready ? `${htmlEscape(journey.volume_label || "-")} ${safeNum(journey.volume_ratio).toFixed(2)}x` : "-")}
+              ${drawerMetric("DeepSeek", ds.ready ? `${htmlEscape(ds.bias || "unknown")} / ${htmlEscape(ds.confidence || "low")}` : "-")}
+              ${drawerMetric("DS 5m", htmlEscape(ds.ready ? (dsPattern.label || "-") : "-"))}
+              ${drawerMetric("DS 1m", htmlEscape(ds.ready ? (dsMicro.label || "-") : "-"))}
             </div>
             ${plan.kline_forecast ? `<p class="muted">${htmlEscape(plan.kline_forecast)}</p>` : ""}
+            ${ds.ready ? `<p class="muted">${htmlEscape(ds.summary || "")}</p>` : ""}
+            ${ds.ready ? `<p class="muted">5m ${htmlEscape(dsForecast.next_5m || "-")} · 30m ${htmlEscape(dsForecast.next_30m || "-")} · 4h ${htmlEscape(dsForecast.next_4h || "-")}</p>` : ""}
             ${micro1m.ready ? `<p class="muted">${htmlEscape(micro1m.note || "")}</p>` : ""}
             <p class="muted">${htmlEscape(plan.timing_note || "暂无窗口说明")}</p>
             ${journey.ready ? `<p class="muted">${htmlEscape(journey.doc_note || "")}</p>` : ""}

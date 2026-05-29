@@ -1474,7 +1474,7 @@ def classify_kline_journey(
 ) -> dict[str, Any]:
     """
     Classify the 5m pre-signal 4h structure from
-    onchain_trading_guides/08-kline-journey-encyclopedia.md.
+    onchain_trading_guides/08-5m-fingerprint-encyclopedia.md.
     """
     valid = [
         c
@@ -1540,7 +1540,7 @@ def classify_kline_journey(
         doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
     return {
         "ready": True,
-        "source_doc": "onchain_trading_guides/08-kline-journey-encyclopedia.md",
+        "source_doc": "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
         "resolution": resolution,
         "count": len(valid),
         "pre_bars": len(pre),
@@ -1571,7 +1571,7 @@ def enrich_kline_journey_for_signal(journey: dict[str, Any] | None, signal_type:
         doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
     journey.update(
         {
-            "source_doc": "onchain_trading_guides/08-kline-journey-encyclopedia.md",
+            "source_doc": "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
             "doc_wr20_pct": to_float(doc.get("wr20")),
             "doc_med_peak": doc.get("med_peak") or "-",
             "doc_boom_prob_pct": to_float(doc.get("boom_prob")),
@@ -1589,7 +1589,7 @@ def classify_1m_micro_strategy(
     current_mcap: float,
 ) -> dict[str, Any]:
     """
-    Classify the 1m micro setup using the 05 v3 rule:
+    Classify the 1m micro setup using the 09 bar-level strategy:
     recent 5m average volume / prior 30m average volume.
     """
     valid = [
@@ -1635,20 +1635,20 @@ def classify_1m_micro_strategy(
     doc_wr20 = 0.0
     doc_med_peak = "-"
     decision = "观察"
-    note = "05 v3 1m规则：推送后5分钟量价用于短线确认。"
+    note = "09 bar策略：推送后5分钟量价用于短线确认。"
     if signal_type == "new_revival":
         if volume_label == "天量":
             score_delta = -18
             doc_wr20 = 40
             doc_med_peak = "+13.8%"
             decision = "回避/仅观察"
-            note = "推送后5分钟天量>4x，05 v3标记为接盘风险。"
+            note = "推送后5分钟天量>4x，09策略标记为接盘风险。"
         elif direction == "跌为主" and volume_label == "平量":
             score_delta = 12
             doc_wr20 = 83
             doc_med_peak = "+66.8%"
             decision = "高价值确认"
-            note = "跌为主+平量是05 v3最佳1m确认：恐慌下跌但量能正常。"
+            note = "跌为主+平量是09策略最佳1m确认：恐慌下跌但量能正常。"
         elif direction == "跌为主" and volume_label == "缩量":
             score_delta = 8
             doc_wr20 = 78
@@ -1660,7 +1660,7 @@ def classify_1m_micro_strategy(
             doc_wr20 = 77
             doc_med_peak = "+59.1%"
             decision = "中高价值确认"
-            note = "震荡缩量在05 v3中后4h稳健上涨概率高。"
+            note = "震荡缩量在09策略中后4h稳健上涨概率高。"
         elif direction == "涨跌互现" and volume_label == "平量":
             score_delta = 5
             doc_wr20 = 70
@@ -1676,13 +1676,13 @@ def classify_1m_micro_strategy(
         elif volume_label == "放量":
             score_delta = -5
             decision = "放量观察"
-            note = "05 v3将2-4x放量列为异常量，需等5m/后4h确认。"
+            note = "09策略将2-4x放量列为异常量，需等5m/后4h确认。"
     elif signal_type == "abnormal":
         if direction == "跌为主" and volume_label in {"平量", "放量"}:
             score_delta = -14
             doc_wr20 = 17
             decision = "低价值/回避"
-            note = "05 v3红灯：abnormal 后5min跌+正常量，WR20约17%。"
+            note = "09策略红灯：abnormal 后5min跌+正常量，WR20约17%。"
         elif volume_label == "天量":
             score_delta = -16
             decision = "低价值/回避"
@@ -1694,7 +1694,7 @@ def classify_1m_micro_strategy(
 
     return {
         "ready": True,
-        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md",
+        "source_doc": "onchain_trading_guides/09-bar-level-strategy.md",
         "resolution": "1m",
         "count": len(valid),
         "pre_minutes": len(pre),
@@ -1748,6 +1748,91 @@ def summarize_kline(candles: list[dict[str, Any]], resolution: str) -> dict[str,
         "rebound_after_high": summarize_rebound_after_high(candles),
         "journey": classify_kline_journey(candles, resolution),
     }
+
+
+def build_deepseek_kline_signal_context(
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Compact signal context for DeepSeek K-line prediction."""
+    pool = summary.get("pool") if isinstance(summary.get("pool"), dict) else {}
+    kline = summary.get("kline") if isinstance(summary.get("kline"), dict) else {}
+    micro_1m = summary.get("_1m_micro") if isinstance(summary.get("_1m_micro"), dict) else {}
+    journey = summary.get("_5m_kline_journey") if isinstance(summary.get("_5m_kline_journey"), dict) else kline.get("journey")
+    return {
+        "chain": CHAIN,
+        "symbol": token.get("symbol") or "UNKNOWN",
+        "address": token_address(token),
+        "signal_type": analysis.get("signal_type") or "",
+        "abnormal_rule": analysis.get("abnormal_rule") or "",
+        "current_mcap": to_float(analysis.get("current_mcap") or summary.get("mcap")),
+        "ath_mcap": to_float(analysis.get("ath_mcap") or summary.get("ath_mcap")),
+        "price_change_pct": to_float(analysis.get("price_change_pct")),
+        "first_signal_change_pct": to_float(analysis.get("first_signal_change_pct")),
+        "pool_total_liquidity": to_float(analysis.get("pool_total_liquidity") or pool.get("total_liquidity")),
+        "pool_mcap_ratio": to_float(analysis.get("pool_mcap_ratio") or pool.get("liquidity_mcap_ratio")),
+        "holder_count": to_int(summary.get("holder_count")),
+        "age_sec": to_int(summary.get("age_sec")),
+        "top10_current_pct": to_float(analysis.get("top10_current_pct")),
+        "top20_current_pct": to_float(analysis.get("top20_current_pct")),
+        "top50_current_pct": to_float(analysis.get("top50_current_pct")),
+        "top100_current_pct": to_float(analysis.get("top100_current_pct")),
+        "top10_pct_delta": to_float(analysis.get("top10_pct_delta")),
+        "top20_pct_delta": to_float(analysis.get("top20_pct_delta")),
+        "top50_pct_delta": to_float(analysis.get("top50_pct_delta")),
+        "top100_pct_delta": to_float(analysis.get("top100_pct_delta")),
+        "netflow_usd": to_float(analysis.get("netflow_usd")),
+        "kline_summary": {
+            "resolution": kline.get("resolution"),
+            "count": kline.get("count"),
+            "change_pct": kline.get("change_pct"),
+            "bottom_to_current_pct": kline.get("bottom_to_current_pct"),
+            "volume_usd": kline.get("volume_usd"),
+        },
+        "local_5m_journey": journey if isinstance(journey, dict) else {},
+        "local_1m_micro": micro_1m,
+        "source_docs_expected": [
+            "onchain_trading_guides/02-anomaly-detection-framework.md",
+            "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
+            "onchain_trading_guides/09-bar-level-strategy.md",
+        ],
+    }
+
+
+def maybe_attach_deepseek_kline_prediction(
+    *,
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    analysis: dict[str, Any],
+    candles_5m: list[dict[str, Any]],
+    candles_1m: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach DeepSeek 5m/1m K-line prediction; never block the push path."""
+    signal_type = str((analysis or {}).get("signal_type") or "")
+    if not signal_type or signal_type == "watch" or analysis.get("deepseek_kline_prediction"):
+        return analysis
+    address = token_address(token)
+    if not address:
+        return analysis
+    try:
+        from bottom_detection.deepseek_kline_predictor import analyze_deepseek_kline_prediction
+
+        prediction = analyze_deepseek_kline_prediction(
+            address=address,
+            signal=build_deepseek_kline_signal_context(token, summary, analysis),
+            candles_5m=candles_5m,
+            candles_1m=candles_1m,
+        )
+    except Exception as exc:
+        print(f"{address[:8]} deepseek kline prediction exception: {exc}")
+        return analysis
+    if not prediction.get("ready"):
+        status = prediction.get("status") or "not_ready"
+        if status not in {"disabled", "missing_api_key"}:
+            print(f"{address[:8]} deepseek kline prediction skipped: {status}")
+        return analysis
+    return {**analysis, "deepseek_kline_prediction": prediction}
 
 
 def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: dict[str, Any]) -> dict[str, Any]:
@@ -2519,9 +2604,32 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
             f"量比 {to_float(micro_1m.get('volume_ratio')):.2f}x"
         )
         if micro_wr > 0:
-            micro_line += f" | 05WR20 {micro_wr:.0f}%"
+            micro_line += f" | 09WR20 {micro_wr:.0f}%"
         if micro_1m.get("decision"):
             micro_line += f" | {micro_1m.get('decision')}"
+    deepseek_kline = pred.get("deepseek_kline_prediction") if isinstance(pred.get("deepseek_kline_prediction"), dict) else {}
+    if not deepseek_kline and isinstance(extra.get("deepseek_kline_prediction"), dict):
+        deepseek_kline = extra.get("deepseek_kline_prediction") or {}
+    ds_line = "-"
+    ds_forecast_line = "-"
+    ds_observation_line = "-"
+    if deepseek_kline.get("ready"):
+        ds_pattern = deepseek_kline.get("pattern_5m") if isinstance(deepseek_kline.get("pattern_5m"), dict) else {}
+        ds_micro = deepseek_kline.get("micro_1m") if isinstance(deepseek_kline.get("micro_1m"), dict) else {}
+        ds_forecast = deepseek_kline.get("forecast") if isinstance(deepseek_kline.get("forecast"), dict) else {}
+        ds_line = (
+            f"{short_text(deepseek_kline.get('summary'), 90) or '-'} | "
+            f"{deepseek_kline.get('bias') or 'unknown'}/{deepseek_kline.get('confidence') or 'low'} | "
+            f"5m {ds_pattern.get('label') or '-'} | 1m {ds_micro.get('label') or '-'}"
+        )
+        ds_forecast_line = (
+            f"5m {short_text(ds_forecast.get('next_5m'), 70) or '-'} | "
+            f"30m {short_text(ds_forecast.get('next_30m'), 70) or '-'} | "
+            f"4h {short_text(ds_forecast.get('next_4h'), 70) or '-'}"
+        )
+        ds_observations = deepseek_kline.get("strategy_observations") if isinstance(deepseek_kline.get("strategy_observations"), list) else []
+        if ds_observations:
+            ds_observation_line = "；".join(short_text(item, 70) for item in ds_observations[:2] if item)
     tp_text = (
         f"+20% {to_float(tp.get('tp20_pct')):.0f}% | "
         f"+50% {to_float(tp.get('tp50_pct')):.0f}% | "
@@ -2533,13 +2641,16 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     return (
         f"底部异动 | ${symbol}\n"
         f"类型: {signal_label} | 档位: {extra.get('abnormal_rule') or '-'}\n"
-        f"购买价值: {buy_value} | 预测WR20: {pred_winrate:.1f}% | 基准WR20: {baseline_winrate:.1f}% | 置信: {confidence_text}\n"
-        f"策略胜率: {strategy_wr} | 止盈到达率: {tp_text}\n"
+        f"观察价值: {buy_value} | 预测WR20: {pred_winrate:.1f}% | 基准WR20: {baseline_winrate:.1f}% | 置信: {confidence_text}\n"
+        f"历史胜率: {strategy_wr} | 涨幅到达率: {tp_text}\n"
         f"峰值预测: 中位峰值 {guide_peak} | 峰值窗口 {peak_window}\n"
         f"走势预测: {kline_forecast or '-'}\n"
-        f"确认窗口: {guide_entry} | 出场观察: {guide_exit} | 固定PnL: {guide_pnl}\n"
+        f"确认窗口: {guide_entry} | 后续观察: {guide_exit} | 固定PnL: {guide_pnl}\n"
         f"1m确认: {micro_line}\n"
         f"5m前置: {journey_line}\n"
+        f"DeepSeek K线: {ds_line}\n"
+        f"DeepSeek窗口: {ds_forecast_line}\n"
+        f"DeepSeek依据: {ds_observation_line}\n"
         f"窗口说明: {guide_note or '-'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
@@ -3308,7 +3419,7 @@ def maybe_reply_post_push_drawdown(token: dict[str, Any], summary: dict[str, Any
         f"推送后高点: {format_money_text(peak_mcap)} (+{peak_gain_pct:.1f}%)\n"
         f"当前市值: {format_money_text(current_mcap)}\n"
         f"相对首推: {format_pct_text((current_mcap / entry_mcap - 1) * 100)}\n"
-        f"高点回撤: {drawdown_pct:.1f}% | 入场下跌: {entry_loss_pct:.1f}%\n"
+        f"高点回撤: {drawdown_pct:.1f}% | 信号后下跌: {entry_loss_pct:.1f}%\n"
         f"CA: {address}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
@@ -3473,7 +3584,7 @@ def compute_strategy_profile(extra: dict[str, Any], risk_tags: list[str] | None 
 
     avoid_reasons: list[str] = []
     if "瞬爆" in risk_tags:
-        avoid_reasons.append("5m内冲顶不追")
+        avoid_reasons.append("5m内冲顶，高位延续风险")
     if "大市值" in risk_tags:
         avoid_reasons.append(">$500K拉盘成本高")
     if "天花板" in risk_tags:
@@ -3484,11 +3595,11 @@ def compute_strategy_profile(extra: dict[str, Any], risk_tags: list[str] | None 
         avoid_reasons.append("quiet_breakout历史样本弱")
 
     if profile in {"低优先级", "快峰风险", "高市值谨慎"}:
-        action_hint = "不追第一波，等待回踩和二次放量确认"
+        action_hint = "第一波高位延续风险，观察回踩和二次放量确认"
     elif profile == "优先观察":
-        action_hint = "关注-5%~-15%回调区，确认止跌后观察"
+        action_hint = "观察-5%~-15%回调区和止跌结构"
     else:
-        action_hint = "等待-5%~-15%回调，不回调不追"
+        action_hint = "观察-5%~-15%回调，未回调则高位延续风险仍在"
 
     return {
         "signal_label": f"{signal_type_text(signal_type)} ({signal_type})" if signal_type else "未知",
@@ -3547,7 +3658,7 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         },
         ("abnormal", "50K-100K"): {
             "wr20": 61.0, "wr50": 39.0, "wr100": 24.0, "samples": 38,
-            "avg_peak": "+38%", "avg_pnl": "看确认后止盈到达",
+            "avg_peak": "+38%", "avg_pnl": "看确认后涨幅到达",
             "entry_window": "15-30min先看结构，1-4h确认是否守住",
             "exit_window": "冲高后主动看回吐，固定时间持有容易失真",
             "priority": "中", "buy_value": "低到中价值观察",
@@ -3556,9 +3667,9 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         },
         ("abnormal", "100K-300K"): {
             "wr20": 66.0, "wr50": 39.0, "wr100": 22.0, "samples": 59,
-            "avg_peak": "+33%", "avg_pnl": "看确认后止盈到达",
+            "avg_peak": "+33%", "avg_pnl": "看确认后涨幅到达",
             "entry_window": "15-30min识别高位加速，1-4h确认暴涨/强涨守住",
-            "exit_window": "以分批止盈锁峰值，避免时间出场回吐",
+            "exit_window": "以峰值分段观察，避免固定时间口径失真",
             "priority": "中高", "buy_value": "短线高弹性观察",
             "timing_note": "v3中 abnormal 100K-300K WR20=66%，高于<50K但仍弱于new_revival。",
             "kline_forecast": "后4h暴涨/强涨守住是核心加分；持续阴跌WR20约26%。",
@@ -3574,27 +3685,27 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         },
         ("new_revival", "<50K"): {
             "wr20": 77.0, "wr50": 39.0, "wr100": 25.0, "samples": 69,
-            "avg_peak": "+34%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "avg_peak": "+34%", "avg_pnl": "看涨幅到达，不看固定持有PnL",
             "entry_window": "0-30min先判断；底部结构可等1-2h回调确认",
-            "exit_window": "分批看+30/+50/+100%，固定时间出场易回吐",
+            "exit_window": "分段看+30/+50/+100%，固定时间口径易回吐",
             "priority": "高", "buy_value": "高价值观察",
             "timing_note": "v3显示 new_revival <50K WR20=77%；峰值中位90min，8h后多数行情已结束。",
             "kline_forecast": "底部持续下跌/底部横盘更优；后4h暴涨或冲高急跌分支WR20接近100%。",
         },
         ("new_revival", "50K-100K"): {
             "wr20": 71.0, "wr50": 55.0, "wr100": 29.0, "samples": 31,
-            "avg_peak": "+65%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "avg_peak": "+65%", "avg_pnl": "看涨幅到达，不看固定持有PnL",
             "entry_window": "0-30min判断第一段，1-2h看回调/企稳",
-            "exit_window": "分批止盈优先，峰值后回吐快",
+            "exit_window": "分段观察峰值，峰值后回吐快",
             "priority": "高", "buy_value": "高价值观察",
             "timing_note": "v3显示 new_revival 50K-100K WR50=55%，中位峰值+65%，属于质量较高档。",
             "kline_forecast": "若前置底部结构配合后4h暴涨，+50%到达率更有参考价值。",
         },
         ("new_revival", "100K-300K"): {
             "wr20": 77.0, "wr50": 52.0, "wr100": 35.0, "samples": 52,
-            "avg_peak": "+65%", "avg_pnl": "看止盈到达，不看死拿PnL",
+            "avg_peak": "+65%", "avg_pnl": "看涨幅到达，不看固定持有PnL",
             "entry_window": "0-30min看第一段，1-2h看回调/企稳，不能等8h",
-            "exit_window": "分批止盈优先，避免峰值后利润回吐",
+            "exit_window": "分段观察峰值，避免峰值后利润回吐",
             "priority": "高", "buy_value": "高价值观察",
             "timing_note": "v3修正：new_revival 100K-300K WR20=77%，不是低价值；但峰值中位仍约90min。",
             "kline_forecast": "高点下跌回落/底部持续下跌后若转暴涨，是重点跟踪结构。",
@@ -3606,7 +3717,7 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         "entry_window": "文档无该组合主策略",
         "exit_window": "仅观察",
         "priority": "低", "buy_value": "回避/仅观察",
-        "timing_note": "05-data-driven-strategy.md 未将该组合列为有效主策略。",
+        "timing_note": "09-bar-level-strategy.md 未将该组合列为有效主策略。",
         "kline_forecast": "缺少v3统计映射，仅保留观察。",
         "peak_window": peak_window,
     }
@@ -3622,7 +3733,7 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
 
 
 def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[str] | None = None) -> dict[str, Any]:
-    """Build timing and profit context from onchain_trading_guides/05-data-driven-strategy.md."""
+    """Build timing and profit context from onchain_trading_guides/09-bar-level-strategy.md."""
     signal_mcap = to_float(extra.get("current_mcap") or extra.get("entry_mcap"))
     signal_price = to_float(extra.get("price") or extra.get("entry_price"))
     signal_ts = to_int(extra.get("event_ts") or extra.get("signal_ts") or extra.get("pushed_at") or now_ts())
@@ -3642,14 +3753,14 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
 
     risk_points = list(risk_factors or [])
     risk_points.extend([
-        "05 v3显示峰值中位时间较短：new_revival约90min，abnormal约150min",
-        "固定时间出场历史收益弱，后续判断必须结合止盈到达率和回撤速度",
+        "09策略显示峰值中位时间较短：new_revival约90min，abnormal约150min",
+        "固定时间观察历史收益弱，后续判断必须结合涨幅到达率和回撤速度",
         "若推送时已大幅拉升或池/市值过低，WR会被明显折损",
     ])
 
     return {
-        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md",
-        "winner_definition": "入场后任意时间价格涨到>=20%",
+        "source_doc": "onchain_trading_guides/09-bar-level-strategy.md",
+        "winner_definition": "观察后任意时间价格涨到>=20%",
         "signal_bucket": _mcap_bucket(signal_mcap),
         "buy_value_label": bucket["buy_value"],
         "priority": bucket["priority"],
@@ -3708,7 +3819,7 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
 def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
     """
     Estimate the probability that a bottom-abnormal CA reaches the historical
-    WR20 threshold from onchain_trading_guides/05-data-driven-strategy.md.
+    WR20 threshold from onchain_trading_guides/09-bar-level-strategy.md.
     This is a data-derived observation score, not trading advice.
     """
     extra = dict(extra or {})
@@ -3720,8 +3831,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
     score = float(bucket["wr20"])
     sample_count = int(bucket["samples"])
     evidence = [
-        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 05v3 WR20 {bucket['wr20']:.1f}%",
-        f"05v3中位峰值 {bucket['avg_peak']}，峰值窗口 {bucket.get('peak_window') or '-'}",
+        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 09策略 WR20 {bucket['wr20']:.1f}%",
+        f"09策略中位峰值 {bucket['avg_peak']}，峰值窗口 {bucket.get('peak_window') or '-'}",
     ]
     risk_factors: list[str] = []
 
@@ -3758,13 +3869,13 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             risk_factors.append("当前市值<30K，深度不足")
         elif signal_type == "new_revival" and mcap < 300_000:
             score += 3
-            evidence.append("new_revival<300K 在05v3中WR20均>=71%")
+            evidence.append("new_revival<300K 在09策略中WR20均>=71%")
         elif signal_type == "abnormal" and 100_000 <= mcap < 300_000:
             score += 3
-            evidence.append("abnormal 100K-300K 是05v3中相对较优档")
+            evidence.append("abnormal 100K-300K 是09策略中相对较优档")
         elif signal_type == "abnormal" and mcap < 50_000:
             score -= 6
-            risk_factors.append("05v3显示 abnormal <50K WR20仅50%，属于弱档")
+            risk_factors.append("09策略显示 abnormal <50K WR20仅50%，属于弱档")
         elif mcap >= 300_000:
             score -= 8
             risk_factors.append("市值>=300K，弹性和回吐风险需要更严格过滤")
@@ -3782,7 +3893,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             risk_factors.append(f"相对推送市值已涨{pnl_from_signal:.1f}%，追高回吐风险高")
         elif pnl_from_signal >= 30:
             score -= 6
-            risk_factors.append(f"相对推送市值已涨{pnl_from_signal:.1f}%，部分止盈目标已兑现")
+            risk_factors.append(f"相对推送市值已涨{pnl_from_signal:.1f}%，部分涨幅目标已兑现")
 
     if peak_mcap > 0 and mcap > 0 and entry_mcap > 0:
         peak_gain_pct = (peak_mcap - entry_mcap) / entry_mcap * 100
@@ -3828,9 +3939,9 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         label_1m = str(micro_1m.get("label") or "")
         doc_wr20_1m = to_float(micro_1m.get("doc_wr20_pct"))
         if doc_wr20_1m > 0:
-            evidence.append(f"05 1m确认: {label_1m}，WR20 {doc_wr20_1m:.0f}%")
+            evidence.append(f"09 1m确认: {label_1m}，WR20 {doc_wr20_1m:.0f}%")
         else:
-            evidence.append(f"05 1m确认: {label_1m}")
+            evidence.append(f"09 1m确认: {label_1m}")
         if micro_1m.get("note") and micro_delta < 0:
             risk_factors.append(str(micro_1m.get("note")))
         elif micro_1m.get("note"):
@@ -3912,6 +4023,32 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         confidence = "low"
 
     strategy_plan = compute_historical_strategy_plan(extra, risk_factors)
+    deepseek_kline = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
+    if deepseek_kline.get("ready"):
+        ds_summary = str(deepseek_kline.get("summary") or "").strip()
+        ds_bias = str(deepseek_kline.get("bias") or "unknown")
+        ds_confidence = str(deepseek_kline.get("confidence") or "low")
+        pattern_5m = deepseek_kline.get("pattern_5m") if isinstance(deepseek_kline.get("pattern_5m"), dict) else {}
+        micro_ds = deepseek_kline.get("micro_1m") if isinstance(deepseek_kline.get("micro_1m"), dict) else {}
+        if ds_summary:
+            evidence.append(f"DeepSeek K线预测({ds_confidence}/{ds_bias}): {ds_summary}")
+        if pattern_5m.get("label"):
+            evidence.append(f"DeepSeek 5m结构: {pattern_5m.get('label')}")
+        if micro_ds.get("label"):
+            evidence.append(f"DeepSeek 1m微结构: {micro_ds.get('label')}")
+        ds_risks = deepseek_kline.get("risk_factors") if isinstance(deepseek_kline.get("risk_factors"), list) else []
+        risk_factors.extend(str(item) for item in ds_risks if item)
+        forecast = deepseek_kline.get("forecast") if isinstance(deepseek_kline.get("forecast"), dict) else {}
+        forecast_text = ds_summary or forecast.get("next_30m") or strategy_plan.get("kline_forecast") or ""
+        strategy_plan = {
+            **strategy_plan,
+            "kline_forecast": forecast_text,
+            "deepseek_forecast": forecast,
+            "deepseek_watch_windows": deepseek_kline.get("watch_windows") or [],
+            "deepseek_strategy_observations": deepseek_kline.get("strategy_observations") or [],
+            "deepseek_bias": ds_bias,
+            "deepseek_confidence": ds_confidence,
+        }
 
     return {
         "target": "max_gain_gte_20pct",
@@ -3919,7 +4056,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "baseline_winrate_pct": round(float(bucket["wr20"]), 1),
         "baseline_sample_count": sample_count,
         "overall_sample_count": 315,
-        "winner_definition": "入场后任意时间价格涨到>=20%",
+        "winner_definition": "观察后任意时间价格涨到>=20%",
         "label": label,
         "buy_value_label": label,
         "confidence": confidence,
@@ -3933,8 +4070,9 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         },
         "kline_journey": journey,
         "kline_1m_micro": micro_1m,
+        "deepseek_kline_prediction": deepseek_kline,
         "strategy_plan": strategy_plan,
-        "source_doc": "onchain_trading_guides/05-data-driven-strategy.md + onchain_trading_guides/08-kline-journey-encyclopedia.md",
+        "source_doc": "onchain_trading_guides/02-anomaly-detection-framework.md + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md + onchain_trading_guides/09-bar-level-strategy.md",
     }
 
 
@@ -4061,19 +4199,19 @@ def _send_quick_verdict(address: str, extra: dict[str, Any]) -> None:
         # Classification
         if r1m < 0.4 and price_change < 5:
             verdict = "🔴 死猫跳"
-            advice = "量能崩塌({:.0f}%), 不建仓".format((1 - r1m) * 100)
+            advice = "量能崩塌({:.0f}%), 买盘承接弱".format((1 - r1m) * 100)
         elif r1m > 1.2 and r5m > 1.0 and price_change > 5:
             verdict = "🟢 真异动"
-            advice = "1m+5m量能共振, 可小仓试探"
+            advice = "1m+5m量能共振, 买盘延续"
         elif price_change < -5 and r1m < 0.6:
             verdict = "🟡 V反进行中"
-            advice = "正在回调, 等量能恢复再入"
+            advice = "正在回调, 观察量能恢复"
         elif r1m > 0.6 and r5m > 0.6:
             verdict = "🟡 观望"
             advice = "量能维持但涨幅不足, 继续观察"
         else:
             verdict = "⚪ 不明确"
-            advice = "信号混合, 不建议操作"
+            advice = "信号混合, 方向不明"
 
         # Build TG message
         signal_type = extra.get("signal_type", "?")
@@ -4089,7 +4227,7 @@ def _send_quick_verdict(address: str, extra: dict[str, Any]) -> None:
             "1m量比(后/前): {:.1f}x\n"
             "5m量比(后/前): {:.1f}x\n"
             "\n判定: {}\n"
-            "建议: {}\n"
+            "观察: {}\n"
             "\nhttps://gmgn.ai/sol/token/{}"
         ).format(symbol, signal_type, address, mcap, price_change, r1m, r5m, verdict, advice, address)
 
@@ -4469,8 +4607,10 @@ def build_bottom_signal_extra(
     pool_liquidity = to_float(analysis.get("pool_total_liquidity")) or to_float(pool_summary.get("total_liquidity"))
     signal_ts = now_ts()
     kline_summary = summary.get("kline") if isinstance(summary.get("kline"), dict) else {}
-    kline_journey = enrich_kline_journey_for_signal(kline_summary.get("journey"), signal_type)
+    journey_source = summary.get("_5m_kline_journey") if isinstance(summary.get("_5m_kline_journey"), dict) else kline_summary.get("journey")
+    kline_journey = enrich_kline_journey_for_signal(journey_source, signal_type)
     micro_1m = summary.get("_1m_micro") if isinstance(summary.get("_1m_micro"), dict) else {}
+    deepseek_kline_prediction = analysis.get("deepseek_kline_prediction") if isinstance(analysis.get("deepseek_kline_prediction"), dict) else {}
     return {
         "snapshot_id": analysis.get("snapshot_id", 0),
         "event_ts": signal_ts,
@@ -4565,6 +4705,9 @@ def build_bottom_signal_extra(
         "kline_1m_doc_wr20_pct": micro_1m.get("doc_wr20_pct") if micro_1m else 0,
         "kline_1m_volume_ratio": micro_1m.get("volume_ratio") if micro_1m else 0,
         "kline_1m_change_pct": micro_1m.get("change_pct") if micro_1m else 0,
+        "deepseek_kline_prediction": deepseek_kline_prediction,
+        "kline_prediction_source_docs": deepseek_kline_prediction.get("source_docs") if deepseek_kline_prediction else [],
+        "kline_prediction_summary": deepseek_kline_prediction.get("summary") if deepseek_kline_prediction else "",
         "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
         "vol_1m_early": to_float(summary.get("_1m_vol_early", 0)),
         "vol_1m_late": to_float(summary.get("_1m_vol_late", 0)),
@@ -5035,8 +5178,10 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     top_profit_traders, top_loss_traders = fetch_profit_loss_trader_snapshots(address)
     kline_resolution = token_kline_resolution(token)
     candles = fetch_kline(address, kline_resolution, token)
-    # Also fetch 1m K-line for micro-structure volume analysis (DCB vs V-reversal)
-    candles_1m = fetch_kline(address, "1m", token) if kline_resolution != "1m" else candles
+    normalized_resolution = str(kline_resolution or "").lower()
+    # Prediction and micro-structure analysis always need both 5m and 1m K-lines.
+    candles_5m = candles if normalized_resolution in {"5m", "5min", "5"} else fetch_kline(address, "5m", token)
+    candles_1m = candles if normalized_resolution in {"1m", "1min", "1"} else fetch_kline(address, "1m", token)
     # Enrich token with Binance market cap (GMGN token info often returns empty market_cap for pump.fun tokens)
     binance = fetch_binance_dynamic_metrics(address)
     token = apply_binance_dynamic_metrics(token, binance)
@@ -5045,6 +5190,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     if binance.get("pool_liquidity"):
         token["_binance_liquidity"] = binance["pool_liquidity"]
     summary, holders = build_snapshot_json(token, raw_holders, candles, kline_resolution)
+    summary["_5m_kline_journey"] = classify_kline_journey(candles_5m, "5m")
     # Add 1m volume ratio to summary for quick verdict
     if candles_1m and len(candles_1m) >= 6:
         mid_1m = len(candles_1m) // 2
@@ -5056,6 +5202,11 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         summary["_1m_candles"] = len(candles_1m)
     history = recent_snapshots(address)
     analysis = analyze_abnormal_snapshot(holders, history, summary)
+    if isinstance(summary.get("_5m_kline_journey"), dict):
+        summary["_5m_kline_journey"] = enrich_kline_journey_for_signal(
+            summary.get("_5m_kline_journey"),
+            str(analysis.get("signal_type") or ""),
+        )
     if candles_1m and len(candles_1m) >= 6:
         summary["_1m_micro"] = classify_1m_micro_strategy(
             candles_1m,
@@ -5108,6 +5259,15 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
     if notify and analysis.get("signal_type") == "quiet_breakout" and current_mcap > 500_000:
         print(f"{token_label(token)} skip push: quiet_breakout large mcap ${current_mcap:,.0f} > $500K")
         notify = False
+
+    if notify and should_notify(analysis) and not already_notified:
+        analysis = maybe_attach_deepseek_kline_prediction(
+            token=token,
+            summary=summary,
+            analysis=analysis,
+            candles_5m=candles_5m,
+            candles_1m=candles_1m,
+        )
 
     if notify and should_notify(analysis) and not already_notified:
         if USE_AGENT_DECISION:
@@ -5177,6 +5337,13 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 top_loss_traders,
             )
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
+            quiet_breakout = maybe_attach_deepseek_kline_prediction(
+                token=token,
+                summary=summary,
+                analysis=quiet_breakout,
+                candles_5m=candles_5m,
+                candles_1m=candles_1m,
+            )
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
             quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
             if publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id):
