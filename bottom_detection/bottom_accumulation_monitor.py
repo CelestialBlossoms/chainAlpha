@@ -5751,9 +5751,9 @@ def scan_once(
                 print(f"{token_label(token)} skip abnormal: open_ts missing (发射时间缺失)")
                 continue
             open_age_sec = now_ts() - launch_ts
-            if open_age_sec < 4 * 3600:
+            if open_age_sec < 1 * 3600:
                 skipped += 1
-                print(f"{token_label(token)} skip abnormal: open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
+                print(f"{token_label(token)} skip abnormal: open_age={open_age_sec/3600:.1f}h < 1h (发射时间小于1H)")
                 continue
             if pool_reliable and 0 < pool_mcap_ratio < 0.07:
                 skipped += 1
@@ -5835,10 +5835,10 @@ def scan_once(
             if launch_ts <= 0:
                 skipped += 1
                 token["_trench"] = True
-                print(f"{token_label(token)} skip open_ts missing (发射时间小于4H)")
+                print(f"{token_label(token)} skip open_ts missing (发射时间小于1H)")
                 continue
             open_age_sec = now_ts() - launch_ts
-            if open_age_sec < 4 * 3600:
+            if open_age_sec < 1 * 3600:
                 skipped += 1
                 print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
                 continue
