@@ -18,7 +18,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"))
 DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "300")))
-DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "1").strip().lower() not in {
+DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "0").strip().lower() not in {
     "0",
     "false",
     "no",
