@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"))
-DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "45")))
+DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "90")))
 DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
@@ -617,3 +617,48 @@ def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[s
         "source_docs": list(SOURCE_DOCS),
         "local_fingerprints": local_fp,
     }
+
+
+# =========================================================================
+#  Prompt cache warmup (runs once on import, non-blocking)
+# =========================================================================
+
+_warmup_done = False
+
+
+def warmup_deepseek_cache() -> None:
+    """
+    Send a lightweight call to DeepSeek with the cached system prompt.
+    This pre-warms DeepSeek's prompt cache so the first real prediction
+    doesn't time out processing the 22K system prompt.
+    Runs in a background thread, never blocks.
+    """
+    global _warmup_done
+    if _warmup_done or not DEEPSEEK_API_KEY or not DEEPSEEK_KLINE_ENABLED:
+        return
+    _warmup_done = True
+
+    import threading
+
+    def _warmup():
+        try:
+            system_prompt = build_cached_system_prompt()
+            payload = {
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": '{"task":"cache_warmup","reply":"cached"}'},
+                ],
+                "max_tokens": 20,
+                "temperature": 0.0,
+            }
+            requests.post(
+                f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=DEEPSEEK_TIMEOUT,
+            )
+        except Exception:
+            pass  # warmup failure is non-fatal
+
+    threading.Thread(target=_warmup, daemon=True).start()

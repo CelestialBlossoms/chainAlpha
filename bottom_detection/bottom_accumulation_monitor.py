@@ -1819,7 +1819,8 @@ def maybe_attach_deepseek_kline_prediction(
     if not address:
         return analysis
     try:
-        from bottom_detection.deepseek_kline_predictor import analyze_deepseek_kline_prediction
+        from bottom_detection.deepseek_kline_predictor import analyze_deepseek_kline_prediction, warmup_deepseek_cache
+        warmup_deepseek_cache()  # non-blocking, pre-warms prompt cache
 
         prediction = analyze_deepseek_kline_prediction(
             address=address,
