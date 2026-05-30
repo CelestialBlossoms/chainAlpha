@@ -125,6 +125,32 @@
       text-align: right;
       padding: 4px 10px;
     }
+
+    /* Sound toggle button */
+    .sound-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid #374151;
+      background: #1f2937;
+      color: #d1d5db;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+    .sound-toggle:hover { border-color: #60a5fa; color: #93c5fd; }
+    .sound-toggle.muted { opacity: 0.5; }
+    .sound-toggle .icon { font-size: 15px; }
+
+    /* New-CA flash animation */
+    @keyframes new-ca-flash {
+      0% { background: #22c55e20; }
+      100% { background: transparent; }
+    }
+    .track-table tr.new-ca-flash { animation: new-ca-flash 2s ease-out; }
   </style>
 </head>
 <body>
@@ -136,6 +162,10 @@
           <p class="desc">推送打新CA后实时追踪市值、池子、盈亏（{{ (alpha_live_track_ttl_sec // 3600) if alpha_live_track_ttl_sec else 24 }}小时窗口）</p>
         </div>
         <div class="nav-actions">
+          <button id="sound-toggle" class="sound-toggle" onclick="toggleSound()" title="新CA推送铃声通知">
+            <span class="icon" id="sound-icon">🔔</span>
+            <span id="sound-label">铃声开</span>
+          </button>
           <div class="live-status">
             <span id="live-dot" class="live-dot"></span>
             <span id="live-label">连接中...</span>
@@ -229,6 +259,71 @@
     let evtSource = null;
     let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
+
+    // --- Notification sound ---
+    const notifAudio = new Audio("/static/dragon-studio-notification-ping-372479.mp3");
+    notifAudio.volume = 0.7;
+    let soundEnabled = true;
+    let knownCAs = new Set();      // addresses already seen
+    let snapshotLoaded = false;    // true after first snapshot/REST load
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      const btn = document.getElementById("sound-toggle");
+      const icon = document.getElementById("sound-icon");
+      const label = document.getElementById("sound-label");
+      if (soundEnabled) {
+        btn.classList.remove("muted");
+        icon.textContent = "🔔";
+        label.textContent = "铃声开";
+      } else {
+        btn.classList.add("muted");
+        icon.textContent = "🔕";
+        label.textContent = "铃声关";
+      }
+    }
+
+    function playNotifSound() {
+      if (!soundEnabled) return;
+      try {
+        notifAudio.currentTime = 0;
+        notifAudio.play().catch(() => {});
+      } catch (_) {}
+    }
+
+    /** Check incoming items for new CAs; play sound & flash if any. */
+    function checkNewCAs(incomingItems) {
+      if (!snapshotLoaded) return;
+      const newAddrs = [];
+      for (const item of (incomingItems || [])) {
+        const addr = item.address;
+        if (addr && item.status === "tracking" && !knownCAs.has(addr)) {
+          newAddrs.push(addr);
+          knownCAs.add(addr);
+        }
+      }
+      if (newAddrs.length > 0) {
+        playNotifSound();
+        // Flash new rows after next render
+        requestAnimationFrame(() => {
+          for (const addr of newAddrs) {
+            const row = document.querySelector(`tr[data-ca="${CSS.escape(addr)}"]`);
+            if (row) {
+              row.classList.add("new-ca-flash");
+              setTimeout(() => row.classList.remove("new-ca-flash"), 2200);
+            }
+          }
+        });
+      }
+    }
+
+    /** Seed the knownCAs set from a list of items (no sound). */
+    function seedKnownCAs(itemList) {
+      for (const item of (itemList || [])) {
+        if (item.address) knownCAs.add(item.address);
+      }
+      snapshotLoaded = true;
+    }
 
     function safeNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
@@ -453,6 +548,7 @@
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
           items = sortByPushTime(data.items);
+          seedKnownCAs(data.items);   // populate known set — no sound
           render();
           setConnected(true);
           lastUpdateEl.textContent = `初始快照 ${new Date().toLocaleTimeString()}`;
@@ -463,6 +559,7 @@
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          checkNewCAs(data.items || []);   // 🔔 detect & notify new CAs
           mergeItems(data.items || []);
           render();
           lastUpdateEl.textContent = `最后更新 ${new Date().toLocaleTimeString()}`;
@@ -539,6 +636,7 @@
       .then(r => r.json())
       .then(data => {
         items = sortByPushTime(data.items);
+        seedKnownCAs(data.items);   // seed known CAs from REST — no sound
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
         render();
         connectSSE();
