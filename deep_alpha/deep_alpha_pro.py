@@ -878,7 +878,7 @@ def load_live_track(address):
         return None
 
 
-def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0):
+def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0, created_at=0):
     if not LIVE_TRACK_ENABLED or not address:
         return
     client = get_redis_client()
@@ -896,6 +896,7 @@ def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_
         "peak_mcap": safe_float(entry_mcap),
         "peak_mcap_at": int(pushed_at),
         "pool_liquidity": safe_float(pool_liquidity),
+        "created_at": int(safe_float(created_at)) if created_at else 0,
         "holders": 0,
         "volume_5m": 0,
         "volume_1h": 0,
@@ -3599,6 +3600,7 @@ def scan_pro():
                                 entry_price=live_track_price,
                                 pushed_at=int(time.time()),
                                 pool_liquidity=safe_float(s.get("pool_liquidity")),
+                                created_at=s.get("created_at") or 0,
                             )
                         publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):

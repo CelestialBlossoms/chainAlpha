@@ -88,6 +88,11 @@
       color: #6b7280;
       font-family: 'Courier New', monospace;
     }
+    .token-age {
+      font-size: 11px;
+      color: #f59e0b;
+      font-weight: 600;
+    }
     .status-badge {
       display: inline-block;
       padding: 2px 8px;
@@ -375,6 +380,18 @@
       return `${m}m`;
     }
 
+    function formatTokenAge(createdAt) {
+      const ts = safeNum(createdAt);
+      if (ts <= 0) return "";
+      const now = Math.floor(Date.now() / 1000);
+      const ageSec = now - ts;
+      if (ageSec < 0) return "";
+      const h = Math.floor(ageSec / 3600);
+      const m = Math.floor((ageSec % 3600) / 60);
+      if (h < 1) return `${Math.max(1, m)}m`;
+      return `${h}h${m}m`;
+    }
+
     function formatWindow(seconds) {
       const n = Math.max(0, Math.round(safeNum(seconds, 86400)));
       const h = Math.floor(n / 3600);
@@ -473,7 +490,7 @@
           <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
             <td>
               <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
-              <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
+              <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...${safeNum(item.created_at) > 0 ? ` <span class="token-age">🕐 ${formatTokenAge(item.created_at)}</span>` : ""}</div>
             </td>
             <td><span>${formatTime(item.pushed_at)}</span></td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>

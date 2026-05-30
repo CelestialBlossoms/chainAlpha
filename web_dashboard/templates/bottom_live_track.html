@@ -744,7 +744,7 @@
     let hasInitialSnapshot = false;
     let audioUnlocked = false;
     let pullbackBaselineReady = false;
-    const pullbackSeen = new Set();
+    const pullbackSeen = new Map();   // address → first alert timestamp (seconds)
     const pullbackNotified = new Set();
     const alertAudio = new Audio("/static/ElevenLabs.mp3");
     const pullbackAudio = new Audio("/static/xm3527.mp3");
@@ -947,6 +947,7 @@
       return tags.slice(0, 3).join("");
     }
     function renderAlertQueue(activeItems) {
+      const nowSec = Math.floor(Date.now() / 1000);
       const hits = sortByPushTimeDesc(activeItems || [])
         .map(pullbackInfo)
         .filter(Boolean);
@@ -958,12 +959,22 @@
       if (!hits.length) {
         alertQueueEl.className = "alert-empty";
         alertQueueEl.innerHTML = "暂无重点回撤报警";
-        pullbackSeen.clear();
+        // Don't clear pullbackSeen — preserve first-alert timestamps
         return;
       }
 
+      // Record first-alert timestamp for each hit (only once)
+      for (const hit of hits) {
+        if (hit.address && !pullbackSeen.has(hit.address)) {
+          pullbackSeen.set(hit.address, nowSec);
+        }
+      }
+
       alertQueueEl.className = "alert-queue";
-      alertQueueEl.innerHTML = hits.slice(0, 4).map(hit => `
+      alertQueueEl.innerHTML = hits.slice(0, 4).map(hit => {
+        const firstAlertTs = pullbackSeen.get(hit.address) || nowSec;
+        const firstAlertTime = formatTime(firstAlertTs);
+        return `
         <article class="alert-card" data-ca="${htmlEscape(hit.address)}">
           <div class="alert-token-row">
             <div class="alert-symbol">$${htmlEscape(hit.symbol)}</div>
@@ -972,6 +983,7 @@
           <div class="alert-metrics">
             <div class="kv"><span>推送市值</span><b>${formatCap(hit.entryMcap)}</b></div>
             <div class="kv"><span>当前市值</span><b>${formatCap(hit.currentMcap)}</b></div>
+            <div class="kv" style="grid-column: 1 / -1;"><span>⏰ 首次报警</span><b style="color: #fb923c;">${firstAlertTime}</b></div>
           </div>
           <div class="hit-tags">${hitTags(hit.item) || `<span class="tag hot">回撤命中</span>`}</div>
           <div class="alert-actions">
@@ -979,19 +991,18 @@
             <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(hit.address)}', this, event);">复制</button>
           </div>
         </article>
-      `).join("");
+      `;
+      }).join("");
       alertQueueEl.querySelectorAll(".alert-card").forEach(card => {
         card.addEventListener("click", () => openDrawerByAddress(card.dataset.ca));
       });
 
       const currentKeys = new Set(hits.map(hit => hit.address).filter(Boolean));
       if (!pullbackBaselineReady) {
-        for (const key of currentKeys) pullbackSeen.add(key);
         pullbackBaselineReady = true;
         return;
       }
-      const hasNewHit = hits.some(hit => hit.address && !pullbackSeen.has(hit.address) && !pullbackNotified.has(hit.address));
-      for (const key of currentKeys) pullbackSeen.add(key);
+      const hasNewHit = hits.some(hit => hit.address && !pullbackNotified.has(hit.address) && pullbackSeen.get(hit.address) === nowSec);
       if (hasNewHit) {
         for (const hit of hits) if (hit.address) pullbackNotified.add(hit.address);
         playPullbackAudio();
