@@ -232,6 +232,7 @@
               <th>清退时池子</th>
               <th>Holders</th>
               <th>清退时间</th>
+              <th>追踪时长</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -627,6 +628,7 @@
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
             <td><span>${deletedAtLocal}</span></td>
+            <td><span style="color: #60a5fa; font-weight: 600;">${(() => { const p = safeNum(item.pushed_at); const d = safeNum(item.last_updated); if (p <= 0 || d <= 0) return "-"; return formatDuration(d - p); })()}</span></td>
             <td>
               <div class="card-actions">
                 <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button>
