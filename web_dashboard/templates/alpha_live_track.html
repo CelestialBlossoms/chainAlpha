@@ -93,6 +93,16 @@
       color: #f59e0b;
       font-weight: 600;
     }
+    .token-narrative {
+      font-size: 11px;
+      color: #a78bfa;
+      font-weight: 500;
+      margin-top: 2px;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .status-badge {
       display: inline-block;
       padding: 2px 8px;
@@ -492,6 +502,7 @@
             <td>
               <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...${safeNum(item.created_at) > 0 ? ` <span class="token-age">🕐 ${formatTokenAge(item.created_at)}</span>` : ""}</div>
+              ${item.narrative ? `<div class="token-narrative" title="${htmlEscape(item.narrative)}">📌 ${htmlEscape(item.narrative)}</div>` : ""}
             </td>
             <td><span>${formatTime(item.pushed_at)}</span></td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>
@@ -619,6 +630,7 @@
                 $${htmlEscape(item.symbol || "UNKNOWN")}
               </div>
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...</div>
+              ${item.narrative ? `<div class="token-narrative" title="${htmlEscape(item.narrative)}">📌 ${htmlEscape(item.narrative)}</div>` : ""}
             </td>
             <td style="color: #fb7185; font-weight: 600;">${htmlEscape(item.remove_reason || "unspecified")}</td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>
