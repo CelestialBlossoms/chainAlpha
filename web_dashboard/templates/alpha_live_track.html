@@ -721,7 +721,7 @@
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
             <td><span>${deletedAtLocal}</span></td>
-            <td><span style="color: #60a5fa; font-weight: 600;">${(() => { const p = safeNum(item.pushed_at); const d = safeNum(item.last_updated); if (p <= 0 || d <= 0) return "-"; return formatDuration(d - p); })()}</span></td>
+            <td><span style="color: #60a5fa; font-weight: 600;">${(() => { const d = safeNum(item.last_updated); const p = safeNum(item.pushed_at, d); if (d <= 0) return "0m"; return formatDuration(Math.max(0, d - (p > 0 ? p : d))); })()}</span></td>
             <td>
               <div class="card-actions">
                 <button class="mini-btn copy-btn" type="button" onclick="copyCA('${htmlEscape(item.address)}')">复制</button>

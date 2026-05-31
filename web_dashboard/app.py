@@ -2052,6 +2052,53 @@ SMART_SIGNAL_MERGE_FIELDS = (
 )
 
 
+def _alpha_deleted_today_addresses() -> set[str]:
+    client = get_redis_client()
+    if client is None:
+        return set()
+    try:
+        members = client.smembers(_alpha_deleted_today_index_key())
+        return {
+            str(member.decode() if isinstance(member, bytes) else member)
+            for member in members
+            if member
+        }
+    except Exception:
+        return set()
+
+
+def _smart_signal_health_checked_item(item: dict[str, Any]) -> dict[str, Any]:
+    address = str(item.get("address") or "")
+    current_mcap = _safe_float(item.get("current_mcap"))
+    pushed_at = _safe_int(item.get("pushed_at") or item.get("smart_signal_trigger_at"))
+    now_ts = int(time.time())
+    age_seconds = now_ts - pushed_at if pushed_at > 0 else 0
+    reason = ""
+
+    if 0 < current_mcap < LIVE_TRACK_REMOVE_DEAD_MCAP_USD:
+        reason = f"市值归零 ${current_mcap:,.0f} < ${LIVE_TRACK_REMOVE_DEAD_MCAP_USD:,.0f}"
+    elif (
+        pushed_at > 0
+        and age_seconds <= LIVE_TRACK_LOW_MCAP_WINDOW_SEC
+        and 0 < current_mcap < LIVE_TRACK_REMOVE_LOW_MCAP_USD
+    ):
+        reason = f"30分钟内市值过低 ${current_mcap:,.0f} < ${LIVE_TRACK_REMOVE_LOW_MCAP_USD:,.0f}"
+
+    if not reason:
+        return item
+
+    removed = {
+        **item,
+        "status": "removed",
+        "remove_reason": reason,
+        "last_updated": now_ts,
+        "pushed_at": pushed_at or now_ts,
+    }
+    if address:
+        _alpha_deleted_today_save(address, removed)
+    return removed
+
+
 def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
     client = get_redis_client()
     if client is None:
@@ -2125,10 +2172,17 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
 
 def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_address: dict[str, dict[str, Any]] = {}
+    deleted_addresses = _alpha_deleted_today_addresses()
     for item in _load_smart_money_signal_items("sol"):
         address = str(item.get("address") or "")
-        if address:
-            by_address[address] = item
+        if not address or address in deleted_addresses:
+            continue
+        checked_item = _smart_signal_health_checked_item(item)
+        if checked_item.get("status") == "removed":
+            by_address[address] = checked_item
+            deleted_addresses.add(address)
+            continue
+        by_address[address] = checked_item
     for item in live_items:
         if not isinstance(item, dict):
             continue
@@ -2191,6 +2245,10 @@ def _alpha_deleted_today_save(address: str, track: dict[str, Any]) -> None:
             ttl = 86400  # Fallback to 24h
             
         key = _alpha_deleted_today_redis_key(address)
+        if not _safe_int(track.get("last_updated")):
+            track["last_updated"] = int(now)
+        if not _safe_int(track.get("pushed_at")):
+            track["pushed_at"] = _safe_int(track.get("last_updated")) or int(now)
         client.setex(key, ttl, json.dumps(track, ensure_ascii=False))
         
         index_key = _alpha_deleted_today_index_key()
@@ -2259,6 +2317,7 @@ def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]
             "pnl_pct": 0,
             "status": "removed",
             "remove_reason": extra.get("reason") or "前端展示清退",
+            "pushed_at": _safe_int(extra.get("pushed_at")) or ts,
             "last_updated": ts,
         })
     return items
