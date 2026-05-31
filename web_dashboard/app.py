@@ -2676,6 +2676,12 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
         track["narrative_category"] = str(narrative_category)
     existing_prediction = track.get("winrate_prediction") or {}
     existing_source = str(existing_prediction.get("analysis_source") or existing_prediction.get("source") or "")
+    existing_deepseek = (
+        existing_prediction.get("deepseek_kline_prediction")
+        if isinstance(existing_prediction.get("deepseek_kline_prediction"), dict)
+        else {}
+    )
+    existing_has_api_deepseek = existing_source == "deepseek" and str(existing_deepseek.get("status") or "").lower() == "ok"
     extra_deepseek = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
     extra_has_api_deepseek = extra_deepseek.get("ready") and str(extra_deepseek.get("status") or "").lower() == "ok"
     has_journey = bool(
@@ -2684,7 +2690,7 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
     )
     extra_has_journey = bool(isinstance(extra.get("kline_journey"), dict) and extra.get("kline_journey", {}).get("ready"))
     if existing_prediction and existing_prediction.get("strategy_plan") and (
-        has_journey or not extra_has_journey or existing_source in {"deepseek", "hardcoded"}
+        has_journey or not extra_has_journey or existing_source == "hardcoded" or existing_has_api_deepseek
     ) and not (extra_has_api_deepseek and existing_source != "deepseek"):
         return track
     try:
@@ -2710,13 +2716,17 @@ def _bottom_live_track_attach_predictions(items: list[dict[str, Any]]) -> list[d
         current_prediction = (item or {}).get("winrate_prediction") or {}
         had_prediction = bool(current_prediction and current_prediction.get("strategy_plan"))
         had_source = str(current_prediction.get("analysis_source") or current_prediction.get("source") or "")
+        current_deepseek = current_prediction.get("deepseek_kline_prediction") if isinstance(current_prediction.get("deepseek_kline_prediction"), dict) else {}
+        had_api_deepseek = had_source == "deepseek" and str(current_deepseek.get("status") or "").lower() == "ok"
         had_narrative = bool((item or {}).get("narrative") or (item or {}).get("narrative_desc"))
         next_item = _bottom_live_track_with_prediction(item, extra_by_address.get(address)) or item
         next_prediction = next_item.get("winrate_prediction") or {}
         has_new_prediction = not had_prediction and bool(next_item.get("winrate_prediction"))
-        has_upgraded_prediction = had_source != "deepseek" and str(next_prediction.get("analysis_source") or next_prediction.get("source") or "") == "deepseek"
+        next_source = str(next_prediction.get("analysis_source") or next_prediction.get("source") or "")
+        has_upgraded_prediction = not had_api_deepseek and next_source == "deepseek"
+        has_repaired_prediction = had_source == "deepseek" and not had_api_deepseek and next_source == "hardcoded"
         has_new_narrative = not had_narrative and bool(next_item.get("narrative") or next_item.get("narrative_desc"))
-        if address and (has_new_prediction or has_upgraded_prediction or has_new_narrative):
+        if address and (has_new_prediction or has_upgraded_prediction or has_repaired_prediction or has_new_narrative):
             _bottom_live_track_save(address, next_item)
         enriched.append(next_item)
     return enriched

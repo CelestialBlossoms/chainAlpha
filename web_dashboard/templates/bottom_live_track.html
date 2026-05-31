@@ -835,8 +835,11 @@
     function analysisSource(item) {
       const pred = prediction(item);
       const source = String(pred.analysis_source || pred.source || "").toLowerCase();
-      if (source === "deepseek") return { key: "deepseek", label: pred.analysis_source_label || "DeepSeek AI" };
-      return { key: "hardcoded", label: pred.analysis_source_label || "硬编码兜底" };
+      const ds = pred.deepseek_kline_prediction || item.deepseek_kline_prediction || {};
+      if (source === "deepseek" && String(ds.status || "").toLowerCase() === "ok") {
+        return { key: "deepseek", label: pred.analysis_source_label || "DeepSeek AI" };
+      }
+      return { key: "hardcoded", label: source === "hardcoded" ? (pred.analysis_source_label || "硬编码兜底") : "硬编码兜底" };
     }
     function isHighConfidence(item) {
       const pred = prediction(item);
