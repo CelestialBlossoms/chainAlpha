@@ -2025,6 +2025,33 @@ def _smart_signal_redis_key(chain: str = "sol") -> str:
     return f"{SMART_SIGNAL_REDIS_PREFIX}:{chain or 'sol'}"
 
 
+SMART_SIGNAL_MERGE_FIELDS = (
+    "name",
+    "narrative",
+    "narrative_desc",
+    "narrative_type",
+    "narrative_category",
+    "binance_narrative",
+    "created_at",
+    "created_time",
+    "smart_signal_times_by_type",
+    "smart_signal_first_trigger_mcap",
+    "smart_wallets",
+    "smart_sell_count",
+    "smart_sell_total",
+    "buys_1m",
+    "sells_1m",
+    "net_buy_1m",
+    "volume_1m",
+    "buys_1h",
+    "sells_1h",
+    "net_buy_1h",
+    "volume_1h",
+    "total_fee",
+    "trade_fee",
+)
+
+
 def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
     client = get_redis_client()
     if client is None:
@@ -2058,8 +2085,30 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
                 "smart_signal": True,
                 "smart_signal_trigger_at": trigger_at,
                 "smart_signal_trigger_mcap": trigger_mcap,
+                "smart_signal_times_by_type": item.get("smart_signal_times_by_type") if isinstance(item.get("smart_signal_times_by_type"), dict) else {},
+                "smart_signal_first_trigger_mcap": _safe_float(item.get("smart_signal_first_trigger_mcap")),
                 "smart_buy_count": _safe_int(item.get("smart_buy_count")),
                 "smart_buy_total": _safe_float(item.get("smart_buy_total")),
+                "smart_sell_count": _safe_int(item.get("smart_sell_count")),
+                "smart_sell_total": _safe_float(item.get("smart_sell_total")),
+                "smart_wallets": item.get("smart_wallets") if isinstance(item.get("smart_wallets"), list) else [],
+                "buys_1m": _safe_int(item.get("buys_1m")),
+                "sells_1m": _safe_int(item.get("sells_1m")),
+                "net_buy_1m": _safe_float(item.get("net_buy_1m")),
+                "volume_1m": _safe_float(item.get("volume_1m")),
+                "buys_1h": _safe_int(item.get("buys_1h")),
+                "sells_1h": _safe_int(item.get("sells_1h")),
+                "net_buy_1h": _safe_float(item.get("net_buy_1h")),
+                "volume_1h": _safe_float(item.get("volume_1h")),
+                "total_fee": _safe_float(item.get("total_fee")),
+                "trade_fee": _safe_float(item.get("trade_fee")),
+                "created_at": _safe_int(item.get("created_at")),
+                "created_time": item.get("created_time") or "",
+                "narrative": item.get("narrative") or item.get("narrative_desc") or "",
+                "narrative_desc": item.get("narrative_desc") or item.get("narrative") or "",
+                "narrative_type": item.get("narrative_type") or "",
+                "narrative_category": item.get("narrative_category") or "",
+                "binance_narrative": item.get("binance_narrative") if isinstance(item.get("binance_narrative"), dict) else {},
                 "entry_mcap": _safe_float(item.get("entry_mcap")) or trigger_mcap,
                 "current_mcap": current_mcap,
                 "peak_mcap": max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap),
@@ -2098,6 +2147,10 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 "smart_buy_count": smart_item.get("smart_buy_count"),
                 "smart_buy_total": smart_item.get("smart_buy_total"),
             }
+            for field in SMART_SIGNAL_MERGE_FIELDS:
+                smart_value = smart_item.get(field)
+                if smart_value not in (None, "", [], {}) and not merged.get(field):
+                    merged[field] = smart_value
             by_address[address] = merged
         else:
             by_address[address] = item

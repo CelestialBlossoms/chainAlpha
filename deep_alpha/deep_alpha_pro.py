@@ -125,6 +125,8 @@ SMART_SIGNAL_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TTL_SEC", "9
 SMART_SIGNAL_TYPE = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TYPE", "12"))
 SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN", "0"))
 SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
+SMART_SIGNAL_NARRATIVE_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SMART_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_LIMIT", "50"))
 
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
@@ -846,7 +848,87 @@ def smart_signal_redis_key(chain):
     return redis_key(SMART_SIGNAL_REDIS_PREFIX, chain or "sol")
 
 
-def normalize_smart_signal_item(item, chain):
+SMART_SIGNAL_FRONTEND_FIELDS = (
+    "name",
+    "narrative",
+    "narrative_desc",
+    "narrative_type",
+    "narrative_category",
+    "binance_narrative",
+    "created_at",
+    "created_time",
+    "smart_signal_times_by_type",
+    "smart_signal_first_trigger_mcap",
+    "smart_wallets",
+    "smart_sell_count",
+    "smart_sell_total",
+    "buys_1m",
+    "sells_1m",
+    "net_buy_1m",
+    "volume_1m",
+    "buys_1h",
+    "sells_1h",
+    "net_buy_1h",
+    "volume_1h",
+    "total_fee",
+    "trade_fee",
+)
+
+
+def smart_signal_created_at(data):
+    return int(
+        safe_float(
+            first_value(
+                data,
+                keys=(
+                    "created_timestamp",
+                    "created_at",
+                    "open_timestamp",
+                    "pair_created_at",
+                    "start_live_timestamp",
+                ),
+            )
+        )
+    )
+
+
+def normalize_smart_wallets(wallets):
+    result = []
+    if not isinstance(wallets, list):
+        return result
+    for wallet in wallets[:8]:
+        if not isinstance(wallet, dict):
+            continue
+        result.append(
+            {
+                "address": str(wallet.get("address") or "").strip(),
+                "buy_timestamp": int(safe_float(wallet.get("buy_timestamp"))),
+                "buy_amount": safe_float(wallet.get("buy_amount")),
+                "twitter_username": wallet.get("twitter_username") or "",
+            }
+        )
+    return result
+
+
+def smart_signal_narrative(address, symbol="", name=""):
+    if not SMART_SIGNAL_NARRATIVE_ENABLED:
+        return {}
+    try:
+        return compact_narrative(
+            get_binance_narrative(
+                address,
+                symbol=symbol or None,
+                name=name or None,
+                force=False,
+                save=True,
+            )
+        )
+    except Exception as exc:
+        print(f"  [SmartSignal] narrative fetch failed {address[:8]}: {exc}")
+        return {}
+
+
+def normalize_smart_signal_item(item, chain, enrich_narrative=True):
     if not isinstance(item, dict):
         return None
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
@@ -859,19 +941,52 @@ def normalize_smart_signal_item(item, chain):
     current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
     smart_buy_count = int(safe_float(data.get("count")) or safe_float(data.get("trigger_count")))
     smart_buy_total = safe_float(data.get("total_amount"))
+    symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
+    name = data.get("name") or ""
+    created_at = smart_signal_created_at(data)
+    narrative_obj = smart_signal_narrative(address, symbol, name) if enrich_narrative else {}
+    narrative = narrative_obj.get("narrative_desc") or ""
+    smart_wallets = normalize_smart_wallets(data.get("smart_degen_wallets"))
+    if smart_wallets and smart_buy_count <= 0:
+        smart_buy_count = len(smart_wallets)
+    if smart_wallets and smart_buy_total <= 0:
+        smart_buy_total = sum(safe_float(wallet.get("buy_amount")) for wallet in smart_wallets)
     return {
         "address": address,
         "chain": data.get("chain") or chain or "sol",
-        "symbol": data.get("symbol") or data.get("name") or "UNKNOWN",
+        "symbol": symbol,
+        "name": name,
         "source": "smart_money_signal",
         "status": "smart_signal",
+        "narrative": narrative,
+        "narrative_desc": narrative,
+        "narrative_type": narrative_obj.get("narrative_type") or "",
+        "narrative_category": narrative_obj.get("narrative_category") or "",
+        "binance_narrative": narrative_obj,
+        "created_at": created_at,
+        "created_time": format_created_time(created_at) if created_at else "",
         "smart_signal": True,
         "smart_signal_type": int(safe_float(item.get("signal_type")) or SMART_SIGNAL_TYPE),
         "smart_signal_times": int(safe_float(item.get("signal_times"))),
+        "smart_signal_times_by_type": item.get("signal_times_by_type") if isinstance(item.get("signal_times_by_type"), dict) else {},
         "smart_signal_trigger_at": trigger_at,
         "smart_signal_trigger_mcap": trigger_mcap,
+        "smart_signal_first_trigger_mcap": safe_float(item.get("first_trigger_mc")),
         "smart_buy_count": smart_buy_count,
         "smart_buy_total": smart_buy_total,
+        "smart_wallets": smart_wallets,
+        "smart_sell_count": int(safe_float(data.get("smart_sell_count") or data.get("smart_degen_sell_count"))),
+        "smart_sell_total": safe_float(data.get("smart_sell_total") or data.get("smart_degen_sell_total")),
+        "buys_1m": int(safe_float(data.get("buys_1m"))),
+        "sells_1m": int(safe_float(data.get("sells_1m"))),
+        "net_buy_1m": safe_float(data.get("net_buy_1m")),
+        "volume_1m": safe_float(data.get("volume_1m")),
+        "buys_1h": int(safe_float(data.get("buys_1h"))),
+        "sells_1h": int(safe_float(data.get("sells_1h"))),
+        "net_buy_1h": safe_float(data.get("net_buy_1h")),
+        "volume_1h": safe_float(data.get("volume_1h")),
+        "total_fee": safe_float(data.get("total_fee")),
+        "trade_fee": safe_float(data.get("trade_fee")),
         "entry_mcap": trigger_mcap,
         "current_mcap": current_mcap,
         "peak_mcap": max(trigger_mcap, current_mcap, safe_float(item.get("ath"))),
@@ -912,8 +1027,8 @@ def refresh_smart_money_signals(chain):
         raw_items = raw_items.get("data") or raw_items.get("items") or []
     items = []
     seen = set()
-    for raw in raw_items if isinstance(raw_items, list) else []:
-        item = normalize_smart_signal_item(raw, chain)
+    for idx, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
+        item = normalize_smart_signal_item(raw, chain, enrich_narrative=idx < SMART_SIGNAL_NARRATIVE_LIMIT)
         if not item or item["address"] in seen:
             continue
         seen.add(item["address"])
@@ -1024,6 +1139,10 @@ def start_live_tracking(
             "smart_buy_count": int(safe_float(smart_signal.get("smart_buy_count"))),
             "smart_buy_total": safe_float(smart_signal.get("smart_buy_total")),
         })
+        for field in SMART_SIGNAL_FRONTEND_FIELDS:
+            value = smart_signal.get(field)
+            if value not in (None, "", [], {}):
+                payload[field] = value
     try:
         client.setex(
             live_track_redis_key(address),
@@ -3442,6 +3561,10 @@ def scan_pro():
                         s["smart_signal_trigger_mcap"] = smart_signal.get("smart_signal_trigger_mcap", 0)
                         s["smart_buy_count"] = smart_signal.get("smart_buy_count", 0)
                         s["smart_buy_total"] = smart_signal.get("smart_buy_total", 0)
+                        for field in SMART_SIGNAL_FRONTEND_FIELDS:
+                            value = smart_signal.get(field)
+                            if value not in (None, "", [], {}) and not s.get(field):
+                                s[field] = value
                     age_seconds = token_age_seconds(s.get("created_at"))
                     if age_seconds is None:
                         print(f"  [skip] unknown token age ${s['symbol']} {addr}")

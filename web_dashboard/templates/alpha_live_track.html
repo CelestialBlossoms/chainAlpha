@@ -93,6 +93,12 @@
       color: #f59e0b;
       font-weight: 600;
     }
+    .token-meta {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
     .token-narrative {
       font-size: 11px;
       color: #a78bfa;
@@ -127,6 +133,23 @@
       color: #9ca3af;
       margin-right: 4px;
     }
+    .smart-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 112px;
+      white-space: nowrap;
+    }
+    .smart-flow-main {
+      color: #d1d5db;
+      font-weight: 600;
+    }
+    .smart-flow-sub {
+      color: #9ca3af;
+      font-size: 11px;
+    }
+    .smart-flow-net.pos { color: #22c55e; }
+    .smart-flow-net.neg { color: #ef4444; }
     .empty-state {
       text-align: center;
       padding: 60px 20px;
@@ -372,6 +395,12 @@
       return `${s}$${Math.round(a)}`;
     }
 
+    function formatSignedCap(v) {
+      const n = safeNum(v);
+      if (n === 0) return "$0";
+      return `${n > 0 ? "+" : "-"}${formatCap(Math.abs(n))}`;
+    }
+
     function formatPnl(v) {
       const n = safeNum(v);
       return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
@@ -456,6 +485,41 @@
       return bits.length ? bits.join(" / ") : "命中";
     }
 
+    function smartWalletTitle(item) {
+      const wallets = Array.isArray(item.smart_wallets) ? item.smart_wallets : [];
+      if (!wallets.length) return "";
+      return wallets.slice(0, 5).map(w => {
+        const addr = String(w.address || "");
+        const name = w.twitter_username ? `@${w.twitter_username}` : `${addr.slice(0, 4)}...${addr.slice(-4)}`;
+        return `${name} ${formatCap(w.buy_amount)} ${formatTime(w.buy_timestamp)}`;
+      }).join("\n");
+    }
+
+    function smartSignalHtml(item) {
+      if (!item || !item.smart_signal) return "-";
+      const buyText = smartSignalText(item);
+      const sellCount = safeNum(item.smart_sell_count);
+      const sellTotal = safeNum(item.smart_sell_total);
+      const oneMinBuy = safeNum(item.buys_1m);
+      const oneMinSell = safeNum(item.sells_1m);
+      const oneMinNet = safeNum(item.net_buy_1m);
+      const oneHourBuy = safeNum(item.buys_1h);
+      const oneHourSell = safeNum(item.sells_1h);
+      const oneHourNet = safeNum(item.net_buy_1h);
+      const title = smartWalletTitle(item);
+      const sellText = sellCount > 0 || sellTotal > 0 ? `卖 ${sellCount || "-"}笔 ${sellTotal > 0 ? formatCap(sellTotal) : ""}` : "卖 -";
+      const minNetCls = oneMinNet > 0 ? "pos" : (oneMinNet < 0 ? "neg" : "");
+      const hourNetCls = oneHourNet > 0 ? "pos" : (oneHourNet < 0 ? "neg" : "");
+      return `
+        <div class="smart-flow" title="${htmlEscape(title)}">
+          <div class="smart-flow-main">${htmlEscape(buyText)}</div>
+          <div class="smart-flow-sub">${htmlEscape(sellText)}</div>
+          <div class="smart-flow-sub">1m ${oneMinBuy}/${oneMinSell} <span class="smart-flow-net ${minNetCls}">${htmlEscape(formatSignedCap(oneMinNet))}</span></div>
+          <div class="smart-flow-sub">1h ${oneHourBuy}/${oneHourSell} <span class="smart-flow-net ${hourNetCls}">${htmlEscape(formatSignedCap(oneHourNet))}</span></div>
+        </div>
+      `;
+    }
+
     function mcapBarHtml(entry, current) {
       const e = safeNum(entry);
       const c = safeNum(current);
@@ -510,12 +574,14 @@
         const isRemoved = item.status !== "tracking" && item.status !== "smart_signal";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
+        const createdText = item.created_time || formatTime(item.created_at);
 
         return `
           <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
             <td>
               <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...${safeNum(item.created_at) > 0 ? ` <span class="token-age">🕐 ${formatTokenAge(item.created_at)}</span>` : ""}</div>
+              ${createdText && createdText !== "-" ? `<div class="token-meta">创建 ${htmlEscape(createdText)}</div>` : ""}
               ${item.narrative ? `<div class="token-narrative" title="${htmlEscape(item.narrative)}">📌 ${htmlEscape(item.narrative)}</div>` : ""}
             </td>
             <td><span>${formatTime(item.pushed_at)}</span></td>
@@ -529,7 +595,7 @@
             <td><b>${formatCap(item.peak_mcap)}</b></td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
-            <td>${htmlEscape(smartSignalText(item))}</td>
+            <td>${smartSignalHtml(item)}</td>
             <td>
               <span>${formatDuration(age)}</span>
               ${!isRemoved ? `<div class="countdown">剩余 ${formatDuration(remaining)}</div>` : ""}
