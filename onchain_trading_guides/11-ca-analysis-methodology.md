@@ -265,7 +265,7 @@ python scripts/entry_check.py <CA地址>
 # 1. 查推送
 SELECT * FROM bottom_top100_push_records WHERE address='<CA>';
 
-# 2. 拉K线 (如果DB没有)
+# 2. 拉K线 (如果DB没有或者数据不全调用blance接口)
 curl "https://dquery.sintral.io/u-kline/v1/k-line/candles?address=<CA>&platform=solana&interval=5min&limit=48"
 
 # 3. 算回撤区间

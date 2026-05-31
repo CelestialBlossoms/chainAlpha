@@ -468,6 +468,7 @@
     function statusBadge(item) {
       const status = item.status || "tracking";
       if (status === "smart_signal") return `<span class="status-badge tracking" title="GMGN SmartDegenBuy">聪明钱</span>`;
+      if (status === "market_signal") return `<span class="status-badge tracking" title="GMGN SignalType1">异动</span>`;
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
       if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
       return `<span class="status-badge tracking">追踪中</span>`;
@@ -496,6 +497,22 @@
     }
 
     function smartSignalHtml(item) {
+      if (item && item.market_signal && !item.smart_signal) {
+        const times = safeNum(item.market_signal_times);
+        const totalFee = safeNum(item.total_fee);
+        const trigger = safeNum(item.market_signal_trigger_mcap || item.entry_mcap);
+        const current = safeNum(item.current_mcap);
+        const change = trigger > 0 ? (current - trigger) / trigger * 100 : 0;
+        const cls = change >= 0 ? "pos" : "neg";
+        return `
+          <div class="smart-flow">
+            <div class="smart-flow-main">SignalType1</div>
+            <div class="smart-flow-sub">触发${times || "-"}</div>
+            <div class="smart-flow-sub">fee ${totalFee > 0 ? totalFee.toFixed(2) : "-"}</div>
+            <div class="smart-flow-sub"><span class="smart-flow-net ${cls}">${htmlEscape(formatPnl(change))}</span></div>
+          </div>
+        `;
+      }
       if (!item || !item.smart_signal) return "-";
       const buyText = smartSignalText(item);
       const sellCount = safeNum(item.smart_sell_count);
@@ -557,8 +574,8 @@
 
     function render() {
       updateSortHeaders();
-      const active = sortTrackItems(items.filter(i => i.status === "tracking" || i.status === "smart_signal"));
-      const removed = sortTrackItems(items.filter(i => i.status !== "tracking" && i.status !== "smart_signal"));
+      const active = sortTrackItems(items.filter(i => i.status === "tracking" || i.status === "smart_signal" || i.status === "market_signal"));
+      const removed = sortTrackItems(items.filter(i => i.status !== "tracking" && i.status !== "smart_signal" && i.status !== "market_signal"));
       const sorted = [...active, ...removed];
       const now = Math.floor(Date.now() / 1000);
 
@@ -571,7 +588,7 @@
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
         const remaining = Math.max(0, trackTtlSec - age);
-        const isRemoved = item.status !== "tracking" && item.status !== "smart_signal";
+        const isRemoved = item.status !== "tracking" && item.status !== "smart_signal" && item.status !== "market_signal";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
         const createdText = item.created_time || formatTime(item.created_at);

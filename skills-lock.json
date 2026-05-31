@@ -17,13 +17,13 @@
       "source": "GMGNAI/gmgn-skills",
       "sourceType": "github",
       "skillPath": "skills/gmgn-portfolio/SKILL.md",
-      "computedHash": "0d15042b29b8bf0dc5b0f8186139484b356ed51793acf0da96af5f2a1747cdfb"
+      "computedHash": "4e20afcbdc781917b537dfe4ccedf29dfcbd676a10d094d16c3bd60c9e8084b2"
     },
     "gmgn-swap": {
       "source": "GMGNAI/gmgn-skills",
       "sourceType": "github",
       "skillPath": "skills/gmgn-swap/SKILL.md",
-      "computedHash": "3e522fcf52369cb8dc4a5c66656d22158113637113edd072212675dff67e9983"
+      "computedHash": "15b1c0b724255791425df785341a8f81eb8fa5f84cac42c9169c49a01433caef"
     },
     "gmgn-token": {
       "source": "GMGNAI/gmgn-skills",

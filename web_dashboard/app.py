@@ -68,6 +68,9 @@ LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_S
 LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
 LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
 SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
+SMART_SIGNAL_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN", "10000"))
+MARKET_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_REDIS_PREFIX", "deep_alpha:market_signal")
+MARKET_SIGNAL_MAX_DRAWDOWN_PCT = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_MAX_DRAWDOWN_PCT", "50"))
 DEEP_ALPHA_SMART_ONLY_ENABLED = os.getenv("DEEP_ALPHA_SMART_ONLY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _LIVE_TRACK_BG_STARTED = False
 
@@ -2026,6 +2029,10 @@ def _smart_signal_redis_key(chain: str = "sol") -> str:
     return f"{SMART_SIGNAL_REDIS_PREFIX}:{chain or 'sol'}"
 
 
+def _market_signal_redis_key(chain: str = "sol") -> str:
+    return f"{MARKET_SIGNAL_REDIS_PREFIX}:{chain or 'sol'}"
+
+
 SMART_SIGNAL_MERGE_FIELDS = (
     "name",
     "narrative",
@@ -2050,6 +2057,29 @@ SMART_SIGNAL_MERGE_FIELDS = (
     "volume_1h",
     "total_fee",
     "trade_fee",
+)
+
+MARKET_SIGNAL_MERGE_FIELDS = (
+    "name",
+    "narrative",
+    "narrative_desc",
+    "narrative_type",
+    "narrative_category",
+    "binance_narrative",
+    "created_at",
+    "created_time",
+    "market_signal_times_by_type",
+    "market_signal_first_trigger_mcap",
+    "total_fee",
+    "trade_fee",
+    "buys_1m",
+    "sells_1m",
+    "net_buy_1m",
+    "volume_1m",
+    "buys_1h",
+    "sells_1h",
+    "net_buy_1h",
+    "volume_1h",
 )
 
 
@@ -2123,6 +2153,8 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
             trigger_at = _safe_int(item.get("smart_signal_trigger_at") or item.get("pushed_at")) or now_ts
             trigger_mcap = _safe_float(item.get("smart_signal_trigger_mcap") or item.get("entry_mcap"))
             current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
+            if SMART_SIGNAL_MCAP_MIN > 0 and current_mcap < SMART_SIGNAL_MCAP_MIN:
+                continue
             normalized.append({
                 **item,
                 "address": address,
@@ -2171,6 +2203,78 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
         return []
 
 
+def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        raw = client.get(_market_signal_redis_key(chain))
+        if not raw:
+            return []
+        payload = json.loads(raw)
+        items = payload.get("items") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            return []
+        normalized = []
+        now_ts = int(time.time())
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            address = str(item.get("address") or "").strip()
+            if not address:
+                continue
+            trigger_at = _safe_int(item.get("market_signal_trigger_at") or item.get("pushed_at")) or now_ts
+            trigger_mcap = _safe_float(item.get("market_signal_trigger_mcap") or item.get("entry_mcap"))
+            current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
+            if trigger_mcap <= 0:
+                continue
+            drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
+            if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
+                continue
+            normalized.append({
+                **item,
+                "address": address,
+                "chain": item.get("chain") or chain or "sol",
+                "symbol": item.get("symbol") or "UNKNOWN",
+                "source": "market_signal",
+                "status": item.get("status") or "market_signal",
+                "market_signal": True,
+                "market_signal_trigger_at": trigger_at,
+                "market_signal_trigger_mcap": trigger_mcap,
+                "market_signal_times_by_type": item.get("market_signal_times_by_type") if isinstance(item.get("market_signal_times_by_type"), dict) else {},
+                "market_signal_first_trigger_mcap": _safe_float(item.get("market_signal_first_trigger_mcap")),
+                "created_at": _safe_int(item.get("created_at")),
+                "created_time": item.get("created_time") or "",
+                "narrative": item.get("narrative") or item.get("narrative_desc") or "",
+                "narrative_desc": item.get("narrative_desc") or item.get("narrative") or "",
+                "narrative_type": item.get("narrative_type") or "",
+                "narrative_category": item.get("narrative_category") or "",
+                "binance_narrative": item.get("binance_narrative") if isinstance(item.get("binance_narrative"), dict) else {},
+                "entry_mcap": _safe_float(item.get("entry_mcap")) or trigger_mcap,
+                "current_mcap": current_mcap,
+                "peak_mcap": max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap),
+                "peak_mcap_at": _safe_int(item.get("peak_mcap_at")) or trigger_at,
+                "pushed_at": _safe_int(item.get("pushed_at")) or trigger_at,
+                "pool_liquidity": _safe_float(item.get("pool_liquidity")),
+                "holders": _safe_int(item.get("holders")),
+                "total_fee": _safe_float(item.get("total_fee")),
+                "trade_fee": _safe_float(item.get("trade_fee")),
+                "buys_1m": _safe_int(item.get("buys_1m")),
+                "sells_1m": _safe_int(item.get("sells_1m")),
+                "net_buy_1m": _safe_float(item.get("net_buy_1m")),
+                "volume_1m": _safe_float(item.get("volume_1m")),
+                "buys_1h": _safe_int(item.get("buys_1h")),
+                "sells_1h": _safe_int(item.get("sells_1h")),
+                "net_buy_1h": _safe_float(item.get("net_buy_1h")),
+                "volume_1h": _safe_float(item.get("volume_1h")),
+                "pnl_pct": (current_mcap - trigger_mcap) / trigger_mcap * 100,
+                "last_updated": _safe_int(item.get("last_updated")) or now_ts,
+            })
+        return normalized
+    except Exception:
+        return []
+
+
 def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_address: dict[str, dict[str, Any]] = {}
     deleted_addresses = _alpha_deleted_today_addresses()
@@ -2184,17 +2288,22 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
             deleted_addresses.add(address)
             continue
         by_address[address] = checked_item
-    smart_addresses = set(by_address)
+    for item in _load_market_signal_items("sol"):
+        address = str(item.get("address") or "")
+        if not address or address in deleted_addresses or address in by_address:
+            continue
+        by_address[address] = item
+    signal_addresses = set(by_address)
     for item in live_items:
         if not isinstance(item, dict):
             continue
         address = str(item.get("address") or "")
         if not address:
             continue
-        if DEEP_ALPHA_SMART_ONLY_ENABLED and address not in smart_addresses:
+        if DEEP_ALPHA_SMART_ONLY_ENABLED and address not in signal_addresses:
             continue
         smart_item = by_address.get(address)
-        if smart_item:
+        if smart_item and smart_item.get("smart_signal"):
             merged = {
                 **item,
                 "smart_signal": True,
@@ -2209,6 +2318,20 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 smart_value = smart_item.get(field)
                 if smart_value not in (None, "", [], {}) and not merged.get(field):
                     merged[field] = smart_value
+            by_address[address] = merged
+        elif smart_item and smart_item.get("market_signal"):
+            merged = {
+                **item,
+                "market_signal": True,
+                "market_signal_type": smart_item.get("market_signal_type"),
+                "market_signal_times": smart_item.get("market_signal_times"),
+                "market_signal_trigger_at": smart_item.get("market_signal_trigger_at"),
+                "market_signal_trigger_mcap": smart_item.get("market_signal_trigger_mcap"),
+            }
+            for field in MARKET_SIGNAL_MERGE_FIELDS:
+                market_value = smart_item.get(field)
+                if market_value not in (None, "", [], {}) and not merged.get(field):
+                    merged[field] = market_value
             by_address[address] = merged
         else:
             by_address[address] = item

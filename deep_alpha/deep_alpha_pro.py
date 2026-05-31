@@ -123,11 +123,20 @@ SMART_SIGNAL_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_ENABLED", "1").strip()
 SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
 SMART_SIGNAL_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TTL_SEC", "900"))
 SMART_SIGNAL_TYPE = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TYPE", "12"))
-SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN", "0"))
+SMART_SIGNAL_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN", "10000"))
+SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN", "10000"))
 SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
 SMART_SIGNAL_NARRATIVE_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 SMART_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_LIMIT", "50"))
 SMART_ONLY_ENABLED = os.getenv("DEEP_ALPHA_SMART_ONLY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+MARKET_SIGNAL_ENABLED = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+MARKET_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_REDIS_PREFIX", "deep_alpha:market_signal")
+MARKET_SIGNAL_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TTL_SEC", "900"))
+MARKET_SIGNAL_TYPE = int(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TYPE", "1"))
+MARKET_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TRIGGER_MCAP_MIN", "10000"))
+MARKET_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TOTAL_FEE_MIN", "2"))
+MARKET_SIGNAL_MAX_DRAWDOWN_PCT = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_MAX_DRAWDOWN_PCT", "50"))
+MARKET_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_NARRATIVE_LIMIT", "20"))
 
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
@@ -849,6 +858,10 @@ def smart_signal_redis_key(chain):
     return redis_key(SMART_SIGNAL_REDIS_PREFIX, chain or "sol")
 
 
+def market_signal_redis_key(chain):
+    return redis_key(MARKET_SIGNAL_REDIS_PREFIX, chain or "sol")
+
+
 SMART_SIGNAL_FRONTEND_FIELDS = (
     "name",
     "narrative",
@@ -873,6 +886,29 @@ SMART_SIGNAL_FRONTEND_FIELDS = (
     "volume_1h",
     "total_fee",
     "trade_fee",
+)
+
+MARKET_SIGNAL_FRONTEND_FIELDS = (
+    "name",
+    "narrative",
+    "narrative_desc",
+    "narrative_type",
+    "narrative_category",
+    "binance_narrative",
+    "created_at",
+    "created_time",
+    "market_signal_times_by_type",
+    "market_signal_first_trigger_mcap",
+    "total_fee",
+    "trade_fee",
+    "buys_1m",
+    "sells_1m",
+    "net_buy_1m",
+    "volume_1m",
+    "buys_1h",
+    "sells_1h",
+    "net_buy_1h",
+    "volume_1h",
 )
 
 
@@ -940,6 +976,8 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
     trigger_at = int(safe_float(item.get("trigger_at")) or safe_float(data.get("trigger_at")) or time.time())
     trigger_mcap = safe_float(item.get("trigger_mc")) or safe_float(data.get("market_cap")) or safe_float(item.get("market_cap"))
     current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
+    if SMART_SIGNAL_MCAP_MIN > 0 and current_mcap < SMART_SIGNAL_MCAP_MIN:
+        return None
     smart_buy_count = int(safe_float(data.get("count")) or safe_float(data.get("trigger_count")))
     smart_buy_total = safe_float(data.get("total_amount"))
     symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
@@ -1003,6 +1041,73 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
     }
 
 
+def normalize_market_signal_item(item, chain, enrich_narrative=True):
+    if not isinstance(item, dict):
+        return None
+    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+    cur_data = item.get("cur_data") if isinstance(item.get("cur_data"), dict) else {}
+    address = str(item.get("token_address") or data.get("address") or "").strip()
+    if not address:
+        return None
+    trigger_at = int(safe_float(item.get("trigger_at")) or safe_float(data.get("trigger_at")) or time.time())
+    trigger_mcap = safe_float(item.get("trigger_mc")) or safe_float(data.get("market_cap")) or safe_float(item.get("market_cap"))
+    current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
+    if trigger_mcap <= 0:
+        return None
+    drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
+    if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
+        return None
+    symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
+    name = data.get("name") or ""
+    created_at = smart_signal_created_at(data)
+    narrative_obj = smart_signal_narrative(address, symbol, name) if enrich_narrative else {}
+    narrative = narrative_obj.get("narrative_desc") or ""
+    return {
+        "address": address,
+        "chain": data.get("chain") or chain or "sol",
+        "symbol": symbol,
+        "name": name,
+        "source": "market_signal",
+        "status": "market_signal",
+        "narrative": narrative,
+        "narrative_desc": narrative,
+        "narrative_type": narrative_obj.get("narrative_type") or "",
+        "narrative_category": narrative_obj.get("narrative_category") or "",
+        "binance_narrative": narrative_obj,
+        "created_at": created_at,
+        "created_time": format_created_time(created_at) if created_at else "",
+        "market_signal": True,
+        "market_signal_type": int(safe_float(item.get("signal_type")) or MARKET_SIGNAL_TYPE),
+        "market_signal_times": int(safe_float(item.get("signal_times"))),
+        "market_signal_times_by_type": item.get("signal_times_by_type") if isinstance(item.get("signal_times_by_type"), dict) else {},
+        "market_signal_trigger_at": trigger_at,
+        "market_signal_trigger_mcap": trigger_mcap,
+        "market_signal_first_trigger_mcap": safe_float(item.get("first_trigger_mc")),
+        "entry_mcap": trigger_mcap,
+        "current_mcap": current_mcap,
+        "peak_mcap": max(trigger_mcap, current_mcap, safe_float(item.get("ath"))),
+        "peak_mcap_at": trigger_at,
+        "pushed_at": trigger_at,
+        "pool_liquidity": safe_float(cur_data.get("liquidity")) or safe_float(data.get("liquidity")),
+        "holders": int(safe_float(cur_data.get("holder_count")) or safe_float(data.get("holder_count"))),
+        "top10_rate": safe_float(cur_data.get("top_10_holder_rate")) or safe_float(data.get("top_10_holder_rate")),
+        "rug_ratio": safe_float(data.get("rug_ratio")),
+        "creator_status": data.get("creator_token_status") or "",
+        "platform": data.get("launchpad_platform") or data.get("launchpad") or "",
+        "buys_1m": int(safe_float(data.get("buys_1m"))),
+        "sells_1m": int(safe_float(data.get("sells_1m"))),
+        "net_buy_1m": safe_float(data.get("net_buy_1m")),
+        "volume_1m": safe_float(data.get("volume_1m")),
+        "buys_1h": int(safe_float(data.get("buys_1h"))),
+        "sells_1h": int(safe_float(data.get("sells_1h"))),
+        "net_buy_1h": safe_float(data.get("net_buy_1h")),
+        "volume_1h": safe_float(data.get("volume_1h")),
+        "total_fee": safe_float(data.get("total_fee")),
+        "trade_fee": safe_float(data.get("trade_fee")),
+        "last_updated": int(time.time()),
+    }
+
+
 def refresh_smart_money_signals(chain):
     if not SMART_SIGNAL_ENABLED:
         return []
@@ -1044,8 +1149,52 @@ def refresh_smart_money_signals(chain):
             )
         except Exception as exc:
             print(f"  [SmartSignal] Redis write failed {chain}: {exc}")
-    sync_smart_signals_to_live_track(chain, items)
     print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money buy signals")
+    return items
+
+
+def refresh_market_signals(chain):
+    if not MARKET_SIGNAL_ENABLED:
+        return []
+    args = [
+        "gmgn-cli market signal",
+        f"--chain {shell_quote(chain or 'sol')}",
+        f"--signal-type {MARKET_SIGNAL_TYPE}",
+    ]
+    if MARKET_SIGNAL_TRIGGER_MCAP_MIN > 0:
+        args.append(f"--trigger-mc-min {MARKET_SIGNAL_TRIGGER_MCAP_MIN:g}")
+    if MARKET_SIGNAL_TOTAL_FEE_MIN > 0:
+        args.append(f"--total-fee-min {MARKET_SIGNAL_TOTAL_FEE_MIN:g}")
+    args.append("--raw")
+    output = run_command(" ".join(args))
+    if not output:
+        return []
+    try:
+        raw_items = json.loads(output)
+    except Exception as exc:
+        print(f"  [MarketSignal] parse failed {chain}: {exc}")
+        return []
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("data") or raw_items.get("items") or []
+    items = []
+    seen = set()
+    for idx, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
+        item = normalize_market_signal_item(raw, chain, enrich_narrative=idx < MARKET_SIGNAL_NARRATIVE_LIMIT)
+        if not item or item["address"] in seen:
+            continue
+        seen.add(item["address"])
+        items.append(item)
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.setex(
+                market_signal_redis_key(chain),
+                MARKET_SIGNAL_REDIS_TTL_SEC,
+                json.dumps({"ts": int(time.time()), "chain": chain or "sol", "items": items}, ensure_ascii=False),
+            )
+        except Exception as exc:
+            print(f"  [MarketSignal] Redis write failed {chain}: {exc}")
+    print(f"  [MarketSignal] {chain} loaded {len(items)} filtered market signals")
     return items
 
 
@@ -1206,6 +1355,48 @@ def smart_signal_live_track_payload(item):
     return payload
 
 
+def market_signal_live_track_payload(item):
+    item = item or {}
+    address = str(item.get("address") or "").strip()
+    trigger_at = int(safe_float(item.get("market_signal_trigger_at") or item.get("pushed_at")) or time.time())
+    entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("market_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
+    current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
+    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    payload = {
+        "address": address,
+        "chain": item.get("chain") or "sol",
+        "symbol": item.get("symbol") or "UNKNOWN",
+        "entry_mcap": entry_mcap,
+        "entry_price": safe_float(item.get("entry_price") or item.get("price")),
+        "pushed_at": trigger_at,
+        "current_mcap": current_mcap,
+        "current_price": safe_float(item.get("current_price") or item.get("price")),
+        "peak_mcap": peak_mcap,
+        "peak_mcap_at": int(safe_float(item.get("peak_mcap_at")) or trigger_at),
+        "pool_liquidity": safe_float(item.get("pool_liquidity")),
+        "created_at": int(safe_float(item.get("created_at"))) if item.get("created_at") else 0,
+        "narrative": str(item.get("narrative") or item.get("narrative_desc") or ""),
+        "source": "market_signal",
+        "status": "market_signal",
+        "market_signal": True,
+        "market_signal_type": item.get("market_signal_type") or MARKET_SIGNAL_TYPE,
+        "market_signal_times": int(safe_float(item.get("market_signal_times"))),
+        "market_signal_trigger_at": trigger_at,
+        "market_signal_trigger_mcap": safe_float(item.get("market_signal_trigger_mcap")) or entry_mcap,
+        "holders": int(safe_float(item.get("holders"))),
+        "volume_5m": 0,
+        "volume_1h": safe_float(item.get("volume_1h")),
+        "pnl_pct": (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0,
+        "last_updated": int(time.time()),
+        "remove_reason": "",
+    }
+    for field in MARKET_SIGNAL_FRONTEND_FIELDS:
+        value = item.get(field)
+        if value not in (None, "", [], {}):
+            payload[field] = value
+    return payload
+
+
 def _delete_redis_pattern(client, pattern):
     deleted = 0
     try:
@@ -1217,15 +1408,15 @@ def _delete_redis_pattern(client, pattern):
     return deleted
 
 
-def sync_smart_signals_to_live_track(chain, smart_signals):
+def sync_signals_to_live_track(chain, smart_signals, market_signals=None):
     if not SMART_ONLY_ENABLED:
         return
     client = get_redis_client()
     if client is None:
         return
-    smart_addresses = {
+    keep_addresses = {
         str(item.get("address") or "").strip()
-        for item in (smart_signals or [])
+        for item in list(smart_signals or []) + list(market_signals or [])
         if isinstance(item, dict) and str(item.get("address") or "").strip()
     }
     try:
@@ -1242,11 +1433,23 @@ def sync_smart_signals_to_live_track(chain, smart_signals):
                 json.dumps(payload, ensure_ascii=False),
             )
             client.sadd(index_key, payload["address"])
+        for item in market_signals or []:
+            if not isinstance(item, dict) or not item.get("address"):
+                continue
+            payload = market_signal_live_track_payload(item)
+            if not payload.get("address"):
+                continue
+            client.setex(
+                live_track_redis_key(payload["address"]),
+                LIVE_TRACK_REDIS_TTL_SEC,
+                json.dumps(payload, ensure_ascii=False),
+            )
+            client.sadd(index_key, payload["address"])
         members = client.smembers(index_key)
         removed_live = 0
         for raw_addr in members:
             address = _redis_text(raw_addr).strip()
-            if not address or address in smart_addresses:
+            if not address or address in keep_addresses:
                 continue
             client.delete(live_track_redis_key(address))
             client.srem(index_key, address)
@@ -1263,11 +1466,15 @@ def sync_smart_signals_to_live_track(chain, smart_signals):
             removed_windows += _delete_redis_pattern(client, pattern)
         if removed_live or removed_windows:
             print(
-                f"  [SmartOnly] live_track kept={len(smart_addresses)} "
+                f"  [SmartOnly] live_track kept={len(keep_addresses)} "
                 f"removed_1m_live={removed_live} removed_1m_windows={removed_windows}"
             )
     except Exception as exc:
         print(f"  [SmartOnly] live-track sync cleanup failed {chain}: {exc}")
+
+
+def sync_smart_signals_to_live_track(chain, smart_signals):
+    sync_signals_to_live_track(chain, smart_signals, [])
 
 
 def scan_track_keys():
@@ -3591,11 +3798,16 @@ def _finalize_track(track, reason):
 # ---------------------------------------------------------------------------
 def scan_pro():
     for chain in CHAINS:
-        # Only refresh smart-money buy signals (GMGN CLI market signal)
+        # Refresh GMGN market signals only; legacy 1m trending windows stay disabled.
         smart_signals = refresh_smart_money_signals(chain)
+        market_signals = refresh_market_signals(chain)
+        if smart_signals or market_signals:
+            sync_signals_to_live_track(chain, smart_signals, market_signals)
+        else:
+            print(f"  [SignalSync] skip live-track cleanup for {chain}: no GMGN signal data")
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] "
-            f"{chain} smart-money signals: {len(smart_signals)}"
+            f"{chain} smart-money signals: {len(smart_signals)} market signals: {len(market_signals)}"
         )
 
 if __name__ == "__main__":
