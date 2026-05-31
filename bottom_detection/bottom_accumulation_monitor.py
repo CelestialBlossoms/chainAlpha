@@ -2570,92 +2570,10 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     avoid_reasons = extra.get("avoid_reasons") if isinstance(extra.get("avoid_reasons"), list) else []
     avoid_text = "；".join(str(item) for item in avoid_reasons) if avoid_reasons else "无硬过滤项"
     ath_ratio = to_float(extra.get("ath_mcap_ratio"))
-    pred = extra.get("winrate_prediction") if isinstance(extra.get("winrate_prediction"), dict) else {}
-    plan = pred.get("strategy_plan") if isinstance(pred.get("strategy_plan"), dict) else {}
-    tp = pred.get("profit_target_probabilities") if isinstance(pred.get("profit_target_probabilities"), dict) else {}
-    pred_winrate = to_float(pred.get("predicted_winrate_pct"))
-    baseline_winrate = to_float(pred.get("baseline_winrate_pct"))
-    buy_value = str(pred.get("buy_value_label") or pred.get("label") or extra.get("strategy_profile") or "待观察")
-    confidence_text = {"high": "高", "medium": "中", "low": "低"}.get(str(pred.get("confidence") or ""), str(pred.get("confidence") or "未知"))
-    guide_pnl = str(plan.get("historical_avg_pnl") or "-")
-    guide_peak = str(plan.get("historical_avg_peak") or "-")
-    peak_window = str(plan.get("peak_time_window") or "-")
-    strategy_wr = str(plan.get("strategy_winrate_summary") or "-")
-    kline_forecast = short_text(plan.get("kline_forecast") or "", 120)
-    guide_entry = str(plan.get("entry_window") or extra.get("strategy_action") or "-")
-    guide_exit = str(plan.get("exit_window") or "-")
-    guide_note = short_text(plan.get("timing_note") or "", 110)
-    journey = pred.get("kline_journey") if isinstance(pred.get("kline_journey"), dict) else {}
-    if not journey and isinstance(extra.get("kline_journey"), dict):
-        journey = extra.get("kline_journey") or {}
-    micro_1m = pred.get("kline_1m_micro") if isinstance(pred.get("kline_1m_micro"), dict) else {}
-    if not micro_1m and isinstance(extra.get("kline_1m_micro"), dict):
-        micro_1m = extra.get("kline_1m_micro") or {}
-    journey_line = "-"
-    if journey.get("ready"):
-        journey_line = (
-            f"{journey.get('pre_structure') or '-'} | "
-            f"08WR20 {to_float(journey.get('doc_wr20_pct')):.0f}% | "
-            f"MedPeak {journey.get('doc_med_peak') or '-'} | "
-            f"量能 {journey.get('volume_label') or '-'} {to_float(journey.get('volume_ratio')):.2f}x"
-        )
-    micro_line = "-"
-    if micro_1m.get("ready"):
-        micro_wr = to_float(micro_1m.get("doc_wr20_pct"))
-        micro_line = (
-            f"{micro_1m.get('label') or '-'} | "
-            f"5min涨跌 {to_float(micro_1m.get('change_pct')):.1f}% | "
-            f"量比 {to_float(micro_1m.get('volume_ratio')):.2f}x"
-        )
-        if micro_wr > 0:
-            micro_line += f" | 09WR20 {micro_wr:.0f}%"
-        if micro_1m.get("decision"):
-            micro_line += f" | {micro_1m.get('decision')}"
-    deepseek_kline = pred.get("deepseek_kline_prediction") if isinstance(pred.get("deepseek_kline_prediction"), dict) else {}
-    if not deepseek_kline and isinstance(extra.get("deepseek_kline_prediction"), dict):
-        deepseek_kline = extra.get("deepseek_kline_prediction") or {}
-    ds_line = "-"
-    ds_forecast_line = "-"
-    ds_observation_line = "-"
-    if deepseek_kline.get("ready"):
-        ds_pattern = deepseek_kline.get("pattern_5m") if isinstance(deepseek_kline.get("pattern_5m"), dict) else {}
-        ds_micro = deepseek_kline.get("micro_1m") if isinstance(deepseek_kline.get("micro_1m"), dict) else {}
-        ds_forecast = deepseek_kline.get("forecast") if isinstance(deepseek_kline.get("forecast"), dict) else {}
-        ds_line = (
-            f"{short_text(deepseek_kline.get('summary'), 90) or '-'} | "
-            f"{deepseek_kline.get('bias') or 'unknown'}/{deepseek_kline.get('confidence') or 'low'} | "
-            f"5m {ds_pattern.get('label') or '-'} | 1m {ds_micro.get('label') or '-'}"
-        )
-        ds_forecast_line = (
-            f"5m {short_text(ds_forecast.get('next_5m'), 70) or '-'} | "
-            f"30m {short_text(ds_forecast.get('next_30m'), 70) or '-'} | "
-            f"4h {short_text(ds_forecast.get('next_4h'), 70) or '-'}"
-        )
-        ds_observations = deepseek_kline.get("strategy_observations") if isinstance(deepseek_kline.get("strategy_observations"), list) else []
-        if ds_observations:
-            ds_observation_line = "；".join(short_text(item, 70) for item in ds_observations[:2] if item)
-    tp_text = (
-        f"+20% {to_float(tp.get('tp20_pct')):.0f}% | "
-        f"+50% {to_float(tp.get('tp50_pct')):.0f}% | "
-        f"+100% {to_float(tp.get('tp100_pct')):.0f}%"
-        if tp
-        else "-"
-    )
 
     return (
         f"底部异动 | ${symbol}\n"
         f"类型: {signal_label} | 档位: {extra.get('abnormal_rule') or '-'}\n"
-        f"观察价值: {buy_value} | 预测WR20: {pred_winrate:.1f}% | 基准WR20: {baseline_winrate:.1f}% | 置信: {confidence_text}\n"
-        f"历史胜率: {strategy_wr} | 涨幅到达率: {tp_text}\n"
-        f"峰值预测: 中位峰值 {guide_peak} | 峰值窗口 {peak_window}\n"
-        f"走势预测: {kline_forecast or '-'}\n"
-        f"确认窗口: {guide_entry} | 后续观察: {guide_exit} | 固定PnL: {guide_pnl}\n"
-        f"1m确认: {micro_line}\n"
-        f"5m前置: {journey_line}\n"
-        f"DeepSeek K线: {ds_line}\n"
-        f"DeepSeek窗口: {ds_forecast_line}\n"
-        f"DeepSeek依据: {ds_observation_line}\n"
-        f"窗口说明: {guide_note or '-'}\n"
         f"风险: {risk_text} | {avoid_text}\n"
         f"叙事: {narrative_category} | {narrative_type} | {narrative_desc}\n"
         f"当前市值: {format_money_text(current_mcap)} | 首次异动市值: {format_money_text(first_mcap)} | ATH/现值: {ath_ratio:.1f}x\n"
