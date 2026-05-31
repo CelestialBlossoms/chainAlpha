@@ -6,6 +6,7 @@ import time
 import requests
 from datetime import datetime
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from psycopg2.extras import Json
 from db_client import db_op
 from config import TG_BOT_TOKEN, TG_CHAT_ID, CHAINS
@@ -128,6 +129,13 @@ SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER
 SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
 SMART_SIGNAL_NARRATIVE_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 SMART_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_LIMIT", "50"))
+SMART_SIGNAL_SELL_TRACK_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SMART_SIGNAL_SELL_TRACK_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_LIMIT", "200"))
+SIGNAL_POST_PEAK_KLINE_ENABLED = os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SIGNAL_POST_PEAK_KLINE_PAD_SEC = int(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC", "60"))
+SIGNAL_POST_PEAK_KLINE_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_MAX_WORKERS", "6"))
+SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC = float(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC", "8"))
+SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED = os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
 SMART_ONLY_ENABLED = os.getenv("DEEP_ALPHA_SMART_ONLY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 MARKET_SIGNAL_ENABLED = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 MARKET_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_REDIS_PREFIX", "deep_alpha:market_signal")
@@ -874,6 +882,7 @@ SMART_SIGNAL_FRONTEND_FIELDS = (
     "smart_signal_times_by_type",
     "smart_signal_first_trigger_mcap",
     "smart_wallets",
+    "smart_sell_wallets",
     "smart_sell_count",
     "smart_sell_total",
     "buys_1m",
@@ -947,6 +956,61 @@ def normalize_smart_wallets(wallets):
     return result
 
 
+def smart_trade_rows_from_raw(raw_payload):
+    if isinstance(raw_payload, dict):
+        rows = raw_payload.get("list") or raw_payload.get("data") or raw_payload.get("items") or []
+    elif isinstance(raw_payload, list):
+        rows = raw_payload
+    else:
+        rows = []
+    return rows if isinstance(rows, list) else []
+
+
+def aggregate_smart_sell_trades(trades):
+    by_address = defaultdict(list)
+    seen_hashes = defaultdict(set)
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        if str(trade.get("side") or "").lower() != "sell":
+            continue
+        address = str(
+            trade.get("base_address")
+            or trade.get("token_address")
+            or trade.get("address")
+            or ""
+        ).strip()
+        if not address:
+            continue
+        tx_hash = str(trade.get("transaction_hash") or "").strip()
+        if tx_hash and tx_hash in seen_hashes[address]:
+            continue
+        if tx_hash:
+            seen_hashes[address].add(tx_hash)
+        maker_info = trade.get("maker_info") if isinstance(trade.get("maker_info"), dict) else {}
+        by_address[address].append(
+            {
+                "address": str(trade.get("maker") or trade.get("wallet_address") or "").strip(),
+                "sell_timestamp": int(safe_float(trade.get("timestamp"))),
+                "sell_amount": safe_float(trade.get("amount_usd")),
+                "twitter_username": maker_info.get("twitter_username") or "",
+            }
+        )
+    return by_address
+
+
+def smart_sell_stats_for_signal(sell_trades, trigger_at):
+    rows = [row for row in (sell_trades or []) if isinstance(row, dict)]
+    if trigger_at > 0:
+        rows = [row for row in rows if int(safe_float(row.get("sell_timestamp"))) >= trigger_at]
+    rows.sort(key=lambda row: int(safe_float(row.get("sell_timestamp"))), reverse=True)
+    return {
+        "smart_sell_count": len(rows),
+        "smart_sell_total": sum(safe_float(row.get("sell_amount")) for row in rows),
+        "smart_sell_wallets": rows[:8],
+    }
+
+
 def smart_signal_narrative(address, symbol="", name=""):
     if not SMART_SIGNAL_NARRATIVE_ENABLED:
         return {}
@@ -990,7 +1054,7 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
         smart_buy_count = len(smart_wallets)
     if smart_wallets and smart_buy_total <= 0:
         smart_buy_total = sum(safe_float(wallet.get("buy_amount")) for wallet in smart_wallets)
-    peak_mcap = max(trigger_mcap, current_mcap, safe_float(item.get("ath")))
+    peak_mcap = max(trigger_mcap, current_mcap)
     pnl_pct = (current_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     peak_pnl_pct = (peak_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     return {
@@ -1017,6 +1081,7 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
         "smart_buy_count": smart_buy_count,
         "smart_buy_total": smart_buy_total,
         "smart_wallets": smart_wallets,
+        "smart_sell_wallets": [],
         "smart_sell_count": int(safe_float(data.get("smart_sell_count") or data.get("smart_degen_sell_count"))),
         "smart_sell_total": safe_float(data.get("smart_sell_total") or data.get("smart_degen_sell_total")),
         "buys_1m": int(safe_float(data.get("buys_1m"))),
@@ -1029,9 +1094,10 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
         "volume_1h": safe_float(data.get("volume_1h")),
         "total_fee": safe_float(data.get("total_fee")),
         "trade_fee": safe_float(data.get("trade_fee")),
+        "total_supply": safe_float(data.get("total_supply")),
         "entry_mcap": trigger_mcap,
         "current_mcap": current_mcap,
-        "peak_mcap": max(trigger_mcap, current_mcap, safe_float(item.get("ath"))),
+        "peak_mcap": peak_mcap,
         "peak_mcap_at": trigger_at,
         "pushed_at": trigger_at,
         "pool_liquidity": safe_float(cur_data.get("liquidity")) or safe_float(data.get("liquidity")),
@@ -1042,6 +1108,53 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
         "platform": data.get("launchpad_platform") or data.get("launchpad") or "",
         "last_updated": int(time.time()),
     }
+
+
+def fetch_smart_money_sell_trades(chain):
+    if not SMART_SIGNAL_SELL_TRACK_ENABLED or SMART_SIGNAL_SELL_TRACK_LIMIT <= 0:
+        return {}
+    limit = min(max(SMART_SIGNAL_SELL_TRACK_LIMIT, 1), 200)
+    args = [
+        "gmgn-cli track smartmoney",
+        f"--chain {shell_quote(chain or 'sol')}",
+        f"--limit {limit}",
+        "--side sell",
+        "--raw",
+    ]
+    output = run_command(" ".join(args))
+    if not output:
+        return {}
+    try:
+        raw_payload = json.loads(output)
+    except Exception as exc:
+        print(f"  [SmartSignal] sell-track parse failed {chain}: {exc}")
+        return {}
+    return aggregate_smart_sell_trades(smart_trade_rows_from_raw(raw_payload))
+
+
+def enrich_smart_signals_with_sells(items, chain):
+    if not items:
+        return items
+    sell_trades_by_address = fetch_smart_money_sell_trades(chain)
+    if not sell_trades_by_address:
+        return items
+    matched = 0
+    for item in items:
+        address = str(item.get("address") or "").strip()
+        sell_trades = sell_trades_by_address.get(address)
+        if not sell_trades:
+            continue
+        trigger_at = int(safe_float(item.get("smart_signal_trigger_at") or item.get("pushed_at")))
+        sell_stats = smart_sell_stats_for_signal(sell_trades, trigger_at)
+        if sell_stats["smart_sell_count"] <= 0:
+            continue
+        item["smart_sell_count"] = max(int(safe_float(item.get("smart_sell_count"))), sell_stats["smart_sell_count"])
+        item["smart_sell_total"] = max(safe_float(item.get("smart_sell_total")), sell_stats["smart_sell_total"])
+        item["smart_sell_wallets"] = sell_stats["smart_sell_wallets"]
+        matched += 1
+    if matched:
+        print(f"  [SmartSignal] {chain} enriched {matched} tokens with smart-money sells")
+    return items
 
 
 def normalize_market_signal_item(item, chain, enrich_narrative=True):
@@ -1060,7 +1173,7 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
     drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
     if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
         return None
-    peak_mcap = max(trigger_mcap, current_mcap, safe_float(item.get("ath")))
+    peak_mcap = max(trigger_mcap, current_mcap)
     pnl_pct = (current_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     peak_pnl_pct = (peak_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
@@ -1089,6 +1202,7 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
         "market_signal_trigger_at": trigger_at,
         "market_signal_trigger_mcap": trigger_mcap,
         "market_signal_first_trigger_mcap": safe_float(item.get("first_trigger_mc")),
+        "total_supply": safe_float(data.get("total_supply")),
         "entry_mcap": trigger_mcap,
         "current_mcap": current_mcap,
         "peak_mcap": peak_mcap,
@@ -1147,6 +1261,8 @@ def refresh_smart_money_signals(chain):
             continue
         seen.add(item["address"])
         items.append(item)
+    enrich_smart_signals_with_sells(items, chain)
+    enrich_signals_with_post_push_peak(items, chain)
     client = get_redis_client()
     if client is not None:
         try:
@@ -1157,7 +1273,7 @@ def refresh_smart_money_signals(chain):
             )
         except Exception as exc:
             print(f"  [SmartSignal] Redis write failed {chain}: {exc}")
-    print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money buy signals")
+    print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money signals")
     return items
 
 
@@ -1192,6 +1308,7 @@ def refresh_market_signals(chain):
             continue
         seen.add(item["address"])
         items.append(item)
+    enrich_signals_with_post_push_peak(items, chain)
     client = get_redis_client()
     if client is not None:
         try:
@@ -2537,6 +2654,176 @@ def fetch_1m_klines(address, limit=12):
     except Exception:
         pass
     return []
+
+
+def fetch_1m_kline_range(address, from_ts, to_ts, chain="sol", use_cache=True):
+    """Fetch 1-minute Binance Web3 K-line for a bounded post-push window."""
+    address = str(address or "").strip()
+    from_ts = int(safe_float(from_ts))
+    to_ts = int(safe_float(to_ts))
+    if not address or from_ts <= 0 or to_ts <= 0 or from_ts > to_ts:
+        return []
+
+    step = 60
+    cached = load_deep_alpha_klines(address, "1m", from_ts, to_ts, chain=chain or "sol") if use_cache else []
+    earliest_cached_ts = min((int(safe_float(c.get("ts"))) for c in cached), default=0)
+    latest_cached_ts = max((int(safe_float(c.get("ts"))) for c in cached), default=0)
+    cache_has_start = bool(cached and earliest_cached_ts <= from_ts + step * 2)
+    cache_is_recent = bool(cached and latest_cached_ts >= to_ts - step * 2)
+    fresh = []
+
+    if not cache_has_start or not cache_is_recent:
+        fetch_from = from_ts
+        if cache_has_start and latest_cached_ts > 0:
+            fetch_from = max(from_ts, latest_cached_ts - step * 2)
+        params = {
+            "address": address,
+            "platform": "solana",
+            "interval": "1min",
+            "pm": "p",
+            "from": fetch_from * 1000,
+            "to": to_ts * 1000,
+        }
+        try:
+            resp = requests.get(
+                BINANCE_KLINE_URL,
+                params=params,
+                headers=BINANCE_HEADERS,
+                timeout=SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC,
+            )
+            if resp.status_code == 200:
+                fresh = parse_kline_rows(resp.json().get("data", []))
+                if fresh and use_cache:
+                    save_deep_alpha_klines(address, "1m", fresh, chain=chain or "sol")
+                    cached = load_deep_alpha_klines(address, "1m", from_ts, to_ts, chain=chain or "sol")
+        except Exception:
+            pass
+
+    merged = {}
+    for candle in [*cached, *fresh]:
+        ts = int(safe_float(candle.get("ts")))
+        if from_ts <= ts <= to_ts:
+            merged[ts] = candle
+    return [merged[ts] for ts in sorted(merged)]
+
+
+def post_push_peak_from_candles(
+    candles,
+    pushed_at,
+    entry_mcap,
+    current_mcap=0,
+    entry_price=0,
+    total_supply=0,
+    current_ts=0,
+):
+    pushed_at = int(safe_float(pushed_at))
+    entry_mcap = safe_float(entry_mcap)
+    current_mcap = safe_float(current_mcap)
+    entry_price = safe_float(entry_price)
+    total_supply = safe_float(total_supply)
+    current_ts = int(safe_float(current_ts)) or int(time.time())
+    post = [
+        candle
+        for candle in (candles or [])
+        if int(safe_float(candle.get("ts"))) + 60 > pushed_at
+    ]
+    if not post:
+        fallback_mcap = max(entry_mcap, current_mcap)
+        return {
+            "peak_mcap": fallback_mcap,
+            "peak_mcap_at": current_ts if current_mcap >= entry_mcap and current_mcap > 0 else pushed_at,
+            "peak_source": "fallback",
+        }
+
+    first = post[0]
+    entry_price_used = entry_price or safe_float(first.get("open")) or safe_float(first.get("close"))
+    peak_candle = max(post, key=lambda candle: safe_float(candle.get("high")))
+    peak_price = safe_float(peak_candle.get("high"))
+    peak_mcap = 0.0
+    if entry_mcap > 0 and entry_price_used > 0 and peak_price > 0:
+        peak_mcap = entry_mcap * peak_price / entry_price_used
+    elif total_supply > 0 and peak_price > 0:
+        peak_mcap = peak_price * total_supply
+
+    peak_mcap_at = int(safe_float(peak_candle.get("ts"))) or pushed_at
+    if current_mcap > peak_mcap:
+        peak_mcap = current_mcap
+        peak_mcap_at = current_ts
+    if entry_mcap > peak_mcap:
+        peak_mcap = entry_mcap
+        peak_mcap_at = pushed_at
+
+    return {
+        "peak_mcap": peak_mcap,
+        "peak_mcap_at": peak_mcap_at,
+        "peak_source": "binance_kline",
+        "post_peak_price": peak_price,
+        "post_peak_entry_price": entry_price_used,
+        "post_peak_kline_count": len(post),
+    }
+
+
+def enrich_signals_with_post_push_peak(items, chain):
+    if not SIGNAL_POST_PEAK_KLINE_ENABLED or not items:
+        return items
+    now_ts = int(time.time())
+
+    def _enrich_one(item):
+        if not isinstance(item, dict):
+            return
+        address = str(item.get("address") or "").strip()
+        pushed_at = int(
+            safe_float(
+                item.get("pushed_at")
+                or item.get("smart_signal_trigger_at")
+                or item.get("market_signal_trigger_at")
+            )
+        )
+        entry_mcap = (
+            safe_float(item.get("entry_mcap"))
+            or safe_float(item.get("smart_signal_trigger_mcap"))
+            or safe_float(item.get("market_signal_trigger_mcap"))
+        )
+        if not address or pushed_at <= 0 or entry_mcap <= 0:
+            return
+        from_ts = max(0, pushed_at - max(0, SIGNAL_POST_PEAK_KLINE_PAD_SEC))
+        candles = fetch_1m_kline_range(
+            address,
+            from_ts,
+            now_ts,
+            chain=chain or item.get("chain") or "sol",
+            use_cache=SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED,
+        )
+        peak = post_push_peak_from_candles(
+            candles,
+            pushed_at,
+            entry_mcap,
+            current_mcap=safe_float(item.get("current_mcap")),
+            entry_price=safe_float(item.get("entry_price") or item.get("price")),
+            total_supply=safe_float(item.get("total_supply")),
+            current_ts=now_ts,
+        )
+        if peak.get("peak_mcap") > 0:
+            item.update(peak)
+            item["peak_pnl_pct"] = (
+                (safe_float(item.get("peak_mcap")) - entry_mcap) / entry_mcap * 100
+                if entry_mcap > 0
+                else 0.0
+            )
+
+    max_workers = max(1, min(SIGNAL_POST_PEAK_KLINE_MAX_WORKERS, len(items)))
+    if max_workers == 1:
+        for item in items:
+            _enrich_one(item)
+        return items
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_enrich_one, item) for item in items]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
+    return items
 
 
 def completed_1m_candles(candles, now_ts=None):

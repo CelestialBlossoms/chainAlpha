@@ -1045,6 +1045,53 @@ def fetch_dashboard_kline_range(
     return [], "empty"
 
 
+def _post_push_peak_from_candles(
+    candles: list[dict[str, Any]],
+    pushed_at: int,
+    entry_mcap: float,
+    current_mcap: float = 0,
+    entry_price: float = 0,
+    current_ts: int = 0,
+    resolution: str = "1m",
+) -> dict[str, Any]:
+    step = _kline_resolution_seconds(resolution)
+    pushed_at = _to_ts(pushed_at)
+    entry_mcap = _safe_float(entry_mcap)
+    current_mcap = _safe_float(current_mcap)
+    entry_price = _safe_float(entry_price)
+    current_ts = _to_ts(current_ts) or int(time.time())
+    post = [
+        candle
+        for candle in (candles or [])
+        if _to_ts(candle.get("ts")) + step > pushed_at
+    ]
+    if not post:
+        fallback = max(entry_mcap, current_mcap)
+        return {
+            "peak_mcap": fallback,
+            "peak_mcap_at": current_ts if current_mcap >= entry_mcap and current_mcap > 0 else pushed_at,
+            "peak_source": "fallback",
+        }
+
+    first = post[0]
+    entry_price_used = entry_price or _safe_float(first.get("open")) or _safe_float(first.get("close"))
+    peak_candle = max(post, key=lambda candle: _safe_float(candle.get("high")))
+    peak_price = _safe_float(peak_candle.get("high"))
+    peak_mcap = entry_mcap * peak_price / entry_price_used if entry_mcap > 0 and entry_price_used > 0 and peak_price > 0 else 0.0
+    peak_mcap_at = _to_ts(peak_candle.get("ts")) or pushed_at
+    if current_mcap > peak_mcap:
+        peak_mcap = current_mcap
+        peak_mcap_at = current_ts
+    if entry_mcap > peak_mcap:
+        peak_mcap = entry_mcap
+        peak_mcap_at = pushed_at
+    return {
+        "peak_mcap": peak_mcap,
+        "peak_mcap_at": peak_mcap_at,
+        "peak_source": "binance_kline",
+    }
+
+
 def enrich_push_ca_item_from_candles(
     item: dict[str, Any],
     candles: list[dict[str, float]],
@@ -2045,6 +2092,7 @@ SMART_SIGNAL_MERGE_FIELDS = (
     "smart_signal_times_by_type",
     "smart_signal_first_trigger_mcap",
     "smart_wallets",
+    "smart_sell_wallets",
     "smart_sell_count",
     "smart_sell_total",
     "buys_1m",
@@ -2176,6 +2224,7 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
                 "smart_sell_count": _safe_int(item.get("smart_sell_count")),
                 "smart_sell_total": _safe_float(item.get("smart_sell_total")),
                 "smart_wallets": item.get("smart_wallets") if isinstance(item.get("smart_wallets"), list) else [],
+                "smart_sell_wallets": item.get("smart_sell_wallets") if isinstance(item.get("smart_sell_wallets"), list) else [],
                 "buys_1m": _safe_int(item.get("buys_1m")),
                 "sells_1m": _safe_int(item.get("sells_1m")),
                 "net_buy_1m": _safe_float(item.get("net_buy_1m")),
@@ -2498,6 +2547,7 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
     if not dynamic:
         return track
     now_ts = int(time.time())
+    pushed_at = int(track.get("pushed_at") or now_ts)
     entry_mcap = _safe_float(track.get("entry_mcap"))
     current_mcap = _safe_float(dynamic.get("market_cap"))
     current_price = _safe_float(dynamic.get("price"))
@@ -2508,9 +2558,34 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
     prev_peak_mcap = _safe_float(track.get("peak_mcap"))
     peak_mcap = prev_peak_mcap
     peak_mcap_at = _safe_int(track.get("peak_mcap_at"))
-    if current_mcap > prev_peak_mcap:
+    peak_source = track.get("peak_source") or "rolling_current"
+    try:
+        candles, kline_source = fetch_dashboard_kline_range(
+            address,
+            max(0, pushed_at - _kline_resolution_seconds("1m")),
+            now_ts,
+            resolution="1m",
+            allow_external=True,
+        )
+        peak = _post_push_peak_from_candles(
+            candles,
+            pushed_at,
+            entry_mcap,
+            current_mcap=current_mcap,
+            entry_price=_safe_float(track.get("entry_price")),
+            current_ts=now_ts,
+            resolution="1m",
+        )
+        if _safe_float(peak.get("peak_mcap")) > 0:
+            peak_mcap = _safe_float(peak.get("peak_mcap"))
+            peak_mcap_at = _safe_int(peak.get("peak_mcap_at"))
+            peak_source = kline_source if peak.get("peak_source") == "binance_kline" else peak.get("peak_source")
+    except Exception:
+        pass
+    if current_mcap > peak_mcap:
         peak_mcap = current_mcap
         peak_mcap_at = now_ts
+        peak_source = "binance_dynamic"
         
     pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
 
@@ -2519,6 +2594,7 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
         "current_price": current_price,
         "peak_mcap": peak_mcap,
         "peak_mcap_at": peak_mcap_at or int(track.get("pushed_at") or now_ts),
+        "peak_source": peak_source,
         "pool_liquidity": pool_liquidity,
         "holders": holders,
         "volume_5m": volume_5m,
@@ -2530,7 +2606,6 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
         track["symbol"] = dynamic["symbol"]
 
     # --- Removal check ---
-    pushed_at = int(track.get("pushed_at") or now_ts)
     age_seconds = now_ts - pushed_at
 
     # Rule 1.2: Market cap < 6K at any time → dead
