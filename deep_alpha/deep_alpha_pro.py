@@ -119,6 +119,12 @@ LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_DEAD_MC
 LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
 LIVE_TRACK_ENABLED = os.getenv("DEEP_ALPHA_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SMART_SIGNAL_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
+SMART_SIGNAL_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TTL_SEC", "900"))
+SMART_SIGNAL_TYPE = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TYPE", "12"))
+SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN", "0"))
+SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
 
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
@@ -836,6 +842,96 @@ def live_track_index_key():
     return redis_key(LIVE_TRACK_REDIS_PREFIX, "__index__")
 
 
+def smart_signal_redis_key(chain):
+    return redis_key(SMART_SIGNAL_REDIS_PREFIX, chain or "sol")
+
+
+def normalize_smart_signal_item(item, chain):
+    if not isinstance(item, dict):
+        return None
+    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+    cur_data = item.get("cur_data") if isinstance(item.get("cur_data"), dict) else {}
+    address = str(item.get("token_address") or data.get("address") or "").strip()
+    if not address:
+        return None
+    trigger_at = int(safe_float(item.get("trigger_at")) or safe_float(data.get("trigger_at")) or time.time())
+    trigger_mcap = safe_float(item.get("trigger_mc")) or safe_float(data.get("market_cap")) or safe_float(item.get("market_cap"))
+    current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
+    smart_buy_count = int(safe_float(data.get("count")) or safe_float(data.get("trigger_count")))
+    smart_buy_total = safe_float(data.get("total_amount"))
+    return {
+        "address": address,
+        "chain": data.get("chain") or chain or "sol",
+        "symbol": data.get("symbol") or data.get("name") or "UNKNOWN",
+        "source": "smart_money_signal",
+        "status": "smart_signal",
+        "smart_signal": True,
+        "smart_signal_type": int(safe_float(item.get("signal_type")) or SMART_SIGNAL_TYPE),
+        "smart_signal_times": int(safe_float(item.get("signal_times"))),
+        "smart_signal_trigger_at": trigger_at,
+        "smart_signal_trigger_mcap": trigger_mcap,
+        "smart_buy_count": smart_buy_count,
+        "smart_buy_total": smart_buy_total,
+        "entry_mcap": trigger_mcap,
+        "current_mcap": current_mcap,
+        "peak_mcap": max(trigger_mcap, current_mcap, safe_float(item.get("ath"))),
+        "peak_mcap_at": trigger_at,
+        "pushed_at": trigger_at,
+        "pool_liquidity": safe_float(cur_data.get("liquidity")) or safe_float(data.get("liquidity")),
+        "holders": int(safe_float(cur_data.get("holder_count")) or safe_float(data.get("holder_count"))),
+        "top10_rate": safe_float(cur_data.get("top_10_holder_rate")) or safe_float(data.get("top_10_holder_rate")),
+        "rug_ratio": safe_float(data.get("rug_ratio")),
+        "creator_status": data.get("creator_token_status") or "",
+        "platform": data.get("launchpad_platform") or data.get("launchpad") or "",
+        "last_updated": int(time.time()),
+    }
+
+
+def refresh_smart_money_signals(chain):
+    if not SMART_SIGNAL_ENABLED:
+        return []
+    args = [
+        "gmgn-cli market signal",
+        f"--chain {shell_quote(chain or 'sol')}",
+        f"--signal-type {SMART_SIGNAL_TYPE}",
+    ]
+    if SMART_SIGNAL_TRIGGER_MCAP_MIN > 0:
+        args.append(f"--trigger-mc-min {SMART_SIGNAL_TRIGGER_MCAP_MIN:g}")
+    if SMART_SIGNAL_TOTAL_FEE_MIN > 0:
+        args.append(f"--total-fee-min {SMART_SIGNAL_TOTAL_FEE_MIN:g}")
+    args.append("--raw")
+    output = run_command(" ".join(args))
+    if not output:
+        return []
+    try:
+        raw_items = json.loads(output)
+    except Exception as exc:
+        print(f"  [SmartSignal] parse failed {chain}: {exc}")
+        return []
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("data") or raw_items.get("items") or []
+    items = []
+    seen = set()
+    for raw in raw_items if isinstance(raw_items, list) else []:
+        item = normalize_smart_signal_item(raw, chain)
+        if not item or item["address"] in seen:
+            continue
+        seen.add(item["address"])
+        items.append(item)
+    client = get_redis_client()
+    if client is not None:
+        try:
+            client.setex(
+                smart_signal_redis_key(chain),
+                SMART_SIGNAL_REDIS_TTL_SEC,
+                json.dumps({"ts": int(time.time()), "chain": chain or "sol", "items": items}, ensure_ascii=False),
+            )
+        except Exception as exc:
+            print(f"  [SmartSignal] Redis write failed {chain}: {exc}")
+    print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money buy signals")
+    return items
+
+
 def live_track_deleted_today_key(address):
     return redis_key(LIVE_TRACK_REDIS_PREFIX, "deleted_today", address)
 
@@ -878,7 +974,18 @@ def load_live_track(address):
         return None
 
 
-def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_at, pool_liquidity=0, created_at=0, narrative=""):
+def start_live_tracking(
+    address,
+    chain,
+    symbol,
+    entry_mcap,
+    entry_price,
+    pushed_at,
+    pool_liquidity=0,
+    created_at=0,
+    narrative="",
+    smart_signal=None,
+):
     if not LIVE_TRACK_ENABLED or not address:
         return
     client = get_redis_client()
@@ -898,6 +1005,7 @@ def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_
         "pool_liquidity": safe_float(pool_liquidity),
         "created_at": int(safe_float(created_at)) if created_at else 0,
         "narrative": str(narrative or ""),
+        "source": "deep_alpha_1m",
         "holders": 0,
         "volume_5m": 0,
         "volume_1h": 0,
@@ -906,6 +1014,16 @@ def start_live_tracking(address, chain, symbol, entry_mcap, entry_price, pushed_
         "status": "tracking",
         "remove_reason": "",
     }
+    if isinstance(smart_signal, dict) and smart_signal:
+        payload.update({
+            "smart_signal": True,
+            "smart_signal_type": smart_signal.get("smart_signal_type") or SMART_SIGNAL_TYPE,
+            "smart_signal_times": int(safe_float(smart_signal.get("smart_signal_times"))),
+            "smart_signal_trigger_at": int(safe_float(smart_signal.get("smart_signal_trigger_at"))),
+            "smart_signal_trigger_mcap": safe_float(smart_signal.get("smart_signal_trigger_mcap")),
+            "smart_buy_count": int(safe_float(smart_signal.get("smart_buy_count"))),
+            "smart_buy_total": safe_float(smart_signal.get("smart_buy_total")),
+        })
     try:
         client.setex(
             live_track_redis_key(address),
@@ -3240,6 +3358,12 @@ def _finalize_track(track, reason):
 # ---------------------------------------------------------------------------
 def scan_pro():
     for chain in CHAINS:
+        smart_signals = refresh_smart_money_signals(chain)
+        smart_signal_by_address = {
+            str(item.get("address")): item
+            for item in smart_signals
+            if isinstance(item, dict) and item.get("address")
+        }
         for interval in TREND_INTERVALS:
             scan_round = next_scan_round()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
@@ -3309,6 +3433,15 @@ def scan_pro():
                     s["address"] = addr
                     s["chain"] = chain
                     s["trend_interval"] = interval
+                    smart_signal = smart_signal_by_address.get(addr)
+                    if smart_signal:
+                        s["smart_signal"] = True
+                        s["smart_signal_type"] = smart_signal.get("smart_signal_type") or SMART_SIGNAL_TYPE
+                        s["smart_signal_times"] = smart_signal.get("smart_signal_times", 0)
+                        s["smart_signal_trigger_at"] = smart_signal.get("smart_signal_trigger_at", 0)
+                        s["smart_signal_trigger_mcap"] = smart_signal.get("smart_signal_trigger_mcap", 0)
+                        s["smart_buy_count"] = smart_signal.get("smart_buy_count", 0)
+                        s["smart_buy_total"] = smart_signal.get("smart_buy_total", 0)
                     age_seconds = token_age_seconds(s.get("created_at"))
                     if age_seconds is None:
                         print(f"  [skip] unknown token age ${s['symbol']} {addr}")
@@ -3603,6 +3736,7 @@ def scan_pro():
                                 pool_liquidity=safe_float(s.get("pool_liquidity")),
                                 created_at=s.get("created_at") or 0,
                                 narrative=s.get("narrative") or "",
+                                smart_signal=smart_signal,
                             )
                         publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
                         if should_send_new_token_ca_alert(s, interval):

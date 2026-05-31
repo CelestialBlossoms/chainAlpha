@@ -67,6 +67,7 @@ LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW
 LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_SEC", "30"))
 LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
 LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
+SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
 _LIVE_TRACK_BG_STARTED = False
 
 # ---------------------------------------------------------------------------
@@ -2020,6 +2021,101 @@ def _live_track_save(address: str, data: dict[str, Any]) -> None:
         pass
 
 
+def _smart_signal_redis_key(chain: str = "sol") -> str:
+    return f"{SMART_SIGNAL_REDIS_PREFIX}:{chain or 'sol'}"
+
+
+def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
+    client = get_redis_client()
+    if client is None:
+        return []
+    try:
+        raw = client.get(_smart_signal_redis_key(chain))
+        if not raw:
+            return []
+        payload = json.loads(raw)
+        items = payload.get("items") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            return []
+        normalized = []
+        now_ts = int(time.time())
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            address = str(item.get("address") or "").strip()
+            if not address:
+                continue
+            trigger_at = _safe_int(item.get("smart_signal_trigger_at") or item.get("pushed_at")) or now_ts
+            trigger_mcap = _safe_float(item.get("smart_signal_trigger_mcap") or item.get("entry_mcap"))
+            current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
+            normalized.append({
+                **item,
+                "address": address,
+                "chain": item.get("chain") or chain or "sol",
+                "symbol": item.get("symbol") or "UNKNOWN",
+                "source": "smart_money_signal",
+                "status": item.get("status") or "smart_signal",
+                "smart_signal": True,
+                "smart_signal_trigger_at": trigger_at,
+                "smart_signal_trigger_mcap": trigger_mcap,
+                "smart_buy_count": _safe_int(item.get("smart_buy_count")),
+                "smart_buy_total": _safe_float(item.get("smart_buy_total")),
+                "entry_mcap": _safe_float(item.get("entry_mcap")) or trigger_mcap,
+                "current_mcap": current_mcap,
+                "peak_mcap": max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap),
+                "peak_mcap_at": _safe_int(item.get("peak_mcap_at")) or trigger_at,
+                "pushed_at": _safe_int(item.get("pushed_at")) or trigger_at,
+                "pool_liquidity": _safe_float(item.get("pool_liquidity")),
+                "holders": _safe_int(item.get("holders")),
+                "last_updated": _safe_int(item.get("last_updated")) or now_ts,
+            })
+        return normalized
+    except Exception:
+        return []
+
+
+def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_address: dict[str, dict[str, Any]] = {}
+    for item in _load_smart_money_signal_items("sol"):
+        address = str(item.get("address") or "")
+        if address:
+            by_address[address] = item
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        address = str(item.get("address") or "")
+        if not address:
+            continue
+        smart_item = by_address.get(address)
+        if smart_item:
+            merged = {
+                **item,
+                "smart_signal": True,
+                "smart_signal_type": smart_item.get("smart_signal_type"),
+                "smart_signal_times": smart_item.get("smart_signal_times"),
+                "smart_signal_trigger_at": smart_item.get("smart_signal_trigger_at"),
+                "smart_signal_trigger_mcap": smart_item.get("smart_signal_trigger_mcap"),
+                "smart_buy_count": smart_item.get("smart_buy_count"),
+                "smart_buy_total": smart_item.get("smart_buy_total"),
+            }
+            by_address[address] = merged
+        else:
+            by_address[address] = item
+    return _sort_live_track_by_push_time(list(by_address.values()))
+
+
+def _alpha_live_track_items(refresh: bool = False) -> list[dict[str, Any]]:
+    if refresh:
+        live_items = _live_track_refresh_all()
+    else:
+        live_items = []
+        for addr in _live_track_list_addresses():
+            track = _live_track_load(addr)
+            if track:
+                live_items.append(track)
+    return _merge_live_track_smart_signals(live_items)
+
+
 def _alpha_deleted_today_redis_key(address: str) -> str:
     return f"deep_alpha:live_track:deleted_today:{address}"
 
@@ -2224,8 +2320,9 @@ def _live_track_broadcast(items: list[dict[str, Any]]) -> None:
     if client is None or not items:
         return
     try:
+        merged_items = _merge_live_track_smart_signals(items)
         payload = json.dumps(
-            {"ts": int(time.time()), "items": _sort_live_track_by_push_time(items), "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
+            {"ts": int(time.time()), "items": merged_items, "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},
             ensure_ascii=False,
         )
         client.publish(LIVE_TRACK_PUBSUB_CHANNEL, payload)
@@ -2271,13 +2368,7 @@ def alpha_live_track_page(request: Request):
 
 @app.get("/api/alpha-live-track")
 def alpha_live_track_api(request: Request):
-    addresses = _live_track_list_addresses()
-    items = []
-    for addr in addresses:
-        track = _live_track_load(addr)
-        if track:
-            items.append(track)
-    items = _sort_live_track_by_push_time(items)
+    items = _alpha_live_track_items(refresh=False)
     return {
         "items": items,
         "count": len(items),
@@ -2300,13 +2391,7 @@ async def alpha_live_track_events(request: Request):
             return
 
         # Send initial snapshot
-        addresses = _live_track_list_addresses()
-        snapshot = []
-        for addr in addresses:
-            track = _live_track_load(addr)
-            if track:
-                snapshot.append(track)
-        snapshot = _sort_live_track_by_push_time(snapshot)
+        snapshot = _alpha_live_track_items(refresh=False)
         yield sse_message(
             "snapshot",
             {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": LIVE_TRACK_REDIS_TTL_SEC},

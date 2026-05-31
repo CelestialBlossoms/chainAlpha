@@ -209,6 +209,7 @@
               <th>最高市值</th>
               <th>池子</th>
               <th>Holders</th>
+              <th>聪明钱</th>
               <th>已追踪</th>
               <th>状态</th>
               <th>操作</th>
@@ -437,9 +438,22 @@
 
     function statusBadge(item) {
       const status = item.status || "tracking";
+      if (status === "smart_signal") return `<span class="status-badge tracking" title="GMGN SmartDegenBuy">聪明钱</span>`;
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
       if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
       return `<span class="status-badge tracking">追踪中</span>`;
+    }
+
+    function smartSignalText(item) {
+      if (!item || !item.smart_signal) return "-";
+      const count = safeNum(item.smart_buy_count);
+      const total = safeNum(item.smart_buy_total);
+      const times = safeNum(item.smart_signal_times);
+      const bits = [];
+      if (count > 0) bits.push(`${count}笔`);
+      if (total > 0) bits.push(formatCap(total));
+      if (times > 0) bits.push(`触发${times}`);
+      return bits.length ? bits.join(" / ") : "命中";
     }
 
     function mcapBarHtml(entry, current) {
@@ -479,8 +493,8 @@
 
     function render() {
       updateSortHeaders();
-      const active = sortTrackItems(items.filter(i => i.status === "tracking"));
-      const removed = sortTrackItems(items.filter(i => i.status !== "tracking"));
+      const active = sortTrackItems(items.filter(i => i.status === "tracking" || i.status === "smart_signal"));
+      const removed = sortTrackItems(items.filter(i => i.status !== "tracking" && i.status !== "smart_signal"));
       const sorted = [...active, ...removed];
       const now = Math.floor(Date.now() / 1000);
 
@@ -493,7 +507,7 @@
       rowsEl.innerHTML = sorted.map(item => {
         const age = now - safeNum(item.pushed_at, now);
         const remaining = Math.max(0, trackTtlSec - age);
-        const isRemoved = item.status !== "tracking";
+        const isRemoved = item.status !== "tracking" && item.status !== "smart_signal";
         const rowClass = isRemoved ? "removed" : "";
         const pnl = safeNum(item.pnl_pct);
 
@@ -515,6 +529,7 @@
             <td><b>${formatCap(item.peak_mcap)}</b></td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
+            <td>${htmlEscape(smartSignalText(item))}</td>
             <td>
               <span>${formatDuration(age)}</span>
               ${!isRemoved ? `<div class="countdown">剩余 ${formatDuration(remaining)}</div>` : ""}
