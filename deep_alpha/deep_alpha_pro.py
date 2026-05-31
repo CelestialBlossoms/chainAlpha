@@ -21,8 +21,8 @@ for _stream in (sys.stdout, sys.stderr):
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
-CHECK_INTERVAL = 0
-TREND_INTERVALS = ["1m"]
+CHECK_INTERVAL = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_SCAN_INTERVAL_SEC", "60"))
+TREND_INTERVALS = []
 TREND_PLATFORMS = [item.strip() for item in os.getenv("DEEP_ALPHA_TREND_PLATFORMS", "").split(",") if item.strip()]
 LOW_MCAP_STRICT_USD = 10_000
 MID_MCAP_STRICT_USD = 20_000
@@ -127,6 +127,7 @@ SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER
 SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
 SMART_SIGNAL_NARRATIVE_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 SMART_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_LIMIT", "50"))
+SMART_ONLY_ENABLED = os.getenv("DEEP_ALPHA_SMART_ONLY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
@@ -1043,6 +1044,7 @@ def refresh_smart_money_signals(chain):
             )
         except Exception as exc:
             print(f"  [SmartSignal] Redis write failed {chain}: {exc}")
+    sync_smart_signals_to_live_track(chain, items)
     print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money buy signals")
     return items
 
@@ -1154,6 +1156,118 @@ def start_live_tracking(
         print(f"  [LiveTrack] 开始实时追踪 ${symbol} {address[:8]}...")
     except Exception as exc:
         print(f"  [LiveTrack] Redis写入失败 {address[:8]}: {exc}")
+
+
+def _redis_text(value):
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def smart_signal_live_track_payload(item):
+    item = item or {}
+    address = str(item.get("address") or "").strip()
+    trigger_at = int(safe_float(item.get("smart_signal_trigger_at") or item.get("pushed_at")) or time.time())
+    entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("smart_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
+    current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
+    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    payload = {
+        "address": address,
+        "chain": item.get("chain") or "sol",
+        "symbol": item.get("symbol") or "UNKNOWN",
+        "entry_mcap": entry_mcap,
+        "entry_price": safe_float(item.get("entry_price") or item.get("price")),
+        "pushed_at": trigger_at,
+        "current_mcap": current_mcap,
+        "current_price": safe_float(item.get("current_price") or item.get("price")),
+        "peak_mcap": peak_mcap,
+        "peak_mcap_at": int(safe_float(item.get("peak_mcap_at")) or trigger_at),
+        "pool_liquidity": safe_float(item.get("pool_liquidity")),
+        "created_at": int(safe_float(item.get("created_at"))) if item.get("created_at") else 0,
+        "narrative": str(item.get("narrative") or item.get("narrative_desc") or ""),
+        "source": "smart_money_signal",
+        "status": "smart_signal",
+        "smart_signal": True,
+        "smart_signal_type": item.get("smart_signal_type") or SMART_SIGNAL_TYPE,
+        "smart_signal_times": int(safe_float(item.get("smart_signal_times"))),
+        "smart_signal_trigger_at": trigger_at,
+        "smart_signal_trigger_mcap": safe_float(item.get("smart_signal_trigger_mcap")) or entry_mcap,
+        "smart_buy_count": int(safe_float(item.get("smart_buy_count"))),
+        "smart_buy_total": safe_float(item.get("smart_buy_total")),
+        "holders": int(safe_float(item.get("holders"))),
+        "volume_5m": 0,
+        "volume_1h": safe_float(item.get("volume_1h")),
+        "pnl_pct": 0.0,
+        "last_updated": int(time.time()),
+        "remove_reason": "",
+    }
+    for field in SMART_SIGNAL_FRONTEND_FIELDS:
+        value = item.get(field)
+        if value not in (None, "", [], {}):
+            payload[field] = value
+    return payload
+
+
+def _delete_redis_pattern(client, pattern):
+    deleted = 0
+    try:
+        keys = list(client.scan_iter(match=pattern, count=200))
+        if keys:
+            deleted = int(client.delete(*keys) or 0)
+    except Exception as exc:
+        print(f"  [SmartOnly] Redis pattern cleanup failed {pattern}: {exc}")
+    return deleted
+
+
+def sync_smart_signals_to_live_track(chain, smart_signals):
+    if not SMART_ONLY_ENABLED:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    smart_addresses = {
+        str(item.get("address") or "").strip()
+        for item in (smart_signals or [])
+        if isinstance(item, dict) and str(item.get("address") or "").strip()
+    }
+    try:
+        index_key = live_track_index_key()
+        for item in smart_signals or []:
+            if not isinstance(item, dict) or not item.get("address"):
+                continue
+            payload = smart_signal_live_track_payload(item)
+            if not payload.get("address"):
+                continue
+            client.setex(
+                live_track_redis_key(payload["address"]),
+                LIVE_TRACK_REDIS_TTL_SEC,
+                json.dumps(payload, ensure_ascii=False),
+            )
+            client.sadd(index_key, payload["address"])
+        members = client.smembers(index_key)
+        removed_live = 0
+        for raw_addr in members:
+            address = _redis_text(raw_addr).strip()
+            if not address or address in smart_addresses:
+                continue
+            client.delete(live_track_redis_key(address))
+            client.srem(index_key, address)
+            removed_live += 1
+        client.expire(index_key, LIVE_TRACK_REDIS_TTL_SEC)
+        removed_windows = 0
+        for pattern in (
+            redis_key(TRACK_REDIS_PREFIX, "*"),
+            redis_key(REDIS_KEY_PREFIX, "*"),
+            redis_key(ARCHIVE_REDIS_KEY_PREFIX, "*"),
+            redis_key(ALERT_REDIS_KEY_PREFIX, "*"),
+            redis_key(ALERT_MISS_REDIS_KEY_PREFIX, "*"),
+        ):
+            removed_windows += _delete_redis_pattern(client, pattern)
+        if removed_live or removed_windows:
+            print(
+                f"  [SmartOnly] live_track kept={len(smart_addresses)} "
+                f"removed_1m_live={removed_live} removed_1m_windows={removed_windows}"
+            )
+    except Exception as exc:
+        print(f"  [SmartOnly] live-track sync cleanup failed {chain}: {exc}")
 
 
 def scan_track_keys():
@@ -3477,423 +3591,12 @@ def _finalize_track(track, reason):
 # ---------------------------------------------------------------------------
 def scan_pro():
     for chain in CHAINS:
+        # Only refresh smart-money buy signals (GMGN CLI market signal)
         smart_signals = refresh_smart_money_signals(chain)
-        smart_signal_by_address = {
-            str(item.get("address")): item
-            for item in smart_signals
-            if isinstance(item, dict) and item.get("address")
-        }
-        for interval in TREND_INTERVALS:
-            scan_round = next_scan_round()
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描 {chain} {interval} 筹码信号...")
-            output = run_command(
-                f"gmgn-cli market trending --chain {chain} --interval {interval} "
-                f"--limit 100 {trend_platform_args()} --raw"
-            )
-            if not output:
-                print(f"  No trending output for {chain} {interval}")
-                continue
-            
-            try:
-                data = json.loads(output)
-                tokens = data.get("data", {}).get("rank", [])
-                print(f"  共发现 {len(tokens)} 个代币")
-                for t in tokens:
-                    addr = t.get("address")
-                    if not addr:
-                        continue
-                    trend_mcap = calc_mcap(t)
-                    existing_candidate = get_candidate_snapshot(addr)
-                    if existing_candidate and 0 < trend_mcap < FRONTEND_REMOVE_BELOW_MCAP_USD:
-                        if publish_frontend_removal_once(
-                            addr,
-                            symbol=t.get("symbol") or t.get("name"),
-                            mcap=trend_mcap,
-                            reason=f"当前市值 ${trend_mcap:,.0f} < ${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}",
-                        ):
-                            print(
-                                f"  [前端移除] {token_observation_label(addr, t.get('symbol'))} "
-                                f"市值 ${trend_mcap:,.0f}<${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}"
-                            )
-                        continue
-                    if 0 < trend_mcap < MIN_MCAP_USD:
-                        print(f"  [跳过] 市值过低 {token_observation_label(addr, t.get('symbol'))}: ${trend_mcap:,.0f}<${MIN_MCAP_USD:,.0f}")
-                        continue
-                    if trend_mcap > MAX_MCAP_USD:
-                        continue
-                    trend_price = first_float(t, keys=("price",))
-                    trend_holder_count = first_float(
-                        t,
-                        keys=("holder_count", "holders_count", "holder_num", "holders", "holder"),
-                    )
-                    price_observation = update_price_observation(
-                        addr,
-                        trend_price,
-                        scan_round,
-                        symbol=t.get("symbol") or t.get("name"),
-                        holder_count=trend_holder_count,
-                    )
-                    if not price_observation["ready"]:
-                        print(
-                            f"  [观察] {token_observation_label(addr, t.get('symbol'))} "
-                            f"{price_observation['count']}/{MIN_PRICE_OBSERVATION_SCANS} "
-                            f"price={trend_price:.12f} holders={int(trend_holder_count)}"
-                        )
-                        continue
-                    if not price_observation["allowed"]:
-                        print(
-                            f"  [跳过] 三次价格观察失败 {token_observation_label(addr, t.get('symbol'))}: "
-                            f"上次={price_observation.get('previous_price', 0):.12f}, 现价={price_observation['current_price']:.12f}, "
-                            f"跌幅={price_observation['drop_pct']:.1%}>{MAX_PRICE_DROP_PCT:.0%}"
-                        )
-                        continue
-                    s = perform_deep_analysis(chain, addr, t)
-                    if not s: continue
-                    s["address"] = addr
-                    s["chain"] = chain
-                    s["trend_interval"] = interval
-                    smart_signal = smart_signal_by_address.get(addr)
-                    if smart_signal:
-                        s["smart_signal"] = True
-                        s["smart_signal_type"] = smart_signal.get("smart_signal_type") or SMART_SIGNAL_TYPE
-                        s["smart_signal_times"] = smart_signal.get("smart_signal_times", 0)
-                        s["smart_signal_trigger_at"] = smart_signal.get("smart_signal_trigger_at", 0)
-                        s["smart_signal_trigger_mcap"] = smart_signal.get("smart_signal_trigger_mcap", 0)
-                        s["smart_buy_count"] = smart_signal.get("smart_buy_count", 0)
-                        s["smart_buy_total"] = smart_signal.get("smart_buy_total", 0)
-                        for field in SMART_SIGNAL_FRONTEND_FIELDS:
-                            value = smart_signal.get(field)
-                            if value not in (None, "", [], {}) and not s.get(field):
-                                s[field] = value
-                    age_seconds = token_age_seconds(s.get("created_at"))
-                    if age_seconds is None:
-                        print(f"  [skip] unknown token age ${s['symbol']} {addr}")
-                        continue
-                    if age_seconds > MAX_TOKEN_AGE_SEC:
-                        print(
-                            f"  [skip] token age >24h ${s['symbol']} {addr}: "
-                            f"{age_seconds / 3600:.1f}h>{MAX_TOKEN_AGE_SEC / 3600:.0f}h"
-                        )
-                        continue
-                    if 0 < s["mcap"] < MIN_MCAP_USD:
-                        print(f"  [跳过] 市值过低 ${s['symbol']} {addr}: ${s['mcap']:,.0f}<${MIN_MCAP_USD:,.0f}")
-                        continue
-                    s["price_observation_count"] = price_observation["count"]
-                    s["price_observation_change_pct"] = price_observation["change_pct"] * 100
-                    s["price_observation_drop_pct"] = price_observation["drop_pct"] * 100
-                    s["price_observation_reason"] = price_observation["reason"]
-                    s["price_observation_change_band_text"] = price_observation.get("change_band_text", "N/A")
-
-                    mcap_ok, mcap_observation_reason = mcap_price_observation_pass(s["mcap"], price_observation)
-                    if not mcap_ok:
-                        print(f"  [跳过] 市值分层价格观察不通过 ${s['symbol']} {addr}: {mcap_observation_reason}")
-                        continue
-                    s["mcap_observation_reason"] = mcap_observation_reason
-                    if s["mcap"] > MAX_MCAP_USD:
-                        continue
-                    min_fee, fee_reason = get_min_fee_for_token(s)
-                    if s["fee_sol"] < min_fee:
-                        print(f"  [跳过] 手续费过低 ${s['symbol']} {addr}: {s['fee_sol']:.2f} SOL<{min_fee:.2f} SOL ({fee_reason})")
-                        continue
-                    volume_fee_reason = volume_fee_filter_reason(s)
-                    if volume_fee_reason:
-                        print(f"  [跳过] 疑似刷量低手续费 ${s['symbol']} {addr}: {volume_fee_reason}")
-                        continue
-                    if s["is_dumping"]:
-                        continue
-                    if existing_candidate:
-                        if not price_observation.get("continuous_up"):
-                            prices_text = " -> ".join(f"{safe_float(price):.12g}" for price in price_observation.get("prices", []))
-                            print(
-                                f"  [观察跳过] 已推送代币复推价格未连续上涨 ${t.get('symbol') or 'UNKNOWN'} {addr}: "
-                                f"{prices_text}"
-                            )
-                            continue
-                        previous_price_history = [
-                            safe_float(value)
-                            for value in (existing_candidate.get("price_alert_history") or [])
-                            if safe_float(value) > 0
-                        ]
-                        previous_price = previous_price_history[-1] if previous_price_history else safe_float(existing_candidate.get("price"))
-                        current_price = safe_float(s.get("price") or price_observation.get("current_price"))
-                        local_low_price = safe_float(price_observation.get("local_low_price"))
-                        rebound_from_low_pct = float(price_observation.get("rebound_from_low_pct") or 0)
-                        drawdown_from_alert_pct = (
-                            (previous_price - local_low_price) / previous_price
-                            if previous_price > 0 and local_low_price > 0 and local_low_price < previous_price
-                            else 0.0
-                        )
-                        breakout_repeat = (
-                            previous_price > 0
-                            and current_price > previous_price
-                            and float(price_observation.get("change_pct") or 0) >= MIN_REPEAT_PRICE_UP_PCT
-                        )
-                        rebound_repeat = (
-                            previous_price > 0
-                            and current_price <= previous_price
-                            and drawdown_from_alert_pct >= MIN_REBOUND_DRAWDOWN_PCT
-                            and rebound_from_low_pct >= MIN_REBOUND_FROM_LOW_PCT
-                        )
-                        if not breakout_repeat and not rebound_repeat:
-                            print(
-                                f"  [观察跳过] 已推送代币复推条件不足 ${s['symbol']} {addr}: "
-                                f"current={current_price:.12g}, previous_alert={previous_price:.12g}, "
-                                f"last_change={float(price_observation.get('change_pct') or 0):.1%}, "
-                                f"drawdown={drawdown_from_alert_pct:.1%}, rebound={rebound_from_low_pct:.1%}"
-                            )
-                            continue
-                        previous_holders = int(existing_candidate.get("holder_count") or 0)
-                        observation_holder_delta = int(price_observation.get("holder_count_delta") or 0)
-                        db_holder_delta = int(s["holder_count"]) - previous_holders
-                        s["repeat_alert"] = True
-                        s["previous_holder_count"] = previous_holders
-                        s["holder_count_delta"] = observation_holder_delta
-                        s["db_holder_count_delta"] = db_holder_delta
-                        s["observation_first_holder_count"] = price_observation.get("first_holder_count", 0)
-                        s["observation_current_holder_count"] = price_observation.get("current_holder_count", 0)
-                        s["previous_alert_count"] = existing_candidate.get("alert_count", 0)
-                        s["repeat_alert_type"] = "突破复推" if breakout_repeat else "回撤反弹复推"
-                        s["rebound_from_low_pct"] = rebound_from_low_pct * 100
-                        s["drawdown_from_alert_pct"] = drawdown_from_alert_pct * 100
-                        s["local_low_price"] = local_low_price
-                    else:
-                        s["repeat_alert"] = False
-                        s["previous_holder_count"] = 0
-                        s["holder_count_delta"] = 0
-                        s["db_holder_count_delta"] = 0
-                        s["repeat_alert_type"] = "首推"
-                        s["rebound_from_low_pct"] = 0
-                        s["drawdown_from_alert_pct"] = 0
-                        s["local_low_price"] = 0
-                    previous_mcap_history = []
-                    if existing_candidate:
-                        previous_mcap_history = [
-                            safe_float(value)
-                            for value in (existing_candidate.get("mcap_alert_history") or [])
-                            if safe_float(value) > 0
-                        ]
-                        if not previous_mcap_history and existing_candidate.get("mcap"):
-                            previous_mcap_history = [safe_float(existing_candidate.get("mcap"))]
-                    s["mcap_alert_history"] = [*previous_mcap_history, safe_float(s["mcap"])]
-                    s["mcap_alert_history_text"] = format_mcap_history(s["mcap_alert_history"])
-                    previous_price_history = []
-                    if existing_candidate:
-                        previous_price_history = [
-                            safe_float(value)
-                            for value in (existing_candidate.get("price_alert_history") or [])
-                            if safe_float(value) > 0
-                        ]
-                        if not previous_price_history and existing_candidate.get("price"):
-                            previous_price_history = [safe_float(existing_candidate.get("price"))]
-                    s["price_alert_history"] = [*previous_price_history, safe_float(s.get("price"))]
-                    s["alert_sequence_no"] = int((existing_candidate or {}).get("alert_count") or 0) + 1
-
-                    
-                    # K-line quality filter: use completed 1m candles only.
-                    candles_1m = completed_1m_candles(fetch_1m_klines(addr, limit=7))
-                    if candles_1m and len(candles_1m) >= 3:
-                        last_c = candles_1m[-1]
-                        signal_body_pct = abs(last_c["close"] - last_c["open"]) / last_c["open"] * 100 if last_c["open"] > 0 else 0
-                        # Pre-signal volume vs post-signal volume
-                        pre_vol = sum(c["volume"] for c in candles_1m[:3]) / 3
-                        post_vol = sum(c["volume"] for c in candles_1m[-3:]) / 3
-                        vol_ratio_1m = post_vol / pre_vol if pre_vol > 0 else 0
-                        s["signal_body_pct"] = round(signal_body_pct, 2)
-                        s["vol_ratio_1m"] = round(vol_ratio_1m, 2)
-                        # 1m K-line direction-aware filters
-                        last_is_red = last_c["close"] < last_c["open"]
-                        sm_count_val = int(s.get("sm_count", 0))
-                        upper_wick = (last_c["high"] - max(last_c["open"], last_c["close"])) / last_c["open"] if last_c["open"] > 0 else 0
-
-                        # Large red candle without any SM = confirmed dump (body>10% + SM=0)
-                        # SM>=3 exemption: LVHC (+363%) was red body=10.2% with SM=3
-                        if last_is_red and signal_body_pct > 10 and sm_count_val < 1:
-                            print(f"  [跳过] 1m大阴线+无SM ${s['symbol']} {addr}: body={signal_body_pct:.1f}%, sm={sm_count_val}")
-                            continue
-                        # Moderate red candle without any SM = likely going to zero
-                        if last_is_red and signal_body_pct > 5 and sm_count_val < 1:
-                            print(f"  [跳过] 1m阴线+无SM ${s['symbol']} {addr}: body={signal_body_pct:.1f}%, sm={sm_count_val}")
-                            continue
-                        s["signal_upper_wick_pct"] = round(upper_wick * 100, 2)
-                        # Upper wick alone kills too many winners; only hard-filter when red, weak SM, and volume is fading.
-                        if upper_wick > 0.08 and last_is_red and sm_count_val < 3 and vol_ratio_1m < 1:
-                            print(
-                                f"  [跳过] 上影线+弱承接 ${s['symbol']} {addr}: "
-                                f"wick={upper_wick:.1%}, sm={sm_count_val}, vol_ratio={vol_ratio_1m:.2f}x"
-                            )
-                            continue
-                        if upper_wick > 0.08:
-                            s["kline_upper_wick_risk"] = True
-                        # Extreme volume collapse
-                        if vol_ratio_1m < 0.3:
-                            print(f"  [跳过] 量能崩塌 ${s['symbol']} {addr}: vol_ratio={vol_ratio_1m:.2f}x < 0.3x")
-                            continue
-
-                    # P1: 20-50K MCAP + weak SM (<3) + high Top10 (>30%) = dangerous concentration
-                    mcap_val = safe_float(s.get("mcap"))
-                    top10_val = safe_float(s.get("top10_rate"))
-                    sm_val = int(safe_float(s.get("sm_count")))
-                    if 20000 <= mcap_val < 50000 and sm_val < 3 and top10_val > 30:
-                        print(f"  [跳过] 20-50K弱筹码 ${s['symbol']} {addr}: sm={sm_val}, top10={top10_val:.1f}%")
-                        continue
-                    # P2: 20-30K + SM=0 = 0% win rate
-                    if 20000 <= mcap_val < 30000 and sm_val < 1:
-                        print(f"  [跳过] 20-30K无SM ${s['symbol']} {addr}: sm={sm_val}")
-                        continue
-
-                    s.update(mcap_risk_profile(mcap_val))
-                    tracking_risk_profile, tracking_risk_reasons = classify_tracking_risk(s)
-                    s["tracking_risk_profile"] = tracking_risk_profile
-                    s["tracking_risk_reasons"] = tracking_risk_reasons
-                    s["tracking_risk_desc"] = (
-                        f"跟踪风险: {tracking_risk_profile}"
-                        + (f" ({' / '.join(tracking_risk_reasons)})" if tracking_risk_reasons else "")
-                    )
-
-                    # 警报逻辑：硬过滤后直接推送（buy_score 已弃用）
-                    is_candidate = True  # buy_score threshold removed per data analysis
-                    if is_candidate:
-                        print(
-                            f"  [候选] ${s['symbol']} | CA={addr} | "
-                            f"市值=${s['mcap']/1000:.1f}K | 持有人={s['holder_count']} | "
-                            f"手续费={s['fee_sol']:.2f} SOL | 池={s['pool_label']} | 创建={s['created_time']} | "
-                            f"结构={s['market_structure']} | "
-                            f"状态={s['verdict']} | 关联持仓={s['associated_supply']:.2f}% | "
-                            f"同源={s['source_cluster_size']}个/{s['source_cluster_supply']:.2f}% | "
-                            f"卖出进度={s['dump_progress']:.2f}% | "
-                            f"前排净流={s['front_holder_netflow']:.0f}U | Top100净流={s['holder_flow_netflow']:.0f}U | "
-                            f"观察={s['price_observation_count']}次/{s['price_observation_change_pct']:+.1f}% | "
-                            f"5m买/卖={s['buys_5m']}/{s['sells_5m']} | "
-                        )
-
-                        alert_icon = "🟡" if s["control_ratio"] > 50 else "🟢"
-                        repeat_line = (
-                            f"复推次数: 第{s.get('alert_sequence_no', 1)}次 | 市值路径: {s.get('mcap_alert_history_text', 'N/A')}\n"
-                            f"持有人变化: +{s['holder_count_delta']} "
-                            f"({s.get('observation_first_holder_count', 0)} -> {s.get('observation_current_holder_count', 0)}) | "
-                            f"库内对比 {s['db_holder_count_delta']:+d}\n"
-                            if s.get("repeat_alert")
-                            else ""
-                        )
-                        if s.get("repeat_alert"):
-                            repeat_line += f"复推类型: {s.get('repeat_alert_type', '复推')}"
-                            if s.get("repeat_alert_type") == "回撤反弹复推":
-                                repeat_line += (
-                                    f" | 回撤{s.get('drawdown_from_alert_pct', 0):.1f}%"
-                                    f" | 低点反弹{s.get('rebound_from_low_pct', 0):.1f}%"
-                                )
-                            repeat_line += "\n"
-                        price_archive = load_price_observation_archive(addr)
-                        current_price_archive_entry = observation_archive_entry(s, price_observation)
-                        s["price_observation_archive_text"] = format_price_observation_archive(
-                            price_archive,
-                            current_entry=current_price_archive_entry,
-                        )
-                        
-                        # Build Smart Money / KOL holding details from tag stats
-                        sm_stats = s.get('holder_tag_stats', {}).get('smart_degen', {})
-                        kol_stats = s.get('holder_tag_stats', {}).get('renowned', {})
-                        sm_detail = (
-                            f"聪明钱{sm_stats['count']}个 持仓{sm_stats['supply']:.1f}%/${sm_stats['position_value']:,.0f} "
-                            f"盈利{sm_stats.get('profit_pct', 0):+.1f}% 卖出进度{sm_stats.get('sell_progress', 0):.1f}%"
-                        ) if sm_stats.get('count', 0) > 0 else "聪明钱0个"
-                        kol_detail = (
-                            f"KOL{kol_stats['count']}个 持仓{kol_stats['supply']:.1f}%/${kol_stats['position_value']:,.0f} "
-                            f"盈利{kol_stats.get('profit_pct', 0):+.1f}% 卖出进度{kol_stats.get('sell_progress', 0):.1f}%"
-                        ) if kol_stats.get('count', 0) > 0 else "KOL0个"
-
-                        narrative_line = f"叙事: {s['narrative']}\n" if s.get("narrative") else ""
-
-                        trend_market_desc = f"{s.get('trend_market_desc')}\n" if s.get("trend_market_desc") else ""
-                        mcap_risk_line = f"{s.get('mcap_risk_desc')}\n" if s.get("mcap_risk_desc") else ""
-                        tracking_risk_line = f"{s.get('tracking_risk_desc')}\n" if s.get("tracking_risk_desc") else ""
-
-                        msg = (
-                            f"{alert_icon} *${s['symbol']}*\n"
-                            f"市值: ${s['mcap']/1000:.1f}K | 持有人: {s['holder_count']} | 手续费: {s['fee_sol']:.2f} SOL\n"
-                            f"交易量: {format_usd_short(s.get('trade_volume_usd'))}\n"
-                            f"{mcap_risk_line}"
-                            f"{trend_market_desc}"
-                            f"{tracking_risk_line}"
-                            f"{repeat_line}"
-                            f"{narrative_line}"
-                            f"流动性池: {s['pool_label']}\n"
-                            f"创建时间: {s['created_time']} | 类型: {s['token_age_type']} | 状态: {s['verdict']}\n\n"
-                            f"🏷️ *标签钱包分析*\n"
-                            f"{sm_detail}\n"
-                            f"{kol_detail}\n"
-                            f"{s['holder_tag_desc']}\n\n"
-                            f"📊 *基础结构*\n"
-                            f"{s['rank_bucket_desc']}\n"
-                            f"CA: `{addr}`\n"
-                            f"[在 GMGN 查看关联图谱](https://gmgn.ai/{chain}/token/{addr})"
-                        )
-                        tg_message_id = upsert_tg_alert(
-                            addr,
-                            msg,
-                            allow_repeat=s.get("repeat_alert", False),
-                            existing_candidate=existing_candidate,
-                            stats=s,
-                        )
-                        if not tg_message_id:
-                            print(f"  [璺宠繃] Telegram鏈繑鍥炴秷鎭痠d锛屼笉璁板綍宸叉帹閫? {addr}")
-                            continue
-                        try:
-                            save_alpha_candidate(chain, interval, addr, s, tg_message_id=tg_message_id)
-                        except Exception as exc:
-                            print(f"  [alpha_persist] save failed for {addr}: {exc}")
-                        # Live-track: push to Redis for frontend real-time dashboard
-                        if LIVE_TRACK_ENABLED and not s.get("repeat_alert"):
-                            live_track_price = (
-                                safe_float(s.get("price"))
-                                or safe_float(price_observation.get("current_price"))
-                                or safe_float(t.get("price"))
-                            )
-                            start_live_tracking(
-                                address=addr,
-                                chain=chain,
-                                symbol=s.get("symbol") or "UNKNOWN",
-                                entry_mcap=safe_float(s.get("mcap")),
-                                entry_price=live_track_price,
-                                pushed_at=int(time.time()),
-                                pool_liquidity=safe_float(s.get("pool_liquidity")),
-                                created_at=s.get("created_at") or 0,
-                                narrative=s.get("narrative") or "",
-                                smart_signal=smart_signal,
-                            )
-                        publish_alpha_new_token_plugin_signal(addr, chain, interval, s, tg_message_id=tg_message_id)
-                        if should_send_new_token_ca_alert(s, interval):
-                            send_new_token_ca_alert(s)
-                        save_price_observation_archive(addr, [*price_archive, current_price_archive_entry])
-                        reset_price_observation(addr)
-                        # P3: start post-push 1m K-line tracking
-                        if TRACK_ENABLED and not s.get("repeat_alert"):
-                            # Derive price: prefer gmgn price, fall back to trend price, then MCAP/circ_supply
-                            track_price = (safe_float(s.get("price"))
-                                           or safe_float(price_observation.get("current_price"))
-                                           or safe_float(t.get("price")))
-                            start_tracking(
-                                address=addr,
-                                chain=chain,
-                                symbol=s.get("symbol") or "UNKNOWN",
-                                entry_price=track_price,
-                                entry_mcap=safe_float(s.get("mcap")),
-                                circulating_supply=s.get("circulating_supply"),
-                                tg_chat_id=TG_CHAT_ID,
-                                tg_message_id=tg_message_id,
-                                pushed_at=int(time.time()),
-                                risk_profile=s.get("tracking_risk_profile", "normal"),
-                                risk_reasons=s.get("tracking_risk_reasons", []),
-                            )
-                    
-            except Exception as e:
-                print(f"Loop Error: {e}")
-            time.sleep(2)
-        # P3: check post-push tracking after each full scan
-        try:
-            check_tracked_tokens()
-        except Exception as exc:
-            print(f"  [Track] check_tracked_tokens error: {exc}")
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] "
+            f"{chain} smart-money signals: {len(smart_signals)}"
+        )
 
 if __name__ == "__main__":
     print("深度关联分析机器人已启动...")

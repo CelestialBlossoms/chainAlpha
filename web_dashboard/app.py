@@ -68,6 +68,7 @@ LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_S
 LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
 LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
 SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
+DEEP_ALPHA_SMART_ONLY_ENABLED = os.getenv("DEEP_ALPHA_SMART_ONLY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _LIVE_TRACK_BG_STARTED = False
 
 # ---------------------------------------------------------------------------
@@ -2183,11 +2184,14 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
             deleted_addresses.add(address)
             continue
         by_address[address] = checked_item
+    smart_addresses = set(by_address)
     for item in live_items:
         if not isinstance(item, dict):
             continue
         address = str(item.get("address") or "")
         if not address:
+            continue
+        if DEEP_ALPHA_SMART_ONLY_ENABLED and address not in smart_addresses:
             continue
         smart_item = by_address.get(address)
         if smart_item:

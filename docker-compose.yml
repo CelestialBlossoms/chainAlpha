@@ -10,6 +10,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       PLUGIN_SIGNAL_STREAM_MAX_AGE_SEC: "21600"
+      DEEP_ALPHA_SMART_ONLY_ENABLED: ${DEEP_ALPHA_SMART_ONLY_ENABLED:-1}
+      DEEP_ALPHA_SMART_SIGNAL_SCAN_INTERVAL_SEC: ${DEEP_ALPHA_SMART_SIGNAL_SCAN_INTERVAL_SEC:-60}
     volumes:
       - .:/app
       - ./data:/app/data
