@@ -16,7 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"))
+DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", "deepseek-chat")
 DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "300")))
 DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "1").strip().lower() not in {
     "0",
@@ -342,6 +342,7 @@ def build_cached_system_prompt() -> str:
         "Do not give trading advice, order instructions, position sizing, stop-loss, or take-profit recommendations. "
         "For purchase_value.label use one of: 高价值观察, 中等价值观察, 低价值/回避, 待观察. "
         "For purchase_value.score_pct return a 0-100 observation score, not a promise of return. "
+        "Do not output reasoning text; return the final JSON object directly. "
         "Output JSON only.\n\n"
         "## Reference Strategy Documents\n\n"
         + "\n\n".join(doc_texts)
@@ -536,7 +537,8 @@ def analyze_deepseek_kline_prediction(
         return _fallback_from_fingerprints(local_fp, status=f"http_{resp.status_code}")
 
     try:
-        content = resp.json().get("choices", [{}])[0].get("message", {}).get("content") or ""
+        message = resp.json().get("choices", [{}])[0].get("message", {}) or {}
+        content = message.get("content") or message.get("reasoning_content") or ""
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return _fallback_from_fingerprints(local_fp, status=f"bad_response:{exc}")
 
