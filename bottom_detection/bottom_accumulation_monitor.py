@@ -185,6 +185,12 @@ BOTTOM_DEEPSEEK_ASYNC_ENABLED = os.getenv("BOTTOM_DEEPSEEK_ASYNC_ENABLED", "1").
     "no",
     "off",
 }
+BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED = os.getenv("BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS = max(1, int(os.getenv("BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS", "2")))
 _DEEPSEEK_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS)
 _DEEPSEEK_ASYNC_INFLIGHT: set[str] = set()
@@ -1813,7 +1819,7 @@ def build_deepseek_kline_signal_context(
 
 
 def deepseek_signal_eligible(signal_type: str) -> bool:
-    return str(signal_type or "") in {"new_revival", "abnormal"}
+    return str(signal_type or "") in {"new_revival", "abnormal", "watchlist_abnormal"}
 
 
 def maybe_attach_deepseek_kline_prediction(
@@ -3798,6 +3804,8 @@ def _mcap_bucket(mcap: float) -> str:
 
 
 def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
+    if signal_type == "watchlist_abnormal":
+        signal_type = "abnormal"
     bucket = _mcap_bucket(mcap)
     peak_window = {
         "new_revival": "P25 10min / Median 90min / P75 410min",
@@ -4273,7 +4281,7 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
 
 
 def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any]) -> dict[str, Any]:
-    """Build winrate_prediction exclusively from DeepSeek analysis; no hardcoded lookups."""
+    """Build winrate_prediction from DeepSeek while preserving local 08/09 guide fields."""
     ds_bias = str(ds_pred.get("bias") or "unknown")
     ds_confidence = str(ds_pred.get("confidence") or "low")
     ds_summary = str(ds_pred.get("summary") or "")
@@ -4283,6 +4291,11 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
     purchase = ds_pred.get("purchase_value") if isinstance(ds_pred.get("purchase_value"), dict) else {}
     local_fp = ds_pred.get("local_fingerprints") if isinstance(ds_pred.get("local_fingerprints"), dict) else {}
     signal_type = str(extra.get("signal_type") or "")
+    mcap = to_float(extra.get("current_mcap") or extra.get("entry_mcap"))
+    bucket = _historical_bottom_bucket(signal_type, mcap)
+    local_journey_raw = extra.get("kline_journey") if isinstance(extra.get("kline_journey"), dict) else {}
+    local_journey = enrich_kline_journey_for_signal(local_journey_raw, signal_type) if local_journey_raw else {}
+    local_micro_1m = extra.get("kline_1m_micro") if isinstance(extra.get("kline_1m_micro"), dict) else {}
 
     # Map DeepSeek bias to predicted WR20
     wr20_map = {"bullish": 67.0, "neutral": 52.0, "bearish": 30.0, "volatile": 45.0, "unknown": 52.0}
@@ -4322,6 +4335,23 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         evidence.append(f"5m结构: {pattern_5m.get('label')}")
     if micro_1m.get("label"):
         evidence.append(f"1m微结构: {micro_1m.get('label')}")
+    if local_journey.get("ready"):
+        evidence.append(
+            f"08 K线结构: {local_journey.get('pre_structure') or '-'}，"
+            f"文档WR20 {to_float(local_journey.get('doc_wr20_pct')):.0f}%，"
+            f"MedPeak {local_journey.get('doc_med_peak') or '-'}"
+        )
+        if local_journey.get("volume_label"):
+            evidence.append(
+                f"前4h末段量能: {local_journey.get('volume_label')} "
+                f"({to_float(local_journey.get('volume_ratio')):.2f}x)"
+            )
+    if local_micro_1m.get("ready"):
+        evidence.append(
+            f"09 1m确认: {local_micro_1m.get('label') or '-'}，"
+            f"涨跌 {to_float(local_micro_1m.get('change_pct')):+.1f}%，"
+            f"量比 {to_float(local_micro_1m.get('volume_ratio')):.2f}x"
+        )
     if local_fp.get("quick_verdict"):
         evidence.append(f"本地指纹: {local_fp.get('quick_verdict')}")
 
@@ -4337,11 +4367,29 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
                 "中等价值观察" if ds_bias in ("bullish", "neutral") else \
                 "低价值/回避"
 
+    strategy_plan = compute_historical_strategy_plan(extra, risk_factors)
+    strategy_plan = {
+        **strategy_plan,
+        "strategy_profile": f"DeepSeek {ds_bias}/{ds_confidence}",
+        "strategy_action": label,
+        "kline_forecast": forecast.get("next_4h") or ds_summary or strategy_plan.get("kline_forecast", ""),
+        "deepseek_forecast": forecast,
+        "deepseek_bias": ds_bias,
+        "deepseek_confidence": ds_confidence,
+        "purchase_value_basis": purchase.get("basis") or "",
+        "deepseek_watch_windows": ds_pred.get("watch_windows") or [],
+        "deepseek_strategy_observations": ds_pred.get("strategy_observations") or [],
+    }
+
     return {
         "target": "max_gain_gte_20pct",
         "predicted_winrate_pct": round(predicted_wr20, 1),
         "predicted_wr50_pct": round(predicted_wr50, 1),
-        "baseline_winrate_pct": round(predicted_wr20, 1),
+        "predicted_wr100_pct": round(float(bucket["wr100"]), 1),
+        "baseline_winrate_pct": round(float(bucket["wr20"]), 1),
+        "baseline_sample_count": int(bucket["samples"]),
+        "overall_sample_count": 315,
+        "winner_definition": "观察后任意时间价格涨到>=20%",
         "label": label,
         "buy_value_label": label,
         "confidence": ds_confidence,
@@ -4349,27 +4397,33 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "analysis_source": "deepseek",
         "analysis_source_label": "DeepSeek AI",
         "analysis_source_status": ds_pred.get("status") or "ok",
-        "evidence": evidence[:6],
+        "feature_count": sum(
+            1
+            for item in (
+                mcap,
+                extra.get("top10_current_pct"),
+                extra.get("accumulation_pct_delta"),
+                extra.get("pool_mcap_ratio"),
+                extra.get("vol_1m_ratio"),
+                local_journey.get("doc_wr20_pct"),
+                local_micro_1m.get("doc_wr20_pct"),
+            )
+            if to_float(item)
+        ),
+        "evidence": evidence[:8],
         "risk_factors": risk_factors[:6],
         "profit_target_probabilities": {
-            "tp20_pct": round(predicted_wr20, 1),
-            "tp50_pct": round(predicted_wr50, 1),
-            "tp100_pct": round(predicted_wr20 * 0.35, 1),
+            "tp20_pct": round(float(bucket["wr20"]), 1),
+            "tp50_pct": round(float(bucket["wr50"]), 1),
+            "tp100_pct": round(float(bucket["wr100"]), 1),
         },
         "deepseek_kline_prediction": ds_pred,
-        "kline_journey": pattern_5m,
-        "kline_1m_micro": micro_1m,
-        "strategy_plan": {
-            "signal_label": f"{signal_type} (DeepSeek)",
-            "strategy_profile": f"DeepSeek {ds_bias}/{ds_confidence}",
-            "strategy_action": label,
-            "kline_forecast": forecast.get("next_4h", ds_summary),
-            "deepseek_forecast": forecast,
-            "deepseek_bias": ds_bias,
-            "deepseek_confidence": ds_confidence,
-            "purchase_value_basis": purchase.get("basis") or "",
-        },
-        "source_doc": "deepseek_api + onchain_trading_guides/11-ca-analysis-methodology.md + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
+        "deepseek_pattern_5m": pattern_5m,
+        "deepseek_micro_1m": micro_1m,
+        "kline_journey": local_journey or pattern_5m,
+        "kline_1m_micro": local_micro_1m or micro_1m,
+        "strategy_plan": strategy_plan,
+        "source_doc": "deepseek_api + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md + onchain_trading_guides/09-bar-level-strategy.md",
     }
 
 
@@ -5549,7 +5603,12 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         print(f"{token_label(token)} skip push: quiet_breakout large mcap ${current_mcap:,.0f} > $500K")
         notify = False
 
-    if notify and should_notify(analysis) and not already_notified and not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
+    if (
+        notify
+        and should_notify(analysis)
+        and not already_notified
+        and (BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED or not BOTTOM_DEEPSEEK_ASYNC_ENABLED)
+    ):
         analysis = maybe_attach_deepseek_kline_prediction(
             token=token,
             summary=summary,

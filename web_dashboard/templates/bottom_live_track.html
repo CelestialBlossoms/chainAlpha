@@ -1248,18 +1248,24 @@
       const journey = klineJourney(item);
       const micro1m = kline1mMicro(item);
       const pInfo = pullbackInfo(item);
-      const candles = normalizeCandles(detail.candles, item);
-      const mcapPoints = [
-        { ts: safeNum(item.pushed_at), value: safeNum(item.entry_mcap) },
-        { ts: safeNum(item.peak_mcap_at, item.pushed_at), value: safeNum(item.peak_mcap) },
-        { ts: safeNum(item.last_updated, Date.now() / 1000), value: safeNum(item.current_mcap) },
-      ].filter(p => p.ts > 0 && p.value > 0).sort((a, b) => a.ts - b.ts);
+      const probs = targetProbabilities(item);
+      const exitPlan = plan.exit || {};
+      const watchWindows = [
+        plan.entry_window || "",
+        plan.hold_watch_window || "",
+        ...(Array.isArray(plan.deepseek_watch_windows) ? plan.deepseek_watch_windows : []),
+        ...(Array.isArray(ds.watch_windows) ? ds.watch_windows : []),
+      ].filter(Boolean);
       const reasonList = [
         ...(Array.isArray(pred.evidence) ? pred.evidence : []),
+        ...(Array.isArray(ds.strategy_observations) ? ds.strategy_observations : []),
+        ...(Array.isArray(plan.deepseek_strategy_observations) ? plan.deepseek_strategy_observations : []),
         item.narrative_desc || item.narrative || "",
       ].filter(Boolean);
       const riskList = [
+        ...(Array.isArray(item.risk_tags) ? item.risk_tags : []),
         ...(Array.isArray(pred.risk_factors) ? pred.risk_factors : []),
+        ...(Array.isArray(ds.risk_factors) ? ds.risk_factors : []),
         ...(Array.isArray(plan.risk_points) ? plan.risk_points : []),
         item.remove_reason || "",
       ].filter(Boolean);
@@ -1290,8 +1296,22 @@
               ${drawerMetric("AI评分", safeNum(dsPurchase.score_pct, -1) >= 0 ? `${safeNum(dsPurchase.score_pct).toFixed(1)}%` : "-")}
               ${drawerMetric("5m结构", htmlEscape(ds.ready ? (dsPattern.label || "-") : (journey.ready ? (journey.pre_structure || "-") : "-")))}
               ${drawerMetric("5m风险", htmlEscape(ds.ready ? (dsPattern.risk_level || "-") : "-"))}
-              ${drawerMetric("1m确认", htmlEscape(ds.ready ? (dsMicro.label || "-") : (micro1m.ready ? (micro1m.label || "-") : "-")))}
-              ${drawerMetric("1m量比", ds.ready ? `${safeNum(dsMicro.volume_ratio).toFixed(2)}x` : (micro1m.ready ? `${safeNum(micro1m.volume_ratio).toFixed(2)}x` : "-"))}
+              ${drawerMetric("观察窗口", htmlEscape(watchWindows[0] || "-"))}
+              ${drawerMetric("出场窗口", htmlEscape(plan.exit_window || exitPlan.exit_time_rule || "-"))}
+              ${drawerMetric("策略胜率", htmlEscape(plan.strategy_winrate_summary || "-"))}
+              ${drawerMetric("峰值窗口", htmlEscape(plan.peak_time_window || "-"))}
+              ${drawerMetric("1m确认", htmlEscape(micro1m.ready ? (micro1m.label || "-") : (ds.ready ? (dsMicro.label || "-") : "-")))}
+              ${drawerMetric("1m量比", micro1m.ready ? `${safeNum(micro1m.volume_ratio).toFixed(2)}x` : (ds.ready ? `${safeNum(dsMicro.volume_ratio).toFixed(2)}x` : "-"))}
+              ${drawerMetric("1m涨跌", micro1m.ready ? formatPnl(micro1m.change_pct) : (ds.ready ? formatPnl(dsMicro.change_pct) : "-"), pnlClass(micro1m.ready ? micro1m.change_pct : dsMicro.change_pct))}
+              ${drawerMetric("1m策略", htmlEscape(micro1m.ready ? (micro1m.decision || micro1m.note || "-") : (ds.ready ? (dsMicro.decision || "-") : "-")))}
+              ${drawerMetric("+20%到达率", safeNum(probs.tp20_pct, -1) >= 0 ? `${safeNum(probs.tp20_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("+50%到达率", safeNum(probs.tp50_pct, -1) >= 0 ? `${safeNum(probs.tp50_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("+100%到达率", safeNum(probs.tp100_pct, -1) >= 0 ? `${safeNum(probs.tp100_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("历史AvgPeak", htmlEscape(plan.historical_avg_peak || "-"))}
+              ${drawerMetric("K线结构", htmlEscape(journey.ready ? (journey.pre_structure || "-") : (dsPattern.label || "-")))}
+              ${drawerMetric("08文档WR20", journey.ready && safeNum(journey.doc_wr20_pct) > 0 ? `${safeNum(journey.doc_wr20_pct).toFixed(0)}%` : "-")}
+              ${drawerMetric("08 MedPeak", htmlEscape(journey.ready ? (journey.doc_med_peak || "-") : "-"))}
+              ${drawerMetric("末段量能", htmlEscape(journey.ready ? `${journey.volume_label || "-"}${safeNum(journey.volume_ratio) > 0 ? ` (${safeNum(journey.volume_ratio).toFixed(2)}x)` : ""}` : "-"))}
               ${drawerMetric("未来5m", htmlEscape(ds.ready ? (dsForecast.next_5m || "-") : "-"))}
               ${drawerMetric("未来30m", htmlEscape(ds.ready ? (dsForecast.next_30m || "-") : "-"))}
               ${drawerMetric("未来4h", htmlEscape(ds.ready ? (dsForecast.next_4h || "-") : "-"))}
@@ -1307,16 +1327,12 @@
           <div class="detail-content">${arrayListHtml(reasonList)}</div>
         </section>
         <section class="detail-panel">
+          <h3>后续观察窗口</h3>
+          <div class="detail-content">${arrayListHtml(watchWindows, "暂无观察窗口字段")}</div>
+        </section>
+        <section class="detail-panel">
           <h3>钱包标签</h3>
           <div class="detail-content"><div class="hit-tags">${walletTags.map(x => `<span class="tag">${htmlEscape(x)}</span>`).join("") || `<span class="muted">暂无标签</span>`}</div></div>
-        </section>
-        <section class="detail-panel">
-          <h3>K线</h3>
-          <div class="detail-content">${candleChartSvg(candles)}</div>
-        </section>
-        <section class="detail-panel">
-          <h3>市值走势</h3>
-          <div class="detail-content">${lineChartSvg(mcapPoints, { color: safeNum(item.pnl_pct) >= 0 ? "#22c55e" : "#f43f5e" })}</div>
         </section>
         <section class="detail-panel">
           <h3>可观察风险</h3>
