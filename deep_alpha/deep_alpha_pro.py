@@ -990,6 +990,9 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
         smart_buy_count = len(smart_wallets)
     if smart_wallets and smart_buy_total <= 0:
         smart_buy_total = sum(safe_float(wallet.get("buy_amount")) for wallet in smart_wallets)
+    peak_mcap = max(trigger_mcap, current_mcap, safe_float(item.get("ath")))
+    pnl_pct = (current_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
+    peak_pnl_pct = (peak_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     return {
         "address": address,
         "chain": data.get("chain") or chain or "sol",
@@ -1085,7 +1088,9 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
         "market_signal_first_trigger_mcap": safe_float(item.get("first_trigger_mc")),
         "entry_mcap": trigger_mcap,
         "current_mcap": current_mcap,
-        "peak_mcap": max(trigger_mcap, current_mcap, safe_float(item.get("ath"))),
+        "peak_mcap": peak_mcap,
+        "pnl_pct": pnl_pct,
+        "peak_pnl_pct": peak_pnl_pct,
         "peak_mcap_at": trigger_at,
         "pushed_at": trigger_at,
         "pool_liquidity": safe_float(cur_data.get("liquidity")) or safe_float(data.get("liquidity")),
@@ -1318,6 +1323,8 @@ def smart_signal_live_track_payload(item):
     entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("smart_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
     current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
     peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
+    peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     payload = {
         "address": address,
         "chain": item.get("chain") or "sol",
@@ -1344,7 +1351,8 @@ def smart_signal_live_track_payload(item):
         "holders": int(safe_float(item.get("holders"))),
         "volume_5m": 0,
         "volume_1h": safe_float(item.get("volume_1h")),
-        "pnl_pct": 0.0,
+        "pnl_pct": pnl_pct,
+        "peak_pnl_pct": peak_pnl_pct,
         "last_updated": int(time.time()),
         "remove_reason": "",
     }
@@ -1362,6 +1370,8 @@ def market_signal_live_track_payload(item):
     entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("market_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
     current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
     peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
+    peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     payload = {
         "address": address,
         "chain": item.get("chain") or "sol",
@@ -1386,7 +1396,8 @@ def market_signal_live_track_payload(item):
         "holders": int(safe_float(item.get("holders"))),
         "volume_5m": 0,
         "volume_1h": safe_float(item.get("volume_1h")),
-        "pnl_pct": (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0,
+        "pnl_pct": pnl_pct,
+        "peak_pnl_pct": peak_pnl_pct,
         "last_updated": int(time.time()),
         "remove_reason": "",
     }

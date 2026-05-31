@@ -2155,6 +2155,10 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
             current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
             if SMART_SIGNAL_MCAP_MIN > 0 and current_mcap < SMART_SIGNAL_MCAP_MIN:
                 continue
+            entry_mcap = _safe_float(item.get("entry_mcap")) or trigger_mcap
+            peak_mcap = max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap)
+            pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
+            peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
             normalized.append({
                 **item,
                 "address": address,
@@ -2189,9 +2193,11 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
                 "narrative_type": item.get("narrative_type") or "",
                 "narrative_category": item.get("narrative_category") or "",
                 "binance_narrative": item.get("binance_narrative") if isinstance(item.get("binance_narrative"), dict) else {},
-                "entry_mcap": _safe_float(item.get("entry_mcap")) or trigger_mcap,
+                "entry_mcap": entry_mcap,
                 "current_mcap": current_mcap,
-                "peak_mcap": max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap),
+                "peak_mcap": peak_mcap,
+                "pnl_pct": pnl_pct,
+                "peak_pnl_pct": peak_pnl_pct,
                 "peak_mcap_at": _safe_int(item.get("peak_mcap_at")) or trigger_at,
                 "pushed_at": _safe_int(item.get("pushed_at")) or trigger_at,
                 "pool_liquidity": _safe_float(item.get("pool_liquidity")),
@@ -2231,6 +2237,10 @@ def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
             drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
             if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
                 continue
+            entry_mcap = _safe_float(item.get("entry_mcap")) or trigger_mcap
+            peak_mcap = max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap)
+            pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
+            peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
             normalized.append({
                 **item,
                 "address": address,
@@ -2250,9 +2260,11 @@ def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
                 "narrative_type": item.get("narrative_type") or "",
                 "narrative_category": item.get("narrative_category") or "",
                 "binance_narrative": item.get("binance_narrative") if isinstance(item.get("binance_narrative"), dict) else {},
-                "entry_mcap": _safe_float(item.get("entry_mcap")) or trigger_mcap,
+                "entry_mcap": entry_mcap,
                 "current_mcap": current_mcap,
-                "peak_mcap": max(_safe_float(item.get("peak_mcap")), trigger_mcap, current_mcap),
+                "peak_mcap": peak_mcap,
+                "pnl_pct": pnl_pct,
+                "peak_pnl_pct": peak_pnl_pct,
                 "peak_mcap_at": _safe_int(item.get("peak_mcap_at")) or trigger_at,
                 "pushed_at": _safe_int(item.get("pushed_at")) or trigger_at,
                 "pool_liquidity": _safe_float(item.get("pool_liquidity")),
@@ -2267,7 +2279,6 @@ def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
                 "sells_1h": _safe_int(item.get("sells_1h")),
                 "net_buy_1h": _safe_float(item.get("net_buy_1h")),
                 "volume_1h": _safe_float(item.get("volume_1h")),
-                "pnl_pct": (current_mcap - trigger_mcap) / trigger_mcap * 100,
                 "last_updated": _safe_int(item.get("last_updated")) or now_ts,
             })
         return normalized
@@ -2313,6 +2324,10 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 "smart_signal_trigger_mcap": smart_item.get("smart_signal_trigger_mcap"),
                 "smart_buy_count": smart_item.get("smart_buy_count"),
                 "smart_buy_total": smart_item.get("smart_buy_total"),
+                "current_mcap": smart_item.get("current_mcap") or item.get("current_mcap"),
+                "peak_mcap": smart_item.get("peak_mcap") or item.get("peak_mcap"),
+                "pnl_pct": smart_item.get("pnl_pct"),
+                "peak_pnl_pct": smart_item.get("peak_pnl_pct"),
             }
             for field in SMART_SIGNAL_MERGE_FIELDS:
                 smart_value = smart_item.get(field)
@@ -2327,6 +2342,10 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 "market_signal_times": smart_item.get("market_signal_times"),
                 "market_signal_trigger_at": smart_item.get("market_signal_trigger_at"),
                 "market_signal_trigger_mcap": smart_item.get("market_signal_trigger_mcap"),
+                "current_mcap": smart_item.get("current_mcap") or item.get("current_mcap"),
+                "peak_mcap": smart_item.get("peak_mcap") or item.get("peak_mcap"),
+                "pnl_pct": smart_item.get("pnl_pct"),
+                "peak_pnl_pct": smart_item.get("peak_pnl_pct"),
             }
             for field in MARKET_SIGNAL_MERGE_FIELDS:
                 market_value = smart_item.get(field)

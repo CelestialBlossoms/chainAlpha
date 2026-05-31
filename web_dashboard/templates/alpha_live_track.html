@@ -401,6 +401,12 @@
       return `${n > 0 ? "+" : "-"}${formatCap(Math.abs(n))}`;
     }
 
+    function shortAddr(v) {
+      const s = String(v || "");
+      if (s.length <= 12) return s || "-";
+      return `${s.slice(0, 4)}...${s.slice(-4)}`;
+    }
+
     function formatPnl(v) {
       const n = safeNum(v);
       return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
@@ -517,22 +523,20 @@
       const buyText = smartSignalText(item);
       const sellCount = safeNum(item.smart_sell_count);
       const sellTotal = safeNum(item.smart_sell_total);
-      const oneMinBuy = safeNum(item.buys_1m);
-      const oneMinSell = safeNum(item.sells_1m);
-      const oneMinNet = safeNum(item.net_buy_1m);
-      const oneHourBuy = safeNum(item.buys_1h);
-      const oneHourSell = safeNum(item.sells_1h);
-      const oneHourNet = safeNum(item.net_buy_1h);
+      const wallets = Array.isArray(item.smart_wallets) ? item.smart_wallets : [];
       const title = smartWalletTitle(item);
-      const sellText = sellCount > 0 || sellTotal > 0 ? `卖 ${sellCount || "-"}笔 ${sellTotal > 0 ? formatCap(sellTotal) : ""}` : "卖 -";
-      const minNetCls = oneMinNet > 0 ? "pos" : (oneMinNet < 0 ? "neg" : "");
-      const hourNetCls = oneHourNet > 0 ? "pos" : (oneHourNet < 0 ? "neg" : "");
+      const sellText = sellCount > 0 || sellTotal > 0 ? `卖出 ${sellCount || "-"}笔 ${sellTotal > 0 ? formatCap(sellTotal) : ""}` : "卖出 -";
+      const walletRows = wallets.slice(0, 3).map(w => {
+        const who = w.twitter_username ? `@${w.twitter_username}` : shortAddr(w.address);
+        return `<div class="smart-flow-sub">买 ${htmlEscape(who)} ${htmlEscape(formatTime(w.buy_timestamp))} ${htmlEscape(formatCap(w.buy_amount))}</div>`;
+      }).join("");
+      const moreWallets = wallets.length > 3 ? `<div class="smart-flow-sub">另 ${wallets.length - 3} 个钱包</div>` : "";
       return `
         <div class="smart-flow" title="${htmlEscape(title)}">
           <div class="smart-flow-main">${htmlEscape(buyText)}</div>
           <div class="smart-flow-sub">${htmlEscape(sellText)}</div>
-          <div class="smart-flow-sub">1m ${oneMinBuy}/${oneMinSell} <span class="smart-flow-net ${minNetCls}">${htmlEscape(formatSignedCap(oneMinNet))}</span></div>
-          <div class="smart-flow-sub">1h ${oneHourBuy}/${oneHourSell} <span class="smart-flow-net ${hourNetCls}">${htmlEscape(formatSignedCap(oneHourNet))}</span></div>
+          ${walletRows || `<div class="smart-flow-sub">买入钱包 -</div>`}
+          ${moreWallets}
         </div>
       `;
     }
@@ -609,7 +613,10 @@
             </td>
             <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
             <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
-            <td><b>${formatCap(item.peak_mcap)}</b></td>
+            <td>
+              <b>${formatCap(item.peak_mcap)}</b>
+              <div class="${pnlClass(safeNum(item.peak_pnl_pct))}">${formatPnl(safeNum(item.peak_pnl_pct))}</div>
+            </td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
             <td>${smartSignalHtml(item)}</td>
