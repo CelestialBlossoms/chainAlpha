@@ -2689,8 +2689,9 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
         and existing_prediction.get("kline_journey", {}).get("ready")
     )
     extra_has_journey = bool(isinstance(extra.get("kline_journey"), dict) and extra.get("kline_journey", {}).get("ready"))
-    if existing_prediction and existing_prediction.get("strategy_plan") and (
-        has_journey or not extra_has_journey or existing_source == "hardcoded" or existing_has_api_deepseek
+    existing_prediction_usable = existing_source == "hardcoded" or existing_has_api_deepseek
+    if existing_prediction and existing_prediction.get("strategy_plan") and existing_prediction_usable and (
+        has_journey or not extra_has_journey
     ) and not (extra_has_api_deepseek and existing_source != "deepseek"):
         return track
     try:
