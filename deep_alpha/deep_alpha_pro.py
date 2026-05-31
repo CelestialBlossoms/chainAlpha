@@ -1060,6 +1060,9 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
     drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
     if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
         return None
+    peak_mcap = max(trigger_mcap, current_mcap, safe_float(item.get("ath")))
+    pnl_pct = (current_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
+    peak_pnl_pct = (peak_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
     symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
     name = data.get("name") or ""
     created_at = smart_signal_created_at(data)
