@@ -835,7 +835,11 @@
     function analysisSource(item) {
       const pred = prediction(item);
       const source = String(pred.analysis_source || pred.source || "").toLowerCase();
+      const asyncStatus = String(item.deepseek_async_status || pred.analysis_source_status || "").toLowerCase();
       const ds = pred.deepseek_kline_prediction || item.deepseek_kline_prediction || {};
+      if (source === "pending_deepseek" || asyncStatus === "pending") {
+        return { key: "pending", label: "DeepSeek 分析中" };
+      }
       if (source === "deepseek" && String(ds.status || "").toLowerCase() === "ok") {
         return { key: "deepseek", label: pred.analysis_source_label || "DeepSeek AI" };
       }
@@ -1294,7 +1298,8 @@
             </div>
             ${(dsPurchase.basis || plan.purchase_value_basis) ? `<p class="muted">${htmlEscape(dsPurchase.basis || plan.purchase_value_basis)}</p>` : ""}
             ${ds.ready ? `<p class="muted">${htmlEscape(ds.summary || "")}</p>` : ""}
-            ${source.key !== "deepseek" ? `<p class="muted">DeepSeek API 未返回可用结果，当前为硬编码兜底分析。</p>` : ""}
+            ${source.key === "pending" ? `<p class="muted">基础信号已先推送，DeepSeek 正在后台补充分析。</p>` : ""}
+            ${source.key !== "deepseek" && source.key !== "pending" ? `<p class="muted">DeepSeek API 未返回可用结果，当前为硬编码兜底分析。</p>` : ""}
           </div>
         </section>
         <section class="detail-panel">

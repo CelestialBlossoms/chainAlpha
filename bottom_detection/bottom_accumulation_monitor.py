@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ from bottom_detection.bottom_watchlist_store import (
 from bottom_detection.top100_push_record_store import (
     record_top100_push,
     top100_signal_push_record_exists,
+    update_top100_push_deepseek,
 )
 
 
@@ -173,9 +175,20 @@ _POST_PUSH_MONITOR_STARTED = False
 BOTTOM_LIVE_TRACK_ENABLED = os.getenv("BOTTOM_LIVE_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 BOTTOM_LIVE_TRACK_REDIS_PREFIX = os.getenv("BOTTOM_LIVE_TRACK_REDIS_PREFIX", "bottom:live_track")
 BOTTOM_LIVE_TRACK_TTL_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_TTL_SEC", str(24 * 3600)))  # 24h
+BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom:live_track:updates")
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
+BOTTOM_DEEPSEEK_ASYNC_ENABLED = os.getenv("BOTTOM_DEEPSEEK_ASYNC_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS = max(1, int(os.getenv("BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS", "2")))
+_DEEPSEEK_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS)
+_DEEPSEEK_ASYNC_INFLIGHT: set[str] = set()
+_DEEPSEEK_ASYNC_LOCK = threading.Lock()
 
 # Old token surge detection (老币异动拉升)
 OLD_TOKEN_SURGE_ENABLED = os.getenv("BOTTOM_OLD_TOKEN_SURGE_ENABLED", "1") != "0"
@@ -1799,6 +1812,10 @@ def build_deepseek_kline_signal_context(
     }
 
 
+def deepseek_signal_eligible(signal_type: str) -> bool:
+    return str(signal_type or "") in {"new_revival", "abnormal"}
+
+
 def maybe_attach_deepseek_kline_prediction(
     *,
     token: dict[str, Any],
@@ -1807,12 +1824,11 @@ def maybe_attach_deepseek_kline_prediction(
     candles_5m: list[dict[str, Any]],
     candles_1m: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Attach DeepSeek 5m/1m K-line prediction; never block the push path."""
+    """Attach DeepSeek 5m/1m K-line prediction synchronously."""
     signal_type = str((analysis or {}).get("signal_type") or "")
     if not signal_type or signal_type == "watch" or analysis.get("deepseek_kline_prediction"):
         return analysis
-    # Only new_revival and abnormal get DeepSeek analysis
-    if signal_type not in {"new_revival", "abnormal"}:
+    if not deepseek_signal_eligible(signal_type):
         return analysis
     address = token_address(token)
     if not address:
@@ -2746,6 +2762,226 @@ def start_bottom_live_tracking(
         print(f"  [BottomLiveTrack] 开始实时追踪 ${symbol} {address[:8]}... signal={signal_type}")
     except Exception as exc:
         print(f"  [BottomLiveTrack] Redis写入失败 {address[:8]}: {exc}")
+
+
+def _bottom_live_track_load_local(address: str) -> dict[str, Any]:
+    client = get_redis_client()
+    if client is None or not address:
+        return {}
+    try:
+        raw = client.get(_bottom_live_track_key(address))
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _bottom_live_track_publish_update(item: dict[str, Any]) -> None:
+    client = get_redis_client()
+    if client is None or not item:
+        return
+    try:
+        payload = json.dumps(
+            {"ts": now_ts(), "items": [item], "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+            ensure_ascii=False,
+        )
+        client.publish(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL, payload)
+    except Exception as exc:
+        print(f"  [BottomLiveTrack] DeepSeek update publish failed: {exc}")
+
+
+def update_bottom_live_track_deepseek(address: str, extra: dict[str, Any]) -> None:
+    if not BOTTOM_LIVE_TRACK_ENABLED or not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    current = _bottom_live_track_load_local(address)
+    if not current:
+        current = {
+            "address": address,
+            "chain": CHAIN,
+            "symbol": str(extra.get("symbol") or "UNKNOWN"),
+            "signal_type": str(extra.get("signal_type") or ""),
+            "source": "bottom_abnormal",
+            "entry_mcap": to_float(extra.get("current_mcap")),
+            "entry_price": to_float(extra.get("price")),
+            "created_ts": to_int(extra.get("created_ts")),
+            "launch_ts": to_int(extra.get("launch_ts")),
+            "age_sec": to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+            "pushed_at": to_int(extra.get("event_ts") or extra.get("signal_ts")) or now_ts(),
+            "current_mcap": to_float(extra.get("current_mcap")),
+            "current_price": to_float(extra.get("price")),
+            "peak_mcap": to_float(extra.get("current_mcap")),
+            "peak_mcap_at": now_ts(),
+            "pool_liquidity": to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
+            "pnl_pct": 0.0,
+            "status": "tracking",
+            "remove_reason": "",
+        }
+    merged = {
+        **current,
+        "symbol": str(extra.get("symbol") or current.get("symbol") or "UNKNOWN"),
+        "signal_type": str(extra.get("signal_type") or current.get("signal_type") or ""),
+        "narrative": str(extra.get("narrative_desc") or extra.get("narrative") or current.get("narrative") or ""),
+        "narrative_desc": str(extra.get("narrative_desc") or extra.get("narrative") or current.get("narrative_desc") or ""),
+        "narrative_type": str(extra.get("narrative_type") or current.get("narrative_type") or ""),
+        "narrative_category": str(extra.get("narrative_category") or current.get("narrative_category") or ""),
+        "deepseek_kline_prediction": extra.get("deepseek_kline_prediction") or {},
+        "deepseek_async_status": extra.get("deepseek_async_status") or "",
+        "deepseek_async_elapsed_ms": to_int(extra.get("deepseek_async_elapsed_ms")),
+        "winrate_prediction": extra.get("winrate_prediction") or {},
+        "last_updated": now_ts(),
+    }
+    try:
+        key = _bottom_live_track_key(address)
+        ttl = client.ttl(key)
+        if ttl is None or ttl <= 0:
+            ttl = BOTTOM_LIVE_TRACK_TTL_SEC
+        client.setex(key, int(ttl), json.dumps(json_safe(merged), ensure_ascii=False))
+        client.sadd(_bottom_live_track_index_key(), address)
+        client.expire(_bottom_live_track_index_key(), BOTTOM_LIVE_TRACK_TTL_SEC)
+        _bottom_live_track_publish_update(merged)
+    except Exception as exc:
+        print(f"  [BottomLiveTrack] DeepSeek Redis update failed {address[:8]}: {exc}")
+
+
+def _deepseek_async_key(address: str, signal_type: str, snapshot_id: int = 0) -> str:
+    return f"{address}:{signal_type}:{snapshot_id or 0}"
+
+
+def format_deepseek_async_reply(address: str, extra: dict[str, Any]) -> str:
+    symbol = str(extra.get("symbol") or "UNKNOWN").strip() or "UNKNOWN"
+    prediction = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
+    purchase = prediction.get("purchase_value") if isinstance(prediction.get("purchase_value"), dict) else {}
+    pattern_5m = prediction.get("pattern_5m") if isinstance(prediction.get("pattern_5m"), dict) else {}
+    micro_1m = prediction.get("micro_1m") if isinstance(prediction.get("micro_1m"), dict) else {}
+    forecast = prediction.get("forecast") if isinstance(prediction.get("forecast"), dict) else {}
+    risks = prediction.get("risk_factors") if isinstance(prediction.get("risk_factors"), list) else []
+    elapsed_sec = to_float(prediction.get("elapsed_ms") or extra.get("deepseek_async_elapsed_ms")) / 1000
+    score = to_float(purchase.get("score_pct"))
+    score_text = f"{score:.1f}%" if score > 0 else "-"
+    return (
+        f"DeepSeek K线补充 | ${symbol}\n"
+        f"购买价值: {purchase.get('label') or '-'} | 评分: {score_text} | 置信: {prediction.get('confidence') or '-'}\n"
+        f"AI偏向: {prediction.get('bias') or '-'} | 状态: {prediction.get('status') or '-'} | 耗时: {elapsed_sec:.1f}s\n"
+        f"摘要: {short_text(prediction.get('summary'), 180) or '-'}\n"
+        f"5m结构: {pattern_5m.get('label') or '-'} | 风险: {pattern_5m.get('risk_level') or '-'}\n"
+        f"1m确认: {micro_1m.get('label') or '-'} | 决策: {micro_1m.get('decision') or '-'}\n"
+        f"窗口: 5m {forecast.get('next_5m') or '-'} | 30m {forecast.get('next_30m') or '-'} | 4h {forecast.get('next_4h') or '-'}\n"
+        f"风险: {short_text('；'.join(str(item) for item in risks if item), 180) or '-'}\n"
+        f"CA: {address}"
+    )
+
+
+def _run_deepseek_post_push_analysis(
+    *,
+    key: str,
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    analysis: dict[str, Any],
+    candles_5m: list[dict[str, Any]],
+    candles_1m: list[dict[str, Any]],
+    base_extra: dict[str, Any],
+    signal_text: str,
+    tg_message_id: int | None,
+) -> None:
+    address = token_address(token)
+    signal_type = str((analysis or {}).get("signal_type") or base_extra.get("signal_type") or "")
+    started = time.time()
+    try:
+        enriched_analysis = maybe_attach_deepseek_kline_prediction(
+            token=token,
+            summary=summary,
+            analysis=analysis,
+            candles_5m=candles_5m,
+            candles_1m=candles_1m,
+        )
+        prediction = enriched_analysis.get("deepseek_kline_prediction") if isinstance(enriched_analysis, dict) else {}
+        if not isinstance(prediction, dict) or not prediction:
+            print(f"{address[:8]} deepseek async finished without prediction")
+            return
+        elapsed_ms = to_int(prediction.get("elapsed_ms")) or int((time.time() - started) * 1000)
+        api_ready = is_deepseek_api_prediction(prediction)
+        updated_extra = {
+            **base_extra,
+            "deepseek_kline_prediction": prediction,
+            "kline_prediction_source_docs": prediction.get("source_docs") or [],
+            "kline_prediction_summary": prediction.get("summary") or "",
+            "deepseek_async_status": "ok" if api_ready else str(prediction.get("status") or "fallback"),
+            "deepseek_async_elapsed_ms": elapsed_ms,
+            "event_ts": base_extra.get("event_ts") or now_ts(),
+        }
+        updated_extra = enrich_signal_strategy_extra(updated_extra)
+        try:
+            update_top100_push_deepseek(
+                address=address,
+                signal_type=signal_type,
+                extra=json_safe(updated_extra),
+                text=signal_text,
+                status="deepseek_update",
+                source="bottom_abnormal",
+                chain=CHAIN,
+            )
+        except Exception as exc:
+            print(f"{address[:8]} deepseek async db update failed: {exc}")
+        update_bottom_live_track_deepseek(address, updated_extra)
+        update_text = format_deepseek_async_reply(address, updated_extra)
+        publish_plugin_signal(update_text, "bottom_abnormal", status="deepseek_update", ca=address, extra=updated_extra)
+        publish_tg_alert(update_text, "bottom_abnormal_followup", status="deepseek_update", ca=address, extra=updated_extra)
+        if tg_message_id and api_ready:
+            send_tg_reply(update_text, tg_message_id, updated_extra)
+        print(
+            f"{address[:8]} deepseek async update done: status={prediction.get('status')} "
+            f"api={api_ready} elapsed={elapsed_ms}ms"
+        )
+    except Exception as exc:
+        print(f"{address[:8]} deepseek async update exception: {exc}")
+    finally:
+        with _DEEPSEEK_ASYNC_LOCK:
+            _DEEPSEEK_ASYNC_INFLIGHT.discard(key)
+
+
+def schedule_deepseek_post_push_analysis(
+    *,
+    token: dict[str, Any],
+    summary: dict[str, Any],
+    analysis: dict[str, Any],
+    candles_5m: list[dict[str, Any]],
+    candles_1m: list[dict[str, Any]],
+    base_extra: dict[str, Any],
+    signal_text: str,
+    tg_message_id: int | None = None,
+) -> bool:
+    if not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
+        return False
+    signal_type = str((analysis or {}).get("signal_type") or base_extra.get("signal_type") or "")
+    if not deepseek_signal_eligible(signal_type) or (analysis or {}).get("deepseek_kline_prediction"):
+        return False
+    address = token_address(token)
+    if not address:
+        return False
+    key = _deepseek_async_key(address, signal_type, to_int((analysis or {}).get("snapshot_id") or base_extra.get("snapshot_id")))
+    with _DEEPSEEK_ASYNC_LOCK:
+        if key in _DEEPSEEK_ASYNC_INFLIGHT:
+            return False
+        _DEEPSEEK_ASYNC_INFLIGHT.add(key)
+    _DEEPSEEK_ASYNC_EXECUTOR.submit(
+        _run_deepseek_post_push_analysis,
+        key=key,
+        token=json_safe(token),
+        summary=json_safe(summary),
+        analysis=json_safe(analysis),
+        candles_5m=json_safe(candles_5m or []),
+        candles_1m=json_safe(candles_1m or []),
+        base_extra=json_safe(base_extra or {}),
+        signal_text=signal_text or "",
+        tg_message_id=to_int(tg_message_id),
+    )
+    print(f"{address[:8]} deepseek async scheduled signal={signal_type} tg_reply={to_int(tg_message_id)}")
+    return True
 
 
 def send_tg_reply(text: str, reply_to_message_id: int, extra: dict[str, Any]) -> int | None:
@@ -4026,6 +4262,13 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
         extra["winrate_prediction"] = _build_winrate_from_deepseek(extra, ds_pred)
     else:
         extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
+        if str(extra.get("deepseek_async_status") or "").lower() == "pending":
+            extra["winrate_prediction"] = {
+                **(extra.get("winrate_prediction") or {}),
+                "analysis_source": "pending_deepseek",
+                "analysis_source_label": "DeepSeek 分析中",
+                "analysis_source_status": "pending",
+            }
     return extra
 
 
@@ -4651,6 +4894,11 @@ def build_bottom_signal_extra(
     kline_journey = enrich_kline_journey_for_signal(journey_source, signal_type)
     micro_1m = summary.get("_1m_micro") if isinstance(summary.get("_1m_micro"), dict) else {}
     deepseek_kline_prediction = analysis.get("deepseek_kline_prediction") if isinstance(analysis.get("deepseek_kline_prediction"), dict) else {}
+    deepseek_async_status = ""
+    if deepseek_kline_prediction:
+        deepseek_async_status = "ok" if is_deepseek_api_prediction(deepseek_kline_prediction) else str(deepseek_kline_prediction.get("status") or "fallback")
+    elif BOTTOM_DEEPSEEK_ASYNC_ENABLED and deepseek_signal_eligible(signal_type):
+        deepseek_async_status = "pending"
     return {
         "snapshot_id": analysis.get("snapshot_id", 0),
         "event_ts": signal_ts,
@@ -4746,6 +4994,7 @@ def build_bottom_signal_extra(
         "kline_1m_volume_ratio": micro_1m.get("volume_ratio") if micro_1m else 0,
         "kline_1m_change_pct": micro_1m.get("change_pct") if micro_1m else 0,
         "deepseek_kline_prediction": deepseek_kline_prediction,
+        "deepseek_async_status": deepseek_async_status,
         "kline_prediction_source_docs": deepseek_kline_prediction.get("source_docs") if deepseek_kline_prediction else [],
         "kline_prediction_summary": deepseek_kline_prediction.get("summary") if deepseek_kline_prediction else "",
         "vol_1m_ratio": to_float(summary.get("_1m_vol_ratio", 0)),
@@ -5300,7 +5549,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
         print(f"{token_label(token)} skip push: quiet_breakout large mcap ${current_mcap:,.0f} > $500K")
         notify = False
 
-    if notify and should_notify(analysis) and not already_notified:
+    if notify and should_notify(analysis) and not already_notified and not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
         analysis = maybe_attach_deepseek_kline_prediction(
             token=token,
             summary=summary,
@@ -5311,7 +5560,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
 
     if notify and should_notify(analysis) and not already_notified:
         if USE_AGENT_DECISION:
-            run_agent_execution(
+            agent_context = run_agent_execution(
                 token=token,
                 summary=summary,
                 raw_holders=raw_holders,
@@ -5324,11 +5573,47 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 has_previous_bottom_signal=has_previous_bottom_signal,
                 snapshot_id=snapshot_id,
             )
+            action_execution = agent_context.decision.get("action_executor") if agent_context else {}
+            results = action_execution.get("results") if isinstance(action_execution, dict) else []
+            frontend_pushed = any(
+                isinstance(item, dict) and item.get("step") == "publish_frontend" and item.get("status") == "ok"
+                for item in (results or [])
+            )
+            tg_message_id = next(
+                (
+                    to_int(item.get("message_id"))
+                    for item in (results or [])
+                    if isinstance(item, dict) and item.get("step") == "send_tg" and to_int(item.get("message_id")) > 0
+                ),
+                0,
+            )
+            if frontend_pushed:
+                async_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
+                schedule_deepseek_post_push_analysis(
+                    token=token,
+                    summary=summary,
+                    analysis=analysis,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                    base_extra=async_extra,
+                    signal_text=abnormal_signal_text(token, analysis),
+                    tg_message_id=tg_message_id,
+                )
         else:
             web_extra = build_bottom_signal_extra(token, summary, analysis, baseline)
             signal_text = abnormal_signal_text(token, analysis)
             if publish_frontend_signal_update(signal_text, web_extra, snapshot_id=snapshot_id):
-                send_tg(signal_text, extra=web_extra)
+                tg_message_id = send_tg(signal_text, extra=web_extra)
+                schedule_deepseek_post_push_analysis(
+                    token=token,
+                    summary=summary,
+                    analysis=analysis,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                    base_extra=web_extra,
+                    signal_text=signal_text,
+                    tg_message_id=tg_message_id,
+                )
     elif notify and should_notify(analysis) and already_notified:
         print(f"{token_label(token)} signal {analysis.get('signal_type')} already notified, skip repeat push")
     elif notify and has_previous_bottom_signal:
@@ -5377,17 +5662,28 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 top_loss_traders,
             )
             quiet_breakout = {**quiet_breakout, "snapshot_id": quiet_snapshot_id}
-            quiet_breakout = maybe_attach_deepseek_kline_prediction(
-                token=token,
-                summary=summary,
-                analysis=quiet_breakout,
-                candles_5m=candles_5m,
-                candles_1m=candles_1m,
-            )
+            if not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
+                quiet_breakout = maybe_attach_deepseek_kline_prediction(
+                    token=token,
+                    summary=summary,
+                    analysis=quiet_breakout,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                )
             quiet_extra = build_bottom_signal_extra(token, summary, quiet_breakout, quiet_baseline)
             quiet_text = quiet_breakout_signal_text(token, quiet_breakout)
             if publish_frontend_signal_update(quiet_text, quiet_extra, status="frontend_update", snapshot_id=quiet_snapshot_id):
-                send_tg(quiet_text, extra=quiet_extra)
+                quiet_message_id = send_tg(quiet_text, extra=quiet_extra)
+                schedule_deepseek_post_push_analysis(
+                    token=token,
+                    summary=summary,
+                    analysis=quiet_breakout,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                    base_extra=quiet_extra,
+                    signal_text=quiet_text,
+                    tg_message_id=quiet_message_id,
+                )
             print(
                 f"{token_label(token)} quiet_breakout {quiet_breakout['price_change_pct']:.1f}% "
                 f"after sideways {quiet_breakout['quiet_duration_sec'] / 3600:.1f}h "

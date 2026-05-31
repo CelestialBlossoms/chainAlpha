@@ -69,8 +69,8 @@ class ActionExecutorAgent(BaseAgent):
         for step in plan:
             try:
                 if step == "send_tg":
-                    bottom.send_tg(observation["signal_text"], extra=observation["extra"])
-                    results.append({"step": step, "status": "ok"})
+                    message_id = bottom.send_tg(observation["signal_text"], extra=observation["extra"])
+                    results.append({"step": step, "status": "ok", "message_id": message_id})
                 elif step == "publish_frontend":
                     published = bottom.publish_frontend_signal_update(
                         observation["signal_text"],

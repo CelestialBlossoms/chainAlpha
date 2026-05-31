@@ -213,6 +213,62 @@ def record_top100_push(
     return bool(db_op(_op))
 
 
+def update_top100_push_deepseek(
+    *,
+    address: str,
+    signal_type: str,
+    extra: dict[str, Any],
+    text: str = "",
+    status: str = "deepseek_update",
+    source: str = "bottom_abnormal",
+    chain: str = "sol",
+) -> bool:
+    address = str(address or "").strip()
+    signal_type = str(signal_type or "").strip()
+    if not address or not signal_type or signal_type == "watch":
+        return False
+    extra = extra or {}
+    deepseek_prediction = (
+        extra.get("deepseek_kline_prediction")
+        if isinstance(extra.get("deepseek_kline_prediction"), dict)
+        else None
+    )
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE bottom_top100_push_records
+            SET
+                extra = %s,
+                deepseek_prediction = %s,
+                status = CASE WHEN status = 'backfilled' THEN %s ELSE status END,
+                text = CASE WHEN %s <> '' THEN %s ELSE text END
+            WHERE chain = %s
+              AND source = %s
+              AND address = %s
+              AND signal_type = %s
+              AND status <> 'backfilled'
+            RETURNING id
+            """,
+            (
+                Json(extra),
+                Json(deepseek_prediction) if deepseek_prediction else None,
+                status,
+                text or "",
+                text or "",
+                chain,
+                source,
+                address,
+                signal_type,
+            ),
+        )
+        return cur.fetchone() is not None
+
+    ensure_top100_push_records_table()
+    return bool(db_op(_op))
+
+
 def top100_push_record_exists(
     address: str,
     *,

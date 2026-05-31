@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", "deepseek-chat")
-DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "300")))
+DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "360")))
 DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
@@ -538,9 +538,13 @@ def analyze_deepseek_kline_prediction(
 
     try:
         message = resp.json().get("choices", [{}])[0].get("message", {}) or {}
-        content = message.get("content") or message.get("reasoning_content") or ""
+        content = message.get("content") or ""
+        reasoning_content = message.get("reasoning_content") or ""
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return _fallback_from_fingerprints(local_fp, status=f"bad_response:{exc}")
+
+    if not content and reasoning_content:
+        return _fallback_from_fingerprints(local_fp, status="reasoning_only_no_json")
 
     data = _extract_json_object(content)
     if not data:
