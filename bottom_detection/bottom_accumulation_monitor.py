@@ -1793,9 +1793,8 @@ def build_deepseek_kline_signal_context(
         "local_5m_journey": journey if isinstance(journey, dict) else {},
         "local_1m_micro": micro_1m,
         "source_docs_expected": [
-            "onchain_trading_guides/02-anomaly-detection-framework.md",
+            "onchain_trading_guides/11-ca-analysis-methodology.md",
             "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
-            "onchain_trading_guides/09-bar-level-strategy.md",
         ],
     }
 
@@ -3738,6 +3737,14 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
     }
 
 
+def is_deepseek_api_prediction(prediction: dict[str, Any] | None) -> bool:
+    if not isinstance(prediction, dict) or not prediction.get("ready"):
+        return False
+    status = str(prediction.get("status") or "").lower()
+    model = str(prediction.get("model") or "").lower()
+    return status == "ok" and model and not model.startswith("local_")
+
+
 def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
     """
     Estimate the probability that a bottom-abnormal CA reaches the historical
@@ -3946,7 +3953,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
 
     strategy_plan = compute_historical_strategy_plan(extra, risk_factors)
     deepseek_kline = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
-    if deepseek_kline.get("ready"):
+    if is_deepseek_api_prediction(deepseek_kline):
         ds_summary = str(deepseek_kline.get("summary") or "").strip()
         ds_bias = str(deepseek_kline.get("bias") or "unknown")
         ds_confidence = str(deepseek_kline.get("confidence") or "low")
@@ -3982,6 +3989,10 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "label": label,
         "buy_value_label": label,
         "confidence": confidence,
+        "source": "hardcoded",
+        "analysis_source": "hardcoded",
+        "analysis_source_label": "硬编码兜底",
+        "analysis_source_status": deepseek_kline.get("status") if deepseek_kline else "no_deepseek_prediction",
         "feature_count": feature_count,
         "evidence": evidence[:6],
         "risk_factors": risk_factors[:6],
@@ -3994,7 +4005,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "kline_1m_micro": micro_1m,
         "deepseek_kline_prediction": deepseek_kline,
         "strategy_plan": strategy_plan,
-        "source_doc": "onchain_trading_guides/02-anomaly-detection-framework.md + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md + onchain_trading_guides/09-bar-level-strategy.md",
+        "source_doc": "hardcoded_fallback + onchain_trading_guides/11-ca-analysis-methodology.md + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
     }
 
 
@@ -4011,7 +4022,7 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
 
     # Prefer DeepSeek prediction; fall back to hardcoded only when DeepSeek unavailable
     ds_pred = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
-    if ds_pred.get("ready"):
+    if is_deepseek_api_prediction(ds_pred):
         extra["winrate_prediction"] = _build_winrate_from_deepseek(extra, ds_pred)
     else:
         extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
@@ -4026,6 +4037,7 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
     pattern_5m = ds_pred.get("pattern_5m") if isinstance(ds_pred.get("pattern_5m"), dict) else {}
     micro_1m = ds_pred.get("micro_1m") if isinstance(ds_pred.get("micro_1m"), dict) else {}
     forecast = ds_pred.get("forecast") if isinstance(ds_pred.get("forecast"), dict) else {}
+    purchase = ds_pred.get("purchase_value") if isinstance(ds_pred.get("purchase_value"), dict) else {}
     local_fp = ds_pred.get("local_fingerprints") if isinstance(ds_pred.get("local_fingerprints"), dict) else {}
     signal_type = str(extra.get("signal_type") or "")
 
@@ -4053,11 +4065,16 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
     elif local_fp.get("position_zone") == "ceiling":
         predicted_wr20 -= 10
         predicted_wr50 -= 8
+    if to_float(purchase.get("score_pct")) > 0:
+        predicted_wr20 = to_float(purchase.get("score_pct"))
+        predicted_wr50 = max(3.0, min(60.0, predicted_wr20 * 0.55))
 
     predicted_wr20 = max(10, min(85, predicted_wr20))
     predicted_wr50 = max(3, min(60, predicted_wr50))
 
     evidence = [f"DeepSeek: {ds_summary}"]
+    if purchase.get("basis"):
+        evidence.append(f"购买价值依据: {purchase.get('basis')}")
     if pattern_5m.get("label"):
         evidence.append(f"5m结构: {pattern_5m.get('label')}")
     if micro_1m.get("label"):
@@ -4071,9 +4088,11 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
     if pattern_5m.get("risk_level") == "high":
         risk_factors.append("5m结构高风险")
 
-    label = "高价值" if ds_bias == "bullish" and ds_confidence in ("high","medium") else \
-           "中等价值" if ds_bias in ("bullish","neutral") else \
-           "低价值/回避"
+    label = str(purchase.get("label") or "").strip()
+    if not label:
+        label = "高价值观察" if ds_bias == "bullish" and ds_confidence in ("high", "medium") else \
+                "中等价值观察" if ds_bias in ("bullish", "neutral") else \
+                "低价值/回避"
 
     return {
         "target": "max_gain_gte_20pct",
@@ -4084,6 +4103,9 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "buy_value_label": label,
         "confidence": ds_confidence,
         "source": "deepseek",
+        "analysis_source": "deepseek",
+        "analysis_source_label": "DeepSeek AI",
+        "analysis_source_status": ds_pred.get("status") or "ok",
         "evidence": evidence[:6],
         "risk_factors": risk_factors[:6],
         "profit_target_probabilities": {
@@ -4097,13 +4119,14 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "strategy_plan": {
             "signal_label": f"{signal_type} (DeepSeek)",
             "strategy_profile": f"DeepSeek {ds_bias}/{ds_confidence}",
-            "strategy_action": "参考DeepSeek建议" if ds_bias == "bullish" else "谨慎/观望" if ds_bias == "neutral" else "回避",
+            "strategy_action": label,
             "kline_forecast": forecast.get("next_4h", ds_summary),
             "deepseek_forecast": forecast,
             "deepseek_bias": ds_bias,
             "deepseek_confidence": ds_confidence,
+            "purchase_value_basis": purchase.get("basis") or "",
         },
-        "source_doc": "deepseek_kline_predictor + 08-5m-fingerprint-encyclopedia.md + 09-bar-level-strategy.md",
+        "source_doc": "deepseek_api + onchain_trading_guides/11-ca-analysis-methodology.md + onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
     }
 
 

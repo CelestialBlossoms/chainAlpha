@@ -18,7 +18,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("BOTTOM_DEEPSEEK_KLINE_MODEL", os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"))
 DEEPSEEK_TIMEOUT = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_TIMEOUT", os.getenv("DEEPSEEK_TIMEOUT", "300")))
-DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "0").strip().lower() not in {
+DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
     "no",
@@ -27,9 +27,8 @@ DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "
 MAX_5M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_5M_CANDLES", "72"))
 MAX_1M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_1M_CANDLES", "90"))
 SOURCE_DOCS = (
-    "onchain_trading_guides/02-anomaly-detection-framework.md",
+    "onchain_trading_guides/11-ca-analysis-methodology.md",
     "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
-    "onchain_trading_guides/09-bar-level-strategy.md",
 )
 
 # Cached strategy docs with mtime-based invalidation
@@ -48,6 +47,7 @@ REQUIRED_SCHEMA = {
     "pattern_5m": {},
     "micro_1m": {},
     "forecast": {},
+    "purchase_value": {"label": "", "score_pct": 0, "basis": ""},
     "strategy_observations": [],
     "risk_factors": [],
     "watch_windows": [],
@@ -333,12 +333,15 @@ def build_cached_system_prompt() -> str:
             doc_texts.append(f"### {path}\n\n{text}")
 
     prompt = (
-        "You are a structured K-line prediction engine for Solana bottom-abnormal CA alerts. "
-        "Analyze 5m structure and 1m micro confirmation from the supplied OHLCV data. "
+        "You are a structured purchase-value analysis engine for Solana bottom-abnormal CA alerts. "
+        "Analyze 5m structure, 1m micro confirmation, and CA context from the supplied OHLCV and signal data. "
         "The local_fingerprints are pre-computed hints — validate them against raw K-line data, "
         "correct any errors, and incorporate them into your analysis. "
-        "Return observable K-line prediction only. "
+        "Use the CA methodology document as the decision workflow and the 5m fingerprint encyclopedia as the pattern reference. "
+        "Return observable purchase-value and K-line analysis only. "
         "Do not give trading advice, order instructions, position sizing, stop-loss, or take-profit recommendations. "
+        "For purchase_value.label use one of: 高价值观察, 中等价值观察, 低价值/回避, 待观察. "
+        "For purchase_value.score_pct return a 0-100 observation score, not a promise of return. "
         "Output JSON only.\n\n"
         "## Reference Strategy Documents\n\n"
         + "\n\n".join(doc_texts)
@@ -398,6 +401,7 @@ def normalize_prediction(data: dict[str, Any], *, model: str, elapsed_ms: int) -
     pattern = data.get("pattern_5m") if isinstance(data.get("pattern_5m"), dict) else {}
     micro = data.get("micro_1m") if isinstance(data.get("micro_1m"), dict) else {}
     forecast = data.get("forecast") if isinstance(data.get("forecast"), dict) else {}
+    purchase = data.get("purchase_value") if isinstance(data.get("purchase_value"), dict) else {}
     confidence = str(data.get("confidence") or "low").lower()
     if confidence not in {"high", "medium", "low"}:
         confidence = "low"
@@ -431,6 +435,11 @@ def normalize_prediction(data: dict[str, Any], *, model: str, elapsed_ms: int) -
             "next_5m": _safe_text(forecast.get("next_5m"), 120),
             "next_30m": _safe_text(forecast.get("next_30m"), 120),
             "next_4h": _safe_text(forecast.get("next_4h"), 120),
+        },
+        "purchase_value": {
+            "label": _safe_text(purchase.get("label"), 40),
+            "score_pct": max(0.0, min(100.0, round(_to_float(purchase.get("score_pct")), 1))),
+            "basis": _safe_text(purchase.get("basis"), 180),
         },
         "strategy_observations": _safe_list(data.get("strategy_observations"), 5, 140),
         "risk_factors": _safe_list(data.get("risk_factors"), 5, 140),
@@ -603,6 +612,11 @@ def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[s
             "next_5m": f"bias={bias}",
             "next_30m": "need 30min data" if "chg_30min" not in m1p else f"30min={m1p.get('chg_30min',0):+.1f}%",
             "next_4h": f"cap={has_cap}, pos={pos:.0f}%",
+        },
+        "purchase_value": {
+            "label": "待观察",
+            "score_pct": 0.0,
+            "basis": f"DeepSeek unavailable ({status}); local fingerprints only",
         },
         "strategy_observations": [
             f"local_fallback: DeepSeek unavailable ({status})",

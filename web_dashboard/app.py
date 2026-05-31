@@ -2675,20 +2675,20 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
     if not track.get("narrative_category") and narrative_category:
         track["narrative_category"] = str(narrative_category)
     existing_prediction = track.get("winrate_prediction") or {}
-    existing_doc = str(existing_prediction.get("source_doc") or "")
+    existing_source = str(existing_prediction.get("analysis_source") or existing_prediction.get("source") or "")
+    extra_deepseek = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
+    extra_has_api_deepseek = extra_deepseek.get("ready") and str(extra_deepseek.get("status") or "").lower() == "ok"
     has_journey = bool(
         isinstance(existing_prediction.get("kline_journey"), dict)
         and existing_prediction.get("kline_journey", {}).get("ready")
     )
     extra_has_journey = bool(isinstance(extra.get("kline_journey"), dict) and extra.get("kline_journey", {}).get("ready"))
     if existing_prediction and existing_prediction.get("strategy_plan") and (
-        "05-data-driven-strategy.md" in existing_doc or "09-bar-level-strategy.md" in existing_doc
-    ) and (
-        has_journey or not extra_has_journey
-    ):
+        has_journey or not extra_has_journey or existing_source in {"deepseek", "hardcoded"}
+    ) and not (extra_has_api_deepseek and existing_source != "deepseek"):
         return track
     try:
-        from bottom_detection.bottom_accumulation_monitor import compute_historical_winrate_prediction
+        from bottom_detection.bottom_accumulation_monitor import enrich_signal_strategy_extra
     except Exception:
         return track
 
@@ -2697,7 +2697,8 @@ def _bottom_live_track_with_prediction(track: dict[str, Any] | None, extra: dict
     pool_liquidity = _safe_float(merged.get("pool_liquidity") or merged.get("liquidity") or merged.get("pool_total_liquidity"))
     if current_mcap > 0 and pool_liquidity > 0 and not _safe_float(merged.get("pool_mcap_ratio")):
         merged["pool_mcap_ratio"] = pool_liquidity / current_mcap
-    track["winrate_prediction"] = compute_historical_winrate_prediction(merged)
+    enriched = enrich_signal_strategy_extra(merged)
+    track["winrate_prediction"] = enriched.get("winrate_prediction") or {}
     return track
 
 
@@ -2708,11 +2709,14 @@ def _bottom_live_track_attach_predictions(items: list[dict[str, Any]]) -> list[d
         address = str((item or {}).get("address") or "").strip()
         current_prediction = (item or {}).get("winrate_prediction") or {}
         had_prediction = bool(current_prediction and current_prediction.get("strategy_plan"))
+        had_source = str(current_prediction.get("analysis_source") or current_prediction.get("source") or "")
         had_narrative = bool((item or {}).get("narrative") or (item or {}).get("narrative_desc"))
         next_item = _bottom_live_track_with_prediction(item, extra_by_address.get(address)) or item
+        next_prediction = next_item.get("winrate_prediction") or {}
         has_new_prediction = not had_prediction and bool(next_item.get("winrate_prediction"))
+        has_upgraded_prediction = had_source != "deepseek" and str(next_prediction.get("analysis_source") or next_prediction.get("source") or "") == "deepseek"
         has_new_narrative = not had_narrative and bool(next_item.get("narrative") or next_item.get("narrative_desc"))
-        if address and (has_new_prediction or has_new_narrative):
+        if address and (has_new_prediction or has_upgraded_prediction or has_new_narrative):
             _bottom_live_track_save(address, next_item)
         enriched.append(next_item)
     return enriched
