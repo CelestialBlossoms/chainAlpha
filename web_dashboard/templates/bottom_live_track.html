@@ -122,7 +122,7 @@
 
     .metric-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      grid-template-columns: repeat(6, minmax(130px, 1fr));
       gap: 10px;
       margin: 14px 0;
     }
@@ -598,7 +598,7 @@
     @media (max-width: 760px) {
       .terminal-header { grid-template-columns: 1fr; align-items: start; }
       .header-actions { justify-content: flex-start; }
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .alert-queue { grid-template-columns: 1fr; }
       .toolbar { align-items: stretch; flex-direction: column; }
       .filter-input { width: 100%; }
@@ -632,6 +632,16 @@
           <div class="metric-note">当前仍在刷新</div>
         </div>
         <div class="metric-box">
+          <div class="metric-label">🟢 新币异动</div>
+          <div id="metric-revival" class="metric-value" style="color: var(--green);">-</div>
+          <div class="metric-note">new_revival 信号</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">🟠 老币异动</div>
+          <div id="metric-abnormal" class="metric-value" style="color: var(--amber);">-</div>
+          <div class="metric-note">abnormal 信号</div>
+        </div>
+        <div class="metric-box">
           <div class="metric-label">高置信</div>
           <div id="metric-high" class="metric-value">-</div>
           <div class="metric-note">预测置信度 high 或胜率 >= 60%</div>
@@ -661,6 +671,8 @@
           <input id="filter-input" class="filter-input" type="search" placeholder="搜索 Token / CA / 信号 / 叙事">
           <div class="segments" role="tablist" aria-label="筛选">
             <button class="segment active" type="button" data-filter="all">全部</button>
+            <button class="segment" type="button" data-filter="new_revival">🟢 新币异动</button>
+            <button class="segment" type="button" data-filter="abnormal">🟠 老币异动</button>
             <button class="segment" type="button" data-filter="alert">报警</button>
             <button class="segment" type="button" data-filter="high">高置信</button>
             <button class="segment" type="button" data-filter="active">追踪中</button>
@@ -725,6 +737,8 @@
     const filterInput = document.getElementById("filter-input");
     const audioToggle = document.getElementById("audio-toggle");
     const metricActive = document.getElementById("metric-active");
+    const metricRevival = document.getElementById("metric-revival");
+    const metricAbnormal = document.getElementById("metric-abnormal");
     const metricHigh = document.getElementById("metric-high");
     const metricNew24h = document.getElementById("metric-new24h");
     const metricPeak = document.getElementById("metric-peak");
@@ -1019,6 +1033,8 @@
       const q = filterInput.value.trim().toLowerCase();
       return items.filter(item => {
         const isAlert = Boolean(pullbackInfo(item));
+        if (filterMode === "new_revival" && String(item.signal_type || "") !== "new_revival") return false;
+        if (filterMode === "abnormal" && String(item.signal_type || "") !== "abnormal") return false;
         if (filterMode === "alert" && !isAlert) return false;
         if (filterMode === "high" && !isHighConfidence(item)) return false;
         if (filterMode === "active" && item.status !== "tracking") return false;
@@ -1044,8 +1060,12 @@
         const peak = safeNum(item.peak_mcap);
         return entry > 0 ? ((peak - entry) / entry * 100) : 0;
       });
+      const revival = active.filter(i => String(i.signal_type || "") === "new_revival").length;
+      const abnormal = active.filter(i => String(i.signal_type || "") === "abnormal").length;
       const avgPeak = peakPnls.length ? peakPnls.reduce((a, b) => a + b, 0) / peakPnls.length : 0;
       metricActive.textContent = String(active.length);
+      metricRevival.textContent = String(revival);
+      metricAbnormal.textContent = String(abnormal);
       metricHigh.textContent = String(high);
       metricNew24h.textContent = String(new24h);
       metricPeak.textContent = peakPnls.length ? formatPnl(avgPeak) : "-";
