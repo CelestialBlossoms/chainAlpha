@@ -518,6 +518,7 @@ def analyze_deepseek_kline_prediction(
         ],
         "temperature": 0.1,
         "max_tokens": 4096,
+        "response_format": {"type": "json_object"},
     }
     started = time.time()
     try:
