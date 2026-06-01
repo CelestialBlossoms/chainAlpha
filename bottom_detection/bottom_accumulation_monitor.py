@@ -1280,6 +1280,79 @@ def fetch_kline(address: str, resolution: str, token: dict[str, Any] | None = No
     return cached
 
 
+def _candles_until(candles: list[dict[str, Any]] | None, end_ts: int, limit: int = 0) -> list[dict[str, Any]]:
+    rows = [c for c in (candles or []) if to_int(c.get("ts")) > 0 and (end_ts <= 0 or to_int(c.get("ts")) <= end_ts)]
+    rows.sort(key=lambda item: to_int(item.get("ts")))
+    return rows[-limit:] if limit > 0 else rows
+
+
+def deepseek_kline_window_spec(token: dict[str, Any], signal_ts: int) -> dict[str, Any]:
+    active_ts = token_active_ts(token)
+    age_sec = max(0, signal_ts - active_ts) if active_ts > 0 and signal_ts > 0 else token_age_sec(token)
+    if age_sec >= 4 * 3600:
+        return {
+            "age_bucket": "gte_4h",
+            "age_sec": age_sec,
+            "5m_lookback_sec": 4 * 3600,
+            "5m_limit": 48,
+            "1m_lookback_sec": 3600,
+            "1m_limit": 60,
+        }
+    return {
+        "age_bucket": "lt_4h",
+        "age_sec": age_sec,
+        "5m_lookback_sec": 3600,
+        "5m_limit": 12,
+        "1m_lookback_sec": 30 * 60,
+        "1m_limit": 30,
+    }
+
+
+def fetch_deepseek_signal_kline_windows(address: str, token: dict[str, Any], signal_ts: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Fetch only the pre-signal K-line windows used by DeepSeek."""
+    signal_ts = to_int(signal_ts) or now_ts()
+    spec = deepseek_kline_window_spec(token, signal_ts)
+    active_ts = token_active_ts(token)
+    start_5m = signal_ts - to_int(spec["5m_lookback_sec"])
+    start_1m = signal_ts - to_int(spec["1m_lookback_sec"])
+    if active_ts > 0:
+        start_5m = max(active_ts, start_5m)
+        start_1m = max(active_ts, start_1m)
+    candles_5m = _candles_until(fetch_kline_range(address, "5m", start_5m, signal_ts), signal_ts, to_int(spec["5m_limit"]))
+    candles_1m = _candles_until(fetch_kline_range(address, "1m", start_1m, signal_ts), signal_ts, to_int(spec["1m_limit"]))
+    meta = {
+        **spec,
+        "signal_ts": signal_ts,
+        "5m_from_ts": start_5m,
+        "5m_to_ts": signal_ts,
+        "5m_count": len(candles_5m),
+        "1m_from_ts": start_1m,
+        "1m_to_ts": signal_ts,
+        "1m_count": len(candles_1m),
+    }
+    return candles_5m, candles_1m, meta
+
+
+def estimate_pre_signal_peak_mcap(current_mcap: float, candles_5m: list[dict[str, Any]] | None) -> dict[str, Any]:
+    valid = [
+        c for c in (candles_5m or [])
+        if to_float(c.get("high")) > 0 and to_float(c.get("close")) > 0 and to_int(c.get("ts")) > 0
+    ]
+    if current_mcap <= 0 or not valid:
+        return {"mcap": 0.0, "price": 0.0, "ts": 0}
+    last_close = to_float(valid[-1].get("close"))
+    if last_close <= 0:
+        return {"mcap": 0.0, "price": 0.0, "ts": 0}
+    peak = max(valid, key=lambda c: to_float(c.get("high")))
+    peak_price = to_float(peak.get("high"))
+    return {
+        "mcap": current_mcap * (peak_price / last_close) if peak_price > 0 else 0.0,
+        "price": peak_price,
+        "ts": to_int(peak.get("ts")),
+        "current_price": last_close,
+    }
+
+
 def summarize_rebound_after_high(candles: list[dict[str, Any]]) -> dict[str, Any]:
     valid = []
     for candle in candles:
@@ -1773,20 +1846,37 @@ def build_deepseek_kline_signal_context(
     token: dict[str, Any],
     summary: dict[str, Any],
     analysis: dict[str, Any],
+    *,
+    signal_ts: int = 0,
+    kline_window: dict[str, Any] | None = None,
+    pre_signal_peak: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compact signal context for DeepSeek K-line prediction."""
     pool = summary.get("pool") if isinstance(summary.get("pool"), dict) else {}
     kline = summary.get("kline") if isinstance(summary.get("kline"), dict) else {}
     micro_1m = summary.get("_1m_micro") if isinstance(summary.get("_1m_micro"), dict) else {}
     journey = summary.get("_5m_kline_journey") if isinstance(summary.get("_5m_kline_journey"), dict) else kline.get("journey")
+    signal_ts = to_int(signal_ts) or to_int(analysis.get("event_ts") or analysis.get("signal_ts")) or now_ts()
+    window_meta = kline_window if isinstance(kline_window, dict) else {}
+    peak = pre_signal_peak if isinstance(pre_signal_peak, dict) else {}
+    full_ca_ath_mcap = to_float(analysis.get("ath_mcap") or summary.get("ath_mcap"))
+    pre_signal_window_peak_mcap = to_float(peak.get("mcap"))
+    pre_signal_ath_mcap = max(pre_signal_window_peak_mcap, full_ca_ath_mcap)
     return {
         "chain": CHAIN,
         "symbol": token.get("symbol") or "UNKNOWN",
         "address": token_address(token),
+        "event_ts": signal_ts,
+        "signal_ts": signal_ts,
         "signal_type": analysis.get("signal_type") or "",
         "abnormal_rule": analysis.get("abnormal_rule") or "",
         "current_mcap": to_float(analysis.get("current_mcap") or summary.get("mcap")),
-        "ath_mcap": to_float(analysis.get("ath_mcap") or summary.get("ath_mcap")),
+        "ath_mcap": pre_signal_ath_mcap or full_ca_ath_mcap,
+        "pre_signal_ath_mcap": pre_signal_ath_mcap,
+        "pre_signal_window_peak_mcap": pre_signal_window_peak_mcap,
+        "pre_signal_ath_price": to_float(peak.get("price")),
+        "pre_signal_ath_ts": to_int(peak.get("ts")),
+        "full_ca_ath_mcap": full_ca_ath_mcap,
         "price_change_pct": to_float(analysis.get("price_change_pct")),
         "first_signal_change_pct": to_float(analysis.get("first_signal_change_pct")),
         "pool_total_liquidity": to_float(analysis.get("pool_total_liquidity") or pool.get("total_liquidity")),
@@ -1809,6 +1899,7 @@ def build_deepseek_kline_signal_context(
             "bottom_to_current_pct": kline.get("bottom_to_current_pct"),
             "volume_usd": kline.get("volume_usd"),
         },
+        "deepseek_kline_window": window_meta,
         "local_5m_journey": journey if isinstance(journey, dict) else {},
         "local_1m_micro": micro_1m,
         "source_docs_expected": [
@@ -1829,6 +1920,7 @@ def maybe_attach_deepseek_kline_prediction(
     analysis: dict[str, Any],
     candles_5m: list[dict[str, Any]],
     candles_1m: list[dict[str, Any]],
+    signal_ts: int = 0,
 ) -> dict[str, Any]:
     """Attach DeepSeek 5m/1m K-line prediction synchronously."""
     signal_type = str((analysis or {}).get("signal_type") or "")
@@ -1842,12 +1934,34 @@ def maybe_attach_deepseek_kline_prediction(
     try:
         from bottom_detection.deepseek_kline_predictor import analyze_deepseek_kline_prediction, warmup_deepseek_cache
         warmup_deepseek_cache()  # non-blocking, pre-warms prompt cache
+        signal_ts = to_int(signal_ts) or to_int(analysis.get("event_ts") or analysis.get("signal_ts")) or now_ts()
+        scoped_5m, scoped_1m, window_meta = fetch_deepseek_signal_kline_windows(address, token, signal_ts)
+        if not scoped_5m:
+            spec = deepseek_kline_window_spec(token, signal_ts)
+            scoped_5m = _candles_until(candles_5m, signal_ts, to_int(spec.get("5m_limit")))
+            window_meta = {**window_meta, "5m_count": len(scoped_5m), "5m_fallback": "cached"}
+        if not scoped_1m:
+            spec = deepseek_kline_window_spec(token, signal_ts)
+            scoped_1m = _candles_until(candles_1m, signal_ts, to_int(spec.get("1m_limit")))
+            window_meta = {**window_meta, "1m_count": len(scoped_1m), "1m_fallback": "cached"}
+        pre_signal_peak = estimate_pre_signal_peak_mcap(
+            to_float(analysis.get("current_mcap") or summary.get("mcap") or calc_mcap(token)),
+            scoped_5m,
+        )
 
         prediction = analyze_deepseek_kline_prediction(
             address=address,
-            signal=build_deepseek_kline_signal_context(token, summary, analysis),
-            candles_5m=candles_5m,
-            candles_1m=candles_1m,
+            signal=build_deepseek_kline_signal_context(
+                token,
+                summary,
+                analysis,
+                signal_ts=signal_ts,
+                kline_window=window_meta,
+                pre_signal_peak=pre_signal_peak,
+            ),
+            candles_5m=scoped_5m,
+            candles_1m=scoped_1m,
+            signal_ts=signal_ts,
         )
     except Exception as exc:
         print(f"{address[:8]} deepseek kline prediction exception: {exc}")
@@ -2904,6 +3018,7 @@ def _run_deepseek_post_push_analysis(
             analysis=analysis,
             candles_5m=candles_5m,
             candles_1m=candles_1m,
+            signal_ts=to_int(base_extra.get("event_ts") or base_extra.get("signal_ts")) or now_ts(),
         )
         prediction = enriched_analysis.get("deepseek_kline_prediction") if isinstance(enriched_analysis, dict) else {}
         if not isinstance(prediction, dict) or not prediction:

@@ -29,6 +29,29 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertGreater(summary["volume_usd"], 0)
         self.assertIn("rebound_after_high", summary)
 
+    def test_deepseek_kline_window_spec_depends_on_token_age_at_signal(self) -> None:
+        old_spec = bottom_monitor.deepseek_kline_window_spec({"created_at": 1_000}, 1_000 + 5 * 3600)
+        young_spec = bottom_monitor.deepseek_kline_window_spec({"created_at": 1_000}, 1_000 + 2 * 3600)
+
+        self.assertEqual(old_spec["age_bucket"], "gte_4h")
+        self.assertEqual(old_spec["5m_limit"], 48)
+        self.assertEqual(old_spec["1m_limit"], 60)
+        self.assertEqual(young_spec["age_bucket"], "lt_4h")
+        self.assertEqual(young_spec["5m_limit"], 12)
+        self.assertEqual(young_spec["1m_limit"], 30)
+
+    def test_estimate_pre_signal_peak_mcap_uses_window_high_against_signal_close(self) -> None:
+        peak = bottom_monitor.estimate_pre_signal_peak_mcap(
+            50_000,
+            [
+                {"ts": 1, "high": 2.0, "close": 1.0},
+                {"ts": 2, "high": 4.0, "close": 2.0},
+            ],
+        )
+
+        self.assertEqual(peak["mcap"], 100_000)
+        self.assertEqual(peak["price"], 4.0)
+
     def test_risk_tags_classify_known_failure_patterns_without_trade_advice(self) -> None:
         tags = compute_risk_tags(
             {

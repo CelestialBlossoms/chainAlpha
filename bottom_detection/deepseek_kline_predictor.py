@@ -24,8 +24,8 @@ DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "
     "no",
     "off",
 }
-MAX_5M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_5M_CANDLES", "72"))
-MAX_1M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_1M_CANDLES", "90"))
+MAX_5M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_5M_CANDLES", "48"))
+MAX_1M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_1M_CANDLES", "60"))
 SOURCE_DOCS = (
     "onchain_trading_guides/11-ca-analysis-methodology.md",
     "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
@@ -131,13 +131,14 @@ def compact_candles(candles: list[dict[str, Any]] | None, limit: int) -> list[di
 def compute_local_fingerprints(
     candles_5m: list[dict[str, Any]] | None,
     candles_1m: list[dict[str, Any]] | None,
+    signal_ts: int = 0,
 ) -> dict[str, Any]:
     """
     Compute bar-level fingerprints locally from raw K-line data.
     These are cheap to compute and provide fallback analysis when DeepSeek is unavailable.
     Also injected into the prompt to reduce DeepSeek's workload.
     """
-    fp: dict[str, Any] = {"ready": False}
+    fp: dict[str, Any] = {"ready": False, "signal_ts": _to_int(signal_ts)}
 
     if not candles_5m or len(candles_5m) < 12:
         return fp
@@ -219,38 +220,45 @@ def compute_local_fingerprints(
             n_bull = sum(1 for b in seg if b["c"] > b["o"])
             segs.append({"pct": round(pct, 1), "avg_vol": round(avg_v, 2), "bulls": n_bull})
 
-    # ---- 1m micro-structure ----
+    # ---- 1m micro-structure before the abnormal signal ----
     m1_post: dict[str, Any] = {}
     if candles_1m and len(candles_1m) >= 5:
         c1 = [_candle_dict(c) for c in candles_1m]
+        if signal_ts > 0:
+            c1 = [b for b in c1 if b["t"] <= signal_ts]
         c1 = [b for b in c1 if b["o"] > 0]
         if len(c1) >= 5:
-            # Assumes last bar is closest to push time
-            bl = c1[0]["o"] if len(c1) >= 1 else 0
+            signal5 = c1[-5:]
+            bl = signal5[0]["o"] if signal5 else 0
             if bl > 0:
-                post5 = c1[:5] if len(c1) >= 5 else c1
-                chg5 = (post5[-1]["c"] - bl) / bl * 100
-                post5v = sum(b["v"] for b in post5) / len(post5)
-                # Pre-push 1m volume (bars before the first post bar)
-                pre1 = c1[-10:] if len(c1) >= 15 else c1[-5:]
-                pre1v = sum(b["v"] for b in pre1) / len(pre1) if pre1 else post5v
+                chg5 = (signal5[-1]["c"] - bl) / bl * 100
+                signal5v = sum(b["v"] for b in signal5) / len(signal5)
+                pre1 = c1[-35:-5] if len(c1) >= 35 else c1[: max(1, len(c1) - len(signal5))]
+                pre1v = sum(b["v"] for b in pre1) / len(pre1) if pre1 else signal5v
                 m1_post = {
+                    "window": "pre_signal_last5",
+                    "from_ts": signal5[0]["t"],
+                    "to_ts": signal5[-1]["t"],
                     "chg_5min": round(chg5, 1),
-                    "vol_ratio": round(post5v / pre1v, 2) if pre1v > 0 else 0,
+                    "vol_ratio": round(signal5v / pre1v, 2) if pre1v > 0 else 0,
                     "direction": "up" if chg5 > 3 else ("down" if chg5 < -3 else "flat"),
                 }
-                # 30min recovery
                 if len(c1) >= 30:
-                    m1_post["chg_30min"] = round((c1[29]["c"] - bl) / bl * 100, 1)
+                    last30 = c1[-30:]
+                    base30 = last30[0]["o"]
+                    m1_post["chg_30min"] = round((last30[-1]["c"] - base30) / base30 * 100, 1) if base30 > 0 else 0.0
 
-    # ---- Pre-push 1m last 5 bars ----
+    # ---- 1m bars before the final signal-confirmation window ----
     m1_pre: dict[str, Any] = {}
     if candles_1m and len(candles_1m) >= 15:
         c1 = [_candle_dict(c) for c in candles_1m]
+        if signal_ts > 0:
+            c1 = [b for b in c1 if b["t"] <= signal_ts]
         c1 = [b for b in c1 if b["o"] > 0]
         if len(c1) >= 15:
-            pre_last5 = c1[-10:-5]  # 5 bars before push (assumes last 5-10 are post-push)
+            pre_last5 = c1[-10:-5]
             dirs = [1 if b["c"] > b["o"] else -1 for b in pre_last5]
+            m1_pre["window"] = "before_pre_signal_last5"
             m1_pre["last5_direction"] = "bullish" if sum(dirs) > 1 else ("bearish" if sum(dirs) < -1 else "neutral")
             m1_pre["last5_n_bull"] = sum(1 for d in dirs if d > 0)
 
@@ -277,9 +285,9 @@ def compute_local_fingerprints(
     elif position > 80:
         verdict_parts.append("ceiling_price_zone")
     if m1_post.get("chg_5min", 0) > 3:
-        verdict_parts.append("post5min_pump")
+        verdict_parts.append("pre_signal_5min_pump")
     elif m1_post.get("chg_5min", 0) < -8:
-        verdict_parts.append("post5min_crash")
+        verdict_parts.append("pre_signal_5min_crash")
     fp["quick_verdict"] = ", ".join(verdict_parts) if verdict_parts else "no_clear_signal"
 
     return fp
@@ -456,12 +464,15 @@ def build_prompt_payload(
     candles_5m: list[dict[str, Any]] | None,
     candles_1m: list[dict[str, Any]] | None,
     local_fp: dict[str, Any] | None = None,
+    signal_ts: int = 0,
 ) -> dict[str, Any]:
+    signal_ts = _to_int(signal_ts) or _to_int((signal or {}).get("event_ts") or (signal or {}).get("signal_ts"))
     payload: dict[str, Any] = {
         "task": "bottom_abnormal_ca_kline_prediction",
         "schema": REQUIRED_SCHEMA,
         "address": address,
         "signal": signal,
+        "signal_ts": signal_ts,
         "kline_5m": compact_candles(candles_5m, MAX_5M_CANDLES),
         "kline_1m": compact_candles(candles_1m, MAX_1M_CANDLES),
     }
@@ -489,9 +500,11 @@ def analyze_deepseek_kline_prediction(
     signal: dict[str, Any],
     candles_5m: list[dict[str, Any]] | None,
     candles_1m: list[dict[str, Any]] | None,
+    signal_ts: int = 0,
 ) -> dict[str, Any]:
+    signal_ts = _to_int(signal_ts) or _to_int((signal or {}).get("event_ts") or (signal or {}).get("signal_ts"))
     # Always compute local fingerprints (cheap, no API)
-    local_fp = compute_local_fingerprints(candles_5m, candles_1m)
+    local_fp = compute_local_fingerprints(candles_5m, candles_1m, signal_ts=signal_ts)
 
     if not DEEPSEEK_KLINE_ENABLED:
         return _fallback_from_fingerprints(local_fp, status="disabled")
@@ -504,6 +517,7 @@ def analyze_deepseek_kline_prediction(
         candles_5m=candles_5m,
         candles_1m=candles_1m,
         local_fp=local_fp,
+        signal_ts=signal_ts,
     )
     if not prompt_payload["kline_5m"] or not prompt_payload["kline_1m"]:
         return _fallback_from_fingerprints(local_fp, status="missing_kline_data")
@@ -582,11 +596,11 @@ def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[s
     elif chg5 > 3:
         bias = "bullish"
         confidence = "medium"
-        summary = f"推送后5min涨{chg5:+.1f}%, 抢筹确认"
+        summary = f"异动前5min涨{chg5:+.1f}%, 量价确认"
     elif chg5 < -8:
         bias = "bearish"
         confidence = "medium"
-        summary = f"推送后5min暴跌{chg5:+.1f}%, 恐慌未结束"
+        summary = f"异动前5min跌{chg5:+.1f}%, 微结构偏弱"
     else:
         bias = "neutral"
         confidence = "low"
