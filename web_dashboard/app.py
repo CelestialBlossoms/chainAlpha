@@ -1142,12 +1142,14 @@ def _post_push_peak_from_candles(
     entry_price: float = 0,
     current_ts: int = 0,
     resolution: str = "1m",
+    total_supply: float = 0,
 ) -> dict[str, Any]:
     step = _kline_resolution_seconds(resolution)
     pushed_at = _to_ts(pushed_at)
     entry_mcap = _safe_float(entry_mcap)
     current_mcap = _safe_float(current_mcap)
     entry_price = _safe_float(entry_price)
+    total_supply = _safe_float(total_supply)
     current_ts = _to_ts(current_ts) or int(time.time())
     post = [
         candle
@@ -1166,7 +1168,11 @@ def _post_push_peak_from_candles(
     entry_price_used = entry_price or _safe_float(first.get("open")) or _safe_float(first.get("close"))
     peak_candle = max(post, key=lambda candle: _safe_float(candle.get("high")))
     peak_price = _safe_float(peak_candle.get("high"))
-    peak_mcap = entry_mcap * peak_price / entry_price_used if entry_mcap > 0 and entry_price_used > 0 and peak_price > 0 else 0.0
+    peak_mcap = 0.0
+    if total_supply > 0 and peak_price > 0:
+        peak_mcap = peak_price * total_supply
+    elif entry_mcap > 0 and entry_price_used > 0 and peak_price > 0:
+        peak_mcap = entry_mcap * peak_price / entry_price_used
     peak_mcap_at = _to_ts(peak_candle.get("ts")) or pushed_at
     if entry_mcap > peak_mcap:
         peak_mcap = entry_mcap
@@ -2669,6 +2675,7 @@ def _live_track_refresh_one(address: str) -> dict[str, Any] | None:
             entry_price=_safe_float(track.get("entry_price")),
             current_ts=now_ts,
             resolution="5m",
+            total_supply=_safe_float(track.get("total_supply")),
         )
         if _safe_float(peak.get("peak_mcap")) > 0:
             peak_mcap = _safe_float(peak.get("peak_mcap"))

@@ -2851,10 +2851,10 @@ def post_push_peak_from_candles(
     peak_candle = max(post, key=lambda candle: safe_float(candle.get("high")))
     peak_price = safe_float(peak_candle.get("high"))
     peak_mcap = 0.0
-    if entry_mcap > 0 and entry_price_used > 0 and peak_price > 0:
-        peak_mcap = entry_mcap * peak_price / entry_price_used
-    elif total_supply > 0 and peak_price > 0:
+    if total_supply > 0 and peak_price > 0:
         peak_mcap = peak_price * total_supply
+    elif entry_mcap > 0 and entry_price_used > 0 and peak_price > 0:
+        peak_mcap = entry_mcap * peak_price / entry_price_used
 
     peak_mcap_at = int(safe_float(peak_candle.get("ts"))) or pushed_at
     if entry_mcap > peak_mcap:

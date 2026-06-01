@@ -343,9 +343,8 @@ def current_token_ath_mcap(row: dict[str, Any]) -> float:
 
 def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = None) -> float:
     current_mcap = calc_mcap(row)
-    ath_mcap = current_token_ath_mcap(row) or to_float(row.get("_gmgn_ath_mcap"))
-    if ath_mcap > 0:
-        return ath_mcap
+    ath_mcap = current_token_ath_mcap(row) or to_float(row.get("_gmgn_ath_mcap")) or 0.0
+
 
     supply = to_float(row.get("circulating_supply"))
     if supply <= 0:
@@ -355,9 +354,9 @@ def calc_ath_mcap(row: dict[str, Any], candles: list[dict[str, Any]] | None = No
         if high_price > 0:
             candle_ath = high_price * supply
             # Same sanity check for candle-derived ATH
-            if current_mcap <= 0 or candle_ath <= current_mcap * 500:
-                return candle_ath
-    return current_mcap
+            if current_mcap <= 0 or candle_ath <= current_mcap * 50:
+                ath_mcap = max(ath_mcap, candle_ath)
+    return max(ath_mcap, current_mcap)
 
 
 def match_abnormal_rule(ath_mcap: float, current_mcap: float) -> dict[str, Any] | None:
