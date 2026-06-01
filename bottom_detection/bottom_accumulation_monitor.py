@@ -3785,7 +3785,8 @@ def maybe_send_post_push_local_followups(client: Any, key: Any, address: str, st
         text = format_local_followup_text(address, state, analysis)
         publish_plugin_signal(text, "bottom_abnormal", status=f"local_followup_{window_key}", ca=address, extra=extra)
         update_bottom_live_track_local_followup(address, window_key, analysis)
-        sent_message_id = send_tg_reply(text, message_id, extra)
+        # Cancel sending post-push local followup replies to Telegram, keeping frontend track only
+        sent_message_id = 0
         updates[sent_key] = "1"
         updates[f"local_followup_{window_key}_ts"] = str(now_ts())
         if sent_message_id:
