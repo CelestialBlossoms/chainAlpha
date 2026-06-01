@@ -4858,6 +4858,7 @@ def publish_frontend_signal_update(
         return False
     extra = enrich_signal_strategy_extra(extra)
     risk_tags = extra.get("risk_tags") or []
+    bypass_frontend_quality_filters = signal_type == "quiet_runup"
     try:
         inserted = record_top100_push(text=text, extra=extra, status=status, source="bottom_abnormal", chain=CHAIN)
     except Exception as exc:
@@ -4866,6 +4867,30 @@ def publish_frontend_signal_update(
     if not inserted:
         print(f"{address[:8]} skip frontend push: duplicate first push record")
         return False
+    if bypass_frontend_quality_filters:
+        publish_tg_alert(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+        publish_plugin_signal(text, "bottom_abnormal", status=status, ca=address, extra=extra)
+        start_bottom_live_tracking(
+            address=address,
+            symbol=str(extra.get("symbol") or ""),
+            entry_mcap=to_float(extra.get("current_mcap")),
+            entry_price=to_float(extra.get("price")),
+            signal_type=str(extra.get("signal_type") or ""),
+            pool_liquidity=to_float(extra.get("liquidity") or extra.get("pool_total_liquidity")),
+            created_ts=to_int(extra.get("created_ts")),
+            launch_ts=to_int(extra.get("launch_ts")),
+            age_sec=to_int(extra.get("created_age_sec") or extra.get("age_sec")),
+            narrative_desc=str(extra.get("narrative_desc") or extra.get("narrative") or ""),
+            narrative_type=str(extra.get("narrative_type") or ""),
+            narrative_category=str(extra.get("narrative_category") or ""),
+            winrate_prediction=extra.get("winrate_prediction") or compute_historical_winrate_prediction(extra),
+        )
+        threading.Thread(
+            target=_send_quick_verdict,
+            args=(address, extra),
+            daemon=True,
+        ).start()
+        return True
     # Filter 1: ceiling + dead_vol = ~0% success (21 failures, 8 successes killed)
     if "天花板" in risk_tags and "无量" in risk_tags:
         print(f"{address[:8]} skip push: ceiling+dead_vol combo")
@@ -6183,17 +6208,16 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             runup_text = quiet_breakout_signal_text(token, quiet_runup)
-            # quiet_runup: 60-78% dead rate → DB record only, no TG, no frontend
-            record_top100_push(
-                text=runup_text,
-                extra=runup_extra,
-                status="db_only",
-                source="bottom_abnormal",
-                chain=CHAIN,
+            # quiet_runup is frontend-only and uses local followup rules, not DeepSeek.
+            publish_frontend_signal_update(
+                runup_text,
+                runup_extra,
+                status="quiet_runup_frontend",
+                snapshot_id=runup_snapshot_id,
             )
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
-                f"(TG blocked) "
+                f"(frontend only, local rules) "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )

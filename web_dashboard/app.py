@@ -2979,10 +2979,7 @@ def _bottom_live_track_has_local_followup(track: dict[str, Any], window_key: str
     return isinstance(followup, dict) and bool(followup.get("ready"))
 
 
-def _bottom_live_track_backfill_local_followups_once() -> list[dict[str, Any]]:
-    addresses = _bottom_live_track_list_addresses()
-    if not addresses:
-        return []
+def _bottom_live_track_fill_due_local_followups(address: str, track: dict[str, Any], now_value: int) -> list[str]:
     try:
         from bottom_detection.bottom_accumulation_monitor import (
             POST_PUSH_LOCAL_FOLLOWUP_ENABLED,
@@ -2990,9 +2987,49 @@ def _bottom_live_track_backfill_local_followups_once() -> list[dict[str, Any]]:
             analyze_local_followup_window,
         )
     except Exception as exc:
-        print(f"  [BottomLiveTrack] local followup backfill unavailable: {exc}")
+        print(f"  [BottomLiveTrack] local followup unavailable: {exc}")
         return []
-    if not POST_PUSH_LOCAL_FOLLOWUP_ENABLED:
+    if not POST_PUSH_LOCAL_FOLLOWUP_ENABLED or not track or track.get("status") != "tracking":
+        return []
+    pushed_at = _safe_int(track.get("pushed_at") or track.get("signal_ts"))
+    if pushed_at <= 0:
+        return []
+    age_sec = max(0, now_value - pushed_at)
+    due_windows = [
+        window_key
+        for window_key, delay_sec in POST_PUSH_LOCAL_FOLLOWUP_WINDOWS
+        if age_sec >= delay_sec and not _bottom_live_track_has_local_followup(track, window_key)
+    ]
+    if not due_windows:
+        return []
+    followups = track.get("local_followups") if isinstance(track.get("local_followups"), dict) else {}
+    filled_windows: list[str] = []
+    for window_key in due_windows:
+        analysis = analyze_local_followup_window(
+            address=address,
+            signal_type=str(track.get("signal_type") or ""),
+            entry_price=_safe_float(track.get("entry_price")),
+            entry_mcap=_safe_float(track.get("entry_mcap")),
+            signal_ts=pushed_at,
+            window_key=window_key,
+        )
+        if not analysis.get("ready"):
+            continue
+        followups[window_key] = analysis
+        track["last_local_followup"] = analysis
+        track["last_local_followup_key"] = window_key
+        track["last_local_followup_at"] = now_value
+        filled_windows.append(window_key)
+    if not filled_windows:
+        return []
+    track["local_followups"] = followups
+    track["last_updated"] = now_value
+    return filled_windows
+
+
+def _bottom_live_track_backfill_local_followups_once() -> list[dict[str, Any]]:
+    addresses = _bottom_live_track_list_addresses()
+    if not addresses:
         return []
 
     now_value = int(time.time())
@@ -3000,41 +3037,9 @@ def _bottom_live_track_backfill_local_followups_once() -> list[dict[str, Any]]:
     for address in addresses:
         try:
             track = _bottom_live_track_load(address)
-            if not track or track.get("status") != "tracking":
-                continue
-            pushed_at = _safe_int(track.get("pushed_at") or track.get("signal_ts"))
-            if pushed_at <= 0:
-                continue
-            age_sec = max(0, now_value - pushed_at)
-            due_windows = [
-                window_key
-                for window_key, delay_sec in POST_PUSH_LOCAL_FOLLOWUP_WINDOWS
-                if age_sec >= delay_sec and not _bottom_live_track_has_local_followup(track, window_key)
-            ]
-            if not due_windows:
-                continue
-            followups = track.get("local_followups") if isinstance(track.get("local_followups"), dict) else {}
-            filled_windows: list[str] = []
-            for window_key in due_windows:
-                analysis = analyze_local_followup_window(
-                    address=address,
-                    signal_type=str(track.get("signal_type") or ""),
-                    entry_price=_safe_float(track.get("entry_price")),
-                    entry_mcap=_safe_float(track.get("entry_mcap")),
-                    signal_ts=pushed_at,
-                    window_key=window_key,
-                )
-                if not analysis.get("ready"):
-                    continue
-                followups[window_key] = analysis
-                track["last_local_followup"] = analysis
-                track["last_local_followup_key"] = window_key
-                track["last_local_followup_at"] = now_value
-                filled_windows.append(window_key)
+            filled_windows = _bottom_live_track_fill_due_local_followups(address, track or {}, now_value)
             if not filled_windows:
                 continue
-            track["local_followups"] = followups
-            track["last_updated"] = now_value
             _bottom_live_track_save(address, track)
             updated.append(track)
             print(
@@ -3143,6 +3148,9 @@ def _bottom_live_track_refresh_one(address: str) -> dict[str, Any] | None:
         return track
 
     track = _bottom_live_track_sync_5m_kline(address, track, now_ts, pushed_at)
+    filled_windows = _bottom_live_track_fill_due_local_followups(address, track, now_ts)
+    if filled_windows:
+        print(f"  [BottomLiveTrack] local followup refreshed {address[:8]}: {','.join(filled_windows)}")
 
     # Rule 1.2: Market cap < 6K at any time -> dead
     if 0 < current_mcap < BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD:

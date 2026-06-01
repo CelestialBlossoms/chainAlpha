@@ -138,6 +138,23 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(saved[address]["last_local_followup_key"], "30m")
         self.assertEqual(len(broadcasts), 1)
 
+    def test_quiet_runup_is_local_only_for_deepseek_status(self) -> None:
+        extra = bottom_monitor.build_bottom_signal_extra(
+            {
+                "address": "So11111111111111111111111111111111111111112",
+                "symbol": "QUIET",
+                "market_cap": 80_000,
+                "price": 0.001,
+            },
+            {"pool": {"total_liquidity": 25_000}},
+            {"signal_type": "quiet_runup", "current_mcap": 80_000, "price_change_pct": 35},
+            {},
+        )
+
+        self.assertEqual(extra["signal_type"], "quiet_runup")
+        self.assertEqual(extra["deepseek_async_status"], "")
+        self.assertFalse(bottom_monitor.deepseek_signal_eligible("quiet_runup"))
+
     def test_risk_tags_classify_known_failure_patterns_without_trade_advice(self) -> None:
         tags = compute_risk_tags(
             {
