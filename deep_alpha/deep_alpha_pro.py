@@ -636,30 +636,7 @@ def frontend_removal_redis_key(address):
 
 
 def archive_frontend_removal_for_deleted_today(address, symbol=None, mcap=0, reason=""):
-    now_ts = int(time.time())
-    candidate = get_candidate_snapshot(address) or {}
-    live_track = load_live_track(address) or {}
-    entry_mcap = safe_float(live_track.get("entry_mcap")) or safe_float(candidate.get("mcap")) or safe_float(mcap)
-    current_mcap = safe_float(mcap) or safe_float(live_track.get("current_mcap"))
-    peak_mcap = max(safe_float(live_track.get("peak_mcap")), entry_mcap, current_mcap)
-    pnl_pct = ((current_mcap - entry_mcap) / entry_mcap * 100) if entry_mcap > 0 and current_mcap > 0 else 0.0
-    track = {
-        **live_track,
-        "address": address,
-        "chain": live_track.get("chain") or "sol",
-        "symbol": symbol or live_track.get("symbol") or "UNKNOWN",
-        "entry_mcap": entry_mcap,
-        "current_mcap": current_mcap,
-        "peak_mcap": peak_mcap,
-        "peak_mcap_at": int(live_track.get("peak_mcap_at") or now_ts),
-        "pool_liquidity": safe_float(live_track.get("pool_liquidity")),
-        "holders": int(safe_float(live_track.get("holders")) or safe_float(candidate.get("holder_count"))),
-        "pnl_pct": round(pnl_pct, 2),
-        "status": "removed",
-        "remove_reason": reason or f"当前市值 ${current_mcap:,.0f} < ${FRONTEND_REMOVE_BELOW_MCAP_USD:,.0f}",
-        "last_updated": now_ts,
-    }
-    save_live_track_deleted_today(address, track)
+    return
 
 def publish_frontend_removal_once(address, symbol=None, mcap=0, reason=""):
     if not address:
@@ -1342,19 +1319,7 @@ def seconds_until_midnight():
 
 
 def save_live_track_deleted_today(address, track):
-    if not address or not isinstance(track, dict):
-        return
-    client = get_redis_client()
-    if client is None:
-        return
-    try:
-        ttl = seconds_until_midnight()
-        client.setex(live_track_deleted_today_key(address), ttl, json.dumps(track, ensure_ascii=False))
-        index_key = live_track_deleted_today_index_key()
-        client.sadd(index_key, address)
-        client.expire(index_key, ttl)
-    except Exception as exc:
-        print(f"  [LiveTrack] deleted-today写入失败 {address[:8]}: {exc}")
+    return
 
 
 def load_live_track(address):

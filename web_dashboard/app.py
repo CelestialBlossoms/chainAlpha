@@ -2231,18 +2231,7 @@ MARKET_SIGNAL_MERGE_FIELDS = (
 
 
 def _alpha_deleted_today_addresses() -> set[str]:
-    client = get_redis_client()
-    if client is None:
-        return set()
-    try:
-        members = client.smembers(_alpha_deleted_today_index_key())
-        return {
-            str(member.decode() if isinstance(member, bytes) else member)
-            for member in members
-            if member
-        }
-    except Exception:
-        return set()
+    return set()
 
 
 def _smart_signal_health_checked_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -2526,62 +2515,11 @@ def _alpha_deleted_today_index_key() -> str:
 
 
 def _alpha_deleted_today_save(address: str, track: dict[str, Any]) -> None:
-    client = get_redis_client()
-    if client is None:
-        return
-    try:
-        from datetime import datetime, timedelta
-        # Calculate time left for today to expire at midnight
-        now = time.time()
-        tomorrow_midnight = time.mktime((datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timetuple())
-        ttl = int(tomorrow_midnight - now)
-        if ttl <= 0:
-            ttl = 86400  # Fallback to 24h
-            
-        key = _alpha_deleted_today_redis_key(address)
-        if not _safe_int(track.get("last_updated")):
-            track["last_updated"] = int(now)
-        if not _safe_int(track.get("pushed_at")):
-            track["pushed_at"] = _safe_int(track.get("last_updated")) or int(now)
-        client.setex(key, ttl, json.dumps(track, ensure_ascii=False))
-        
-        index_key = _alpha_deleted_today_index_key()
-        client.sadd(index_key, address)
-        client.expire(index_key, ttl)
-    except Exception as exc:
-        print(f"Failed to save alpha deleted today for {address[:8]}: {exc}")
+    return
 
 
 def _alpha_deleted_today_list() -> list[dict[str, Any]]:
-    client = get_redis_client()
-    by_address: dict[str, dict[str, Any]] = {}
-    if client is None:
-        return _alpha_deleted_today_plugin_events()
-    try:
-        index_key = _alpha_deleted_today_index_key()
-        members = client.smembers(index_key)
-        addresses = [str(m.decode() if isinstance(m, bytes) else m) for m in members if m]
-
-        for addr in addresses:
-            raw = client.get(_alpha_deleted_today_redis_key(addr))
-            if raw:
-                try:
-                    item = json.loads(raw)
-                    address = str(item.get("address") or addr)
-                    by_address[address] = item
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    for item in _alpha_deleted_today_plugin_events():
-        address = str(item.get("address") or "")
-        if address:
-            by_address.setdefault(address, item)
-
-    items = list(by_address.values())
-    items.sort(key=lambda x: int(x.get("last_updated") or 0), reverse=True)
-    return items
+    return []
 
 
 def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]:
@@ -2813,7 +2751,7 @@ def alpha_live_track_api(request: Request):
 
 @app.get("/api/alpha-live-track/deleted-today")
 def alpha_live_track_deleted_today_api(request: Request):
-    return {"items": _alpha_deleted_today_list()}
+    return {"items": []}
 
 
 @app.get("/api/alpha-live-track/events")
