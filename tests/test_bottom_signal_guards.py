@@ -210,6 +210,30 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(update["action"], "frontend_update")
         self.assertEqual(delete["action"], "delete_frontend")
 
+    def test_bottom_abnormal_requires_ath_above_100k(self) -> None:
+        summary = {
+            "mcap": 80_000,
+            "age_sec": 5 * 3600,
+            "pool": {"total_liquidity": 20_000, "liquidity_mcap_ratio": 0.25},
+            "kline": {
+                "change_pct": 20,
+                "bottom_to_current_pct": 20,
+                "rebound_after_high": {
+                    "ready": True,
+                    "change_pct": 20,
+                    "low": 0.5,
+                    "close": 1.0,
+                },
+            },
+        }
+
+        low_ath = bottom_monitor.analyze_abnormal_snapshot([], [], {**summary, "ath_mcap": 99_000})
+        high_ath = bottom_monitor.analyze_abnormal_snapshot([], [], {**summary, "ath_mcap": 101_000})
+
+        self.assertEqual(low_ath["signal_type"], "watch")
+        self.assertEqual(high_ath["signal_type"], "new_revival")
+        self.assertEqual(high_ath["min_ath_mcap"], 100_000)
+
     def test_watchlist_low_mcap_tokens_are_fast_scan_candidates(self) -> None:
         original_fetch = bottom_monitor.fetch_watchlist_records
         original_min = bottom_monitor.FAST_SCAN_MIN_MCAP

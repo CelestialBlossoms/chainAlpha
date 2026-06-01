@@ -136,6 +136,8 @@ BOTTOM_ABNORMAL_HIGH_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_ATH_MC
 BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MIN_MCAP_USD", "50000"))
 BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_HIGH_MAX_MCAP_USD", "500000"))
 BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT = float(os.getenv("BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT", "15"))
+BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC = int(os.getenv("BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC", str(4 * 3600)))
+BOTTOM_ABNORMAL_REQUIRED_ATH_MCAP_USD = float(os.getenv("BOTTOM_ABNORMAL_REQUIRED_ATH_MCAP_USD", "100000"))
 WATCHLIST_DELETE_BELOW_MCAP_USD = float(os.getenv("BOTTOM_WATCHLIST_DELETE_BELOW_MCAP_USD", "40000"))
 DAILY_MCAP_MILESTONE_USD = float(os.getenv("BOTTOM_DAILY_MCAP_MILESTONE_USD", "1000000"))
 DAILY_MCAP_MIN_FEE_SOL = float(os.getenv("BOTTOM_DAILY_MCAP_MIN_FEE_SOL", "20"))
@@ -2386,6 +2388,8 @@ def analyze_abnormal_snapshot(
     bottom_low_mcap = current_mcap * (kline_low / kline_close) if current_mcap > 0 and kline_low > 0 and kline_close > 0 else 0.0
     token_age = to_int(current_summary.get("age_sec"))
     is_under_24h = token_age <= 0 or token_age <= NEW_TOKEN_AGE_CUTOFF_SEC
+    required_signal_ath_mcap = BOTTOM_ABNORMAL_REQUIRED_ATH_MCAP_USD
+    ath_ready = ath_mcap > required_signal_ath_mcap if required_signal_ath_mcap > 0 else True
     # Use bottom-to-current instead of open-to-close for detection
     # Catches V-reversals where price dipped then recovered
     price_ready = (bottom_to_current_pct if bottom_to_current_pct > 0 else price_change_pct) >= BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT
@@ -2404,12 +2408,14 @@ def analyze_abnormal_snapshot(
     #             break
     old_abnormal_ready = (
         not is_under_24h
+        and ath_ready
         and current_mcap >= BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
         and price_ready
         and pool_ready
     )
     new_revival_ready = (
         is_under_24h
+        and ath_ready
         and rebound_ready
         and bottom_low_mcap > 0
         and bottom_low_mcap <= BOTTOM_NEW_REVIVAL_MAX_LOW_MCAP_USD
@@ -2462,7 +2468,7 @@ def analyze_abnormal_snapshot(
     #     )
     if new_revival_ready:
         rule_name = "NEW_BOTTOM_REVIVAL"
-        min_ath_mcap = 0
+        min_ath_mcap = required_signal_ath_mcap
         min_mcap = 0
         max_mcap = 0
         rule_reason = (
@@ -2473,7 +2479,7 @@ def analyze_abnormal_snapshot(
         )
     elif old_abnormal_ready:
         rule_name = "OLD_MCAP_4W_UP15"
-        min_ath_mcap = 0
+        min_ath_mcap = required_signal_ath_mcap
         min_mcap = BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
         max_mcap = 0
         rule_reason = (
@@ -2482,7 +2488,7 @@ def analyze_abnormal_snapshot(
         )
     else:
         rule_name = "未命中"
-        min_ath_mcap = BOTTOM_NEW_DROP_ATH_MCAP_USD if is_under_24h else 0
+        min_ath_mcap = required_signal_ath_mcap
         min_mcap = 0 if is_under_24h else BOTTOM_OLD_ABNORMAL_MIN_MCAP_USD
         max_mcap = 0
         if is_under_24h:
@@ -2506,6 +2512,13 @@ def analyze_abnormal_snapshot(
     display_price_ready = new_revival_price_ready if signal_type == "new_revival" else price_ready
     reasons = [rule_reason]
     if not signal_type.startswith("drop_"):
+        reasons.append(
+            (
+                f"ATH${ath_mcap:,.0f}>${required_signal_ath_mcap:,.0f}"
+                if ath_ready
+                else f"ATH${ath_mcap:,.0f}<=${required_signal_ath_mcap:,.0f}"
+            )
+        )
         reasons.append(
             (
                 f"底部反弹{display_price_change_pct:.1f}%>={BOTTOM_ABNORMAL_MIN_PRICE_UP_PCT:.1f}% (12根内低点→现价)"
@@ -6485,9 +6498,9 @@ def scan_once(
                 print(f"{token_label(token)} skip abnormal: open_ts missing (发射时间缺失)")
                 continue
             open_age_sec = now_ts() - launch_ts
-            if open_age_sec < 1 * 3600:
+            if open_age_sec < BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC:
                 skipped += 1
-                print(f"{token_label(token)} skip abnormal: open_age={open_age_sec/3600:.1f}h < 1h (发射时间小于1H)")
+                print(f"{token_label(token)} skip abnormal: open_age={open_age_sec/3600:.1f}h < {BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC/3600:.1f}h")
                 continue
             if pool_reliable and 0 < pool_mcap_ratio < 0.07:
                 skipped += 1
@@ -6572,9 +6585,9 @@ def scan_once(
                 print(f"{token_label(token)} skip open_ts missing (发射时间小于1H)")
                 continue
             open_age_sec = now_ts() - launch_ts
-            if open_age_sec < 1 * 3600:
+            if open_age_sec < BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC:
                 skipped += 1
-                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < 4h (发射时间小于4H)")
+                print(f"{token_label(token)} skip open_age={open_age_sec/3600:.1f}h < {BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC/3600:.1f}h")
                 continue
             gmgn_ath_mcap = current_token_ath_mcap(info)
             if created_ts > 0 or launch_ts > 0 or gmgn_ath_mcap > 0:
@@ -6704,7 +6717,7 @@ def fast_scan_once(args: argparse.Namespace) -> None:
             if launch_ts <= 0:
                 skipped += 1
                 continue
-            if now_ts() - launch_ts < 4 * 3600:
+            if now_ts() - launch_ts < BOTTOM_ABNORMAL_MIN_OPEN_AGE_SEC:
                 skipped += 1
                 continue
 
