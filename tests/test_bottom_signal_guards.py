@@ -87,6 +87,57 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertGreater(analysis["change_pct"], 3)
         self.assertEqual(analysis["volume_ratio"], 2.0)
 
+    def test_bottom_live_track_startup_backfills_due_local_followups(self) -> None:
+        from web_dashboard import app as dashboard_app
+
+        address = "So11111111111111111111111111111111111111112"
+        saved: dict[str, dict] = {}
+        broadcasts: list[list[dict]] = []
+        original_list = dashboard_app._bottom_live_track_list_addresses
+        original_load = dashboard_app._bottom_live_track_load
+        original_save = dashboard_app._bottom_live_track_save
+        original_broadcast = dashboard_app._bottom_live_track_broadcast
+        original_time = dashboard_app.time.time
+        original_analyze = bottom_monitor.analyze_local_followup_window
+        try:
+            dashboard_app._bottom_live_track_list_addresses = lambda: [address]
+            dashboard_app._bottom_live_track_load = lambda _addr: {
+                "address": address,
+                "status": "tracking",
+                "signal_type": "new_revival",
+                "pushed_at": 1_000,
+                "entry_price": 1.0,
+                "entry_mcap": 50_000,
+                "local_followups": {},
+            }
+            dashboard_app._bottom_live_track_save = lambda addr, data: saved.setdefault(addr, dict(data))
+            dashboard_app._bottom_live_track_broadcast = lambda items: broadcasts.append(items)
+            dashboard_app.time.time = lambda: 1_000 + 31 * 60
+            bottom_monitor.analyze_local_followup_window = lambda **kwargs: {
+                "ready": True,
+                "window_key": kwargs["window_key"],
+                "verdict": "turned_positive",
+                "label": "转正确认",
+                "change_pct": 12.5,
+            }
+
+            updated = dashboard_app._bottom_live_track_backfill_local_followups_once()
+        finally:
+            dashboard_app._bottom_live_track_list_addresses = original_list
+            dashboard_app._bottom_live_track_load = original_load
+            dashboard_app._bottom_live_track_save = original_save
+            dashboard_app._bottom_live_track_broadcast = original_broadcast
+            dashboard_app.time.time = original_time
+            bottom_monitor.analyze_local_followup_window = original_analyze
+
+        self.assertEqual(len(updated), 1)
+        self.assertIn(address, saved)
+        self.assertIn("5m", saved[address]["local_followups"])
+        self.assertIn("30m", saved[address]["local_followups"])
+        self.assertNotIn("4h", saved[address]["local_followups"])
+        self.assertEqual(saved[address]["last_local_followup_key"], "30m")
+        self.assertEqual(len(broadcasts), 1)
+
     def test_risk_tags_classify_known_failure_patterns_without_trade_advice(self) -> None:
         tags = compute_risk_tags(
             {
