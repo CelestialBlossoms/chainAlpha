@@ -2981,6 +2981,38 @@ def update_bottom_live_track_deepseek(address: str, extra: dict[str, Any]) -> No
         print(f"  [BottomLiveTrack] DeepSeek Redis update failed {address[:8]}: {exc}")
 
 
+def update_bottom_live_track_local_followup(address: str, window_key: str, analysis: dict[str, Any]) -> None:
+    if not BOTTOM_LIVE_TRACK_ENABLED or not address or not analysis:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    current = _bottom_live_track_load_local(address)
+    if not current:
+        return
+    followups = current.get("local_followups") if isinstance(current.get("local_followups"), dict) else {}
+    followups[str(window_key)] = analysis
+    merged = {
+        **current,
+        "local_followups": followups,
+        "last_local_followup": analysis,
+        "last_local_followup_key": str(window_key),
+        "last_local_followup_at": now_ts(),
+        "last_updated": now_ts(),
+    }
+    try:
+        key = _bottom_live_track_key(address)
+        ttl = client.ttl(key)
+        if ttl is None or ttl <= 0:
+            ttl = BOTTOM_LIVE_TRACK_TTL_SEC
+        client.setex(key, int(ttl), json.dumps(json_safe(merged), ensure_ascii=False))
+        client.sadd(_bottom_live_track_index_key(), address)
+        client.expire(_bottom_live_track_index_key(), BOTTOM_LIVE_TRACK_TTL_SEC)
+        _bottom_live_track_publish_update(merged)
+    except Exception as exc:
+        print(f"  [BottomLiveTrack] local followup update failed {address[:8]} {window_key}: {exc}")
+
+
 def _deepseek_async_key(address: str, signal_type: str, snapshot_id: int = 0) -> str:
     return f"{address}:{signal_type}:{snapshot_id or 0}"
 
@@ -3753,6 +3785,7 @@ def maybe_send_post_push_local_followups(client: Any, key: Any, address: str, st
         }
         text = format_local_followup_text(address, state, analysis)
         publish_plugin_signal(text, "bottom_abnormal", status=f"local_followup_{window_key}", ca=address, extra=extra)
+        update_bottom_live_track_local_followup(address, window_key, analysis)
         sent_message_id = send_tg_reply(text, message_id, extra)
         updates[sent_key] = "1"
         updates[f"local_followup_{window_key}_ts"] = str(now_ts())

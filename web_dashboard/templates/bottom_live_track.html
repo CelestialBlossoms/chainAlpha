@@ -694,6 +694,7 @@
                 <th class="sortable" data-sort="pnl">盈亏</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
                 <th class="sortable" data-sort="liquidity">流动性</th>
+                <th>后续跟踪</th>
                 <th class="sortable" data-sort="pushed_at">推送</th>
                 <th>峰值</th>
                 <th>状态</th>
@@ -1101,6 +1102,30 @@
       const pred = prediction(item);
       return pred.deepseek_kline_prediction || item.deepseek_kline_prediction || {};
     }
+    function localFollowups(item) {
+      const followups = item.local_followups;
+      return followups && typeof followups === "object" ? followups : {};
+    }
+    function followupClass(fu) {
+      const verdict = String((fu || {}).verdict || "");
+      if (["strong_confirm", "turned_positive", "recovery_attempt", "wr20_hit", "wr50_hit", "mild_recovery"].includes(verdict)) return "good";
+      if (["panic_continues", "extreme_drawdown", "recovery_weak", "no_recovery", "failed_recovery", "weak_open"].includes(verdict)) return "warn";
+      return "";
+    }
+    function renderFollowupChips(item, compact = true) {
+      const fus = localFollowups(item);
+      const rows = ["5m", "30m", "4h"].map(key => {
+        const fu = fus[key] || {};
+        if (!fu.ready) return `<span class="tag">${key}: 待回传</span>`;
+        const pct = safeNum(fu.change_pct);
+        const peak = safeNum(fu.peak_pct);
+        const label = compact
+          ? `${key} ${formatPnl(pct)}`
+          : `${key} ${fu.label || fu.verdict || "-"} / 区间${formatPnl(pct)} / 峰${formatPnl(peak)}`;
+        return `<span class="tag ${followupClass(fu)}" title="${htmlEscape(fu.label || fu.verdict || "")}">${htmlEscape(label)}</span>`;
+      });
+      return `<div class="hit-tags">${rows.join("")}</div>`;
+    }
     function buyValueLabel(item) {
       const pred = prediction(item);
       return pred.buy_value_label || pred.label || guidePlan(item).buy_value_label || "待观察";
@@ -1158,6 +1183,7 @@
             <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">峰值 ${formatPnl(peakPnl)}</div></td>
             <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div></td>
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
+            <td>${renderFollowupChips(item)}</td>
             <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
             <td><div class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</div><div class="muted small">${formatCap(peakMcap)}</div></td>
             <td>${statusBadge(item)}</td>
@@ -1235,6 +1261,34 @@
       if (!candles || candles.length < 2) return `<div class="chart-empty">暂无 K 线缓存</div>`;
       const points = candles.map(c => ({ ts: c.ts, value: c.close }));
       return lineChartSvg(points, { color: "#22c55e" });
+    }
+    function renderFollowupPanel(item) {
+      const fus = localFollowups(item);
+      const cards = [["5m", "T+5min"], ["30m", "T+30min"], ["4h", "T+4h"]].map(([key, title]) => {
+        const fu = fus[key] || {};
+        if (!fu.ready) {
+          return `<div class="kv"><span>${title}</span><b class="pnl-zero">待回传</b></div>`;
+        }
+        const tagClass = followupClass(fu);
+        const cls = tagClass === "good" ? "pnl-positive" : tagClass === "warn" ? "pnl-negative" : "pnl-zero";
+        const volumeRatio = safeNum(fu.volume_ratio || fu.post_trough_volume_ratio);
+        return `
+          <div class="kv">
+            <span>${title}</span>
+            <b class="${cls}">${htmlEscape(fu.label || fu.verdict || "-")}</b>
+            <small class="muted">区间 ${formatPnl(fu.change_pct)} | 峰 ${formatPnl(fu.peak_pct)} | 低 ${formatPnl(fu.trough_pct)}</small>
+            <small class="muted">最大阳线 ${formatPnl(fu.max_green_bar_pct)} | 量比 ${volumeRatio.toFixed(2)}x</small>
+            ${fu.drawdown_bucket ? `<small class="muted">${htmlEscape(fu.drawdown_bucket)}</small>` : ""}
+          </div>`;
+      }).join("");
+      return `
+        <section class="detail-panel">
+          <h3>本地后续跟踪</h3>
+          <div class="detail-content">
+            <div class="drawer-grid">${cards}</div>
+            <p class="muted">T+5 使用 09 的推送后 1m 量价确认；T+30 使用 09/10 的转正、回撤和触底后量比；T+4h 使用 08/10 的 WR20/WR50、峰值和回撤结构。</p>
+          </div>
+        </section>`;
     }
     function buildDrawerHtml(item, detail = {}) {
       const pred = prediction(item);
@@ -1322,6 +1376,7 @@
             ${source.key !== "deepseek" && source.key !== "pending" ? `<p class="muted">DeepSeek API 未返回可用结果，当前为硬编码兜底分析。</p>` : ""}
           </div>
         </section>
+        ${renderFollowupPanel(item)}
         <section class="detail-panel">
           <h3>判断依据</h3>
           <div class="detail-content">${arrayListHtml(reasonList)}</div>
