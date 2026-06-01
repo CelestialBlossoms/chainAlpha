@@ -52,6 +52,41 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(peak["mcap"], 100_000)
         self.assertEqual(peak["price"], 4.0)
 
+    def test_local_followup_t5_uses_post_signal_window(self) -> None:
+        original_fetch = bottom_monitor.fetch_kline_range
+        original_now = bottom_monitor.now_ts
+        try:
+            def fake_fetch(_address, resolution, start_ts, end_ts):
+                if start_ts < 1_000:
+                    return [
+                        {"ts": 820 + i * 60, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 100}
+                        for i in range(3)
+                    ]
+                return [
+                    {"ts": 1_000 + i * 60, "open": 1 + i * 0.02, "high": 1.1 + i * 0.02, "low": 1, "close": 1.05 + i * 0.02, "volume": 200}
+                    for i in range(5)
+                ]
+
+            bottom_monitor.fetch_kline_range = fake_fetch
+            bottom_monitor.now_ts = lambda: 1_000 + 6 * 60
+
+            analysis = bottom_monitor.analyze_local_followup_window(
+                address="So11111111111111111111111111111111111111112",
+                signal_type="new_revival",
+                entry_price=1,
+                entry_mcap=50_000,
+                signal_ts=1_000,
+                window_key="5m",
+            )
+        finally:
+            bottom_monitor.fetch_kline_range = original_fetch
+            bottom_monitor.now_ts = original_now
+
+        self.assertEqual(analysis["window"], "T+5min")
+        self.assertEqual(analysis["verdict"], "strong_confirm")
+        self.assertGreater(analysis["change_pct"], 3)
+        self.assertEqual(analysis["volume_ratio"], 2.0)
+
     def test_risk_tags_classify_known_failure_patterns_without_trade_advice(self) -> None:
         tags = compute_risk_tags(
             {

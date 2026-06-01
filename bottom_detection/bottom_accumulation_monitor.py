@@ -150,7 +150,7 @@ USE_AGENT_DECISION = os.getenv("BOTTOM_USE_AGENT_DECISION", "1") != "0"
 EMA_GOLDEN_CROSS_ENABLED = os.getenv("BOTTOM_EMA_GOLDEN_CROSS_ENABLED", "0") == "1"
 POST_PUSH_REDIS_TRACK_ENABLED = os.getenv("BOTTOM_POST_PUSH_REDIS_TRACK_ENABLED", "1") != "0"
 POST_PUSH_REDIS_PREFIX = os.getenv("BOTTOM_POST_PUSH_REDIS_PREFIX", "bottom:post_push")
-POST_PUSH_TRACK_TTL_SEC = int(os.getenv("BOTTOM_POST_PUSH_TRACK_TTL_SEC", str(4 * 3600)))
+POST_PUSH_TRACK_TTL_SEC = int(os.getenv("BOTTOM_POST_PUSH_TRACK_TTL_SEC", str(5 * 3600)))
 POST_PUSH_POLL_INTERVAL_SEC = int(os.getenv("BOTTOM_POST_PUSH_POLL_INTERVAL_SEC", "60"))
 POST_PUSH_ENTRY_DD_MIN_PCT = float(os.getenv("BOTTOM_POST_PUSH_ENTRY_DD_MIN_PCT", "30"))
 POST_PUSH_ENTRY_DD_MAX_PCT = float(os.getenv("BOTTOM_POST_PUSH_ENTRY_DD_MAX_PCT", "50"))
@@ -161,6 +161,13 @@ POST_PUSH_LOSS_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_LOSS_REPLY_PCT", st
 POST_PUSH_DRAWDOWN_REPLY_PCT = float(os.getenv("BOTTOM_POST_PUSH_DRAWDOWN_REPLY_PCT", "20"))
 POST_PUSH_REPLY_COOLDOWN_SEC = int(os.getenv("BOTTOM_POST_PUSH_REPLY_COOLDOWN_SEC", str(60 * 60)))
 POST_PUSH_MAX_REPLIES = int(os.getenv("BOTTOM_POST_PUSH_MAX_REPLIES", "3"))
+POST_PUSH_LOCAL_FOLLOWUP_ENABLED = os.getenv("BOTTOM_POST_PUSH_LOCAL_FOLLOWUP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+POST_PUSH_LOCAL_FOLLOWUP_GRACE_SEC = int(os.getenv("BOTTOM_POST_PUSH_LOCAL_FOLLOWUP_GRACE_SEC", "900"))
+POST_PUSH_LOCAL_FOLLOWUP_WINDOWS = (
+    ("5m", 5 * 60),
+    ("30m", 30 * 60),
+    ("4h", 4 * 3600),
+)
 BINANCE_SOL_CHAIN_ID = os.getenv("BINANCE_SOL_CHAIN_ID", "CT_501")
 BINANCE_WEB3_USER_AGENT = os.getenv("BINANCE_WEB3_USER_AGENT", "binance-web3/1.1 (Skill)")
 BINANCE_DYNAMIC_URL = "https://web3.binance.com/bapi/defi/v4/public/wallet-direct/buw/wallet/market/token/dynamic/info/ai"
@@ -2734,13 +2741,14 @@ def post_push_track_key(address: str) -> str:
 
 
 def refresh_post_push_track_ttl(client: Any, key: str, state: dict[str, Any]) -> bool:
-    if POST_PUSH_TRACK_TTL_SEC <= 0:
+    track_ttl = max(POST_PUSH_TRACK_TTL_SEC, 4 * 3600 + POST_PUSH_LOCAL_FOLLOWUP_GRACE_SEC)
+    if track_ttl <= 0:
         return True
     created_ts = to_int((state or {}).get("created_ts"))
     if created_ts <= 0:
-        client.expire(key, POST_PUSH_TRACK_TTL_SEC)
+        client.expire(key, track_ttl)
         return True
-    remaining = created_ts + POST_PUSH_TRACK_TTL_SEC - now_ts()
+    remaining = created_ts + track_ttl - now_ts()
     if remaining <= 0:
         client.delete(key)
         return False
@@ -2756,10 +2764,11 @@ def post_push_track_age_sec(state: dict[str, Any], now_value: int | None = None)
 
 
 def post_push_track_within_window(state: dict[str, Any], now_value: int | None = None) -> bool:
-    if POST_PUSH_TRACK_TTL_SEC <= 0:
+    track_ttl = max(POST_PUSH_TRACK_TTL_SEC, 4 * 3600 + POST_PUSH_LOCAL_FOLLOWUP_GRACE_SEC)
+    if track_ttl <= 0:
         return True
     age_sec = post_push_track_age_sec(state, now_value)
-    return 0 < age_sec <= POST_PUSH_TRACK_TTL_SEC
+    return 0 < age_sec <= track_ttl
 
 
 def register_post_push_track(address: str, extra: dict[str, Any], message_id: int | str | None) -> None:
@@ -2786,6 +2795,7 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
         "chat_id": str(TG_CHAT_ID),
         "message_id": str(message_id),
         "entry_mcap": str(current_mcap),
+        "entry_price": str(to_float(extra.get("price"))),
         "peak_mcap": str(max(current_mcap, to_float(extra.get("post_signal_peak_mcap")))),
         "last_mcap": str(current_mcap),
         "signal_ts": str(signal_ts),
@@ -2803,6 +2813,9 @@ def register_post_push_track(address: str, extra: dict[str, Any], message_id: in
         "dd_alert_sent": "0",
         "dd_alert_ts": "0",
         "dd_alert_message_id": "0",
+        "local_followup_5m_sent": "0",
+        "local_followup_30m_sent": "0",
+        "local_followup_4h_sent": "0",
     }
     try:
         client.hset(key, mapping=payload)
@@ -3504,6 +3517,252 @@ def send_post_push_entry_drawdown_alert(
     return send_tg_reply(text, message_id, extra)
 
 
+def _valid_price_candles(candles: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    rows = [
+        c for c in (candles or [])
+        if to_int(c.get("ts")) > 0
+        and to_float(c.get("open")) > 0
+        and to_float(c.get("high")) > 0
+        and to_float(c.get("low")) > 0
+        and to_float(c.get("close")) > 0
+    ]
+    rows.sort(key=lambda item: to_int(item.get("ts")))
+    return rows
+
+
+def _avg_volume(candles: list[dict[str, Any]] | None) -> float:
+    rows = [to_float(c.get("volume")) for c in (candles or [])]
+    return sum(rows) / len(rows) if rows else 0.0
+
+
+def _post_window_stats(candles: list[dict[str, Any]], entry_price: float = 0.0) -> dict[str, Any]:
+    rows = _valid_price_candles(candles)
+    if not rows:
+        return {"ready": False, "reason": "no_post_kline"}
+    base = entry_price if entry_price > 0 else to_float(rows[0].get("open"))
+    last_close = to_float(rows[-1].get("close"))
+    peak = max(rows, key=lambda c: to_float(c.get("high")))
+    trough = min(rows, key=lambda c: to_float(c.get("low")))
+    peak_price = to_float(peak.get("high"))
+    trough_price = to_float(trough.get("low"))
+    green_bars = [c for c in rows if to_float(c.get("close")) > to_float(c.get("open"))]
+    red_bars = [c for c in rows if to_float(c.get("close")) < to_float(c.get("open"))]
+    max_green = max((_pct_change_from_prices(to_float(c.get("open")), to_float(c.get("close"))) for c in green_bars), default=0.0)
+    max_red = min((_pct_change_from_prices(to_float(c.get("open")), to_float(c.get("close"))) for c in red_bars), default=0.0)
+    trough_index = rows.index(trough)
+    pre_trough = rows[: max(1, trough_index)] if trough_index > 0 else rows[:1]
+    post_trough = rows[trough_index + 1 :] or rows[trough_index:]
+    pre_trough_vol = _avg_volume(pre_trough)
+    post_trough_vol = _avg_volume(post_trough)
+    return {
+        "ready": True,
+        "count": len(rows),
+        "from_ts": to_int(rows[0].get("ts")),
+        "to_ts": to_int(rows[-1].get("ts")),
+        "base_price": base,
+        "last_price": last_close,
+        "change_pct": _pct_change_from_prices(base, last_close),
+        "peak_pct": _pct_change_from_prices(base, peak_price),
+        "trough_pct": _pct_change_from_prices(base, trough_price),
+        "peak_price": peak_price,
+        "peak_ts": to_int(peak.get("ts")),
+        "trough_price": trough_price,
+        "trough_ts": to_int(trough.get("ts")),
+        "max_green_bar_pct": max_green,
+        "max_red_bar_pct": max_red,
+        "green_bars": len(green_bars),
+        "red_bars": len(red_bars),
+        "avg_volume": _avg_volume(rows),
+        "post_trough_volume_ratio": post_trough_vol / pre_trough_vol if pre_trough_vol > 0 else 0.0,
+    }
+
+
+def _drawdown_bucket(trough_pct: float) -> str:
+    dd = abs(min(0.0, trough_pct))
+    if dd < 20:
+        return "轻度回撤(<20%)"
+    if dd < 50:
+        return "中度回撤(20-50%)"
+    if dd < 80:
+        return "重度回撤(50-80%)"
+    return "极端回撤(>80%)"
+
+
+def analyze_local_followup_window(
+    *,
+    address: str,
+    signal_type: str,
+    entry_price: float,
+    entry_mcap: float,
+    signal_ts: int,
+    window_key: str,
+) -> dict[str, Any]:
+    now_value = now_ts()
+    if window_key == "5m":
+        post = fetch_kline_range(address, "1m", signal_ts, min(now_value, signal_ts + 5 * 60 + 60))
+        pre = fetch_kline_range(address, "1m", signal_ts - 30 * 60, signal_ts)
+        stats = _post_window_stats(post, entry_price)
+        pre_avg = _avg_volume(_valid_price_candles(pre))
+        vol_ratio = stats.get("avg_volume", 0.0) / pre_avg if pre_avg > 0 else 0.0
+        change = to_float(stats.get("change_pct"))
+        if change >= 3 and vol_ratio >= 1:
+            verdict, label = "strong_confirm", "T+5 强确认"
+        elif change <= -8 and vol_ratio >= 1.5:
+            verdict, label = "panic_continues", "T+5 放量下跌"
+        elif change < -3:
+            verdict, label = "weak_open", "T+5 先跌"
+        else:
+            verdict, label = "mixed", "T+5 横盘"
+        return {
+            **stats,
+            "window": "T+5min",
+            "resolution": "1m",
+            "verdict": verdict,
+            "label": label,
+            "volume_ratio": round(vol_ratio, 2),
+            "source_docs": ["onchain_trading_guides/09-bar-level-strategy.md"],
+        }
+
+    if window_key == "30m":
+        post = fetch_kline_range(address, "1m", signal_ts, min(now_value, signal_ts + 30 * 60 + 60))
+        stats = _post_window_stats(post, entry_price)
+        change = to_float(stats.get("change_pct"))
+        trough = to_float(stats.get("trough_pct"))
+        max_green = to_float(stats.get("max_green_bar_pct"))
+        post_trough_vol_ratio = to_float(stats.get("post_trough_volume_ratio"))
+        bucket = _drawdown_bucket(trough)
+        if change > 0 and max_green >= 5:
+            verdict, label = "turned_positive", "T+30 转正确认"
+        elif abs(min(0.0, trough)) >= 80:
+            verdict, label = "extreme_drawdown", "T+30 极端回撤"
+        elif max_green >= 20 and post_trough_vol_ratio >= 1.3:
+            verdict, label = "recovery_attempt", "T+30 触底后放量恢复"
+        elif change < 0 and max_green < 15:
+            verdict, label = "recovery_weak", "T+30 恢复不足"
+        else:
+            verdict, label = "mixed", "T+30 混合结构"
+        return {
+            **stats,
+            "window": "T+30min",
+            "resolution": "1m",
+            "verdict": verdict,
+            "label": label,
+            "drawdown_bucket": bucket,
+            "source_docs": [
+                "onchain_trading_guides/09-bar-level-strategy.md",
+                "onchain_trading_guides/10-drawdown-recovery-fingerprints.md",
+            ],
+        }
+
+    post_5m = fetch_kline_range(address, "5m", signal_ts, min(now_value, signal_ts + 4 * 3600 + 5 * 60))
+    stats = _post_window_stats(post_5m, entry_price)
+    peak = to_float(stats.get("peak_pct"))
+    trough = to_float(stats.get("trough_pct"))
+    change = to_float(stats.get("change_pct"))
+    if peak >= 50:
+        verdict, label = "wr50_hit", "T+4h WR50 达成"
+    elif peak >= 20:
+        verdict, label = "wr20_hit", "T+4h WR20 达成"
+    elif peak < 5 and change <= 0:
+        verdict, label = "no_recovery", "T+4h 近归零结构"
+    elif change > 0:
+        verdict, label = "mild_recovery", "T+4h 温和恢复"
+    else:
+        verdict, label = "failed_recovery", "T+4h 恢复失败"
+    return {
+        **stats,
+        "window": "T+4h",
+        "resolution": "5m",
+        "verdict": verdict,
+        "label": label,
+        "drawdown_bucket": _drawdown_bucket(trough),
+        "wr20_hit": peak >= 20,
+        "wr50_hit": peak >= 50,
+        "entry_mcap": entry_mcap,
+        "peak_mcap": entry_mcap * (1 + peak / 100) if entry_mcap > 0 else 0.0,
+        "trough_mcap": entry_mcap * (1 + trough / 100) if entry_mcap > 0 else 0.0,
+        "source_docs": [
+            "onchain_trading_guides/08-5m-fingerprint-encyclopedia.md",
+            "onchain_trading_guides/10-drawdown-recovery-fingerprints.md",
+        ],
+    }
+
+
+def format_local_followup_text(address: str, state: dict[str, Any], analysis: dict[str, Any]) -> str:
+    symbol = str(state.get("symbol") or "UNKNOWN")
+    signal_type = str(state.get("signal_type") or "")
+    lines = [
+        f"底部异动本地跟踪 | ${symbol}",
+        f"窗口: {analysis.get('window')} | 结论: {analysis.get('label')}",
+        f"信号类型: {signal_type}",
+        f"区间涨跌: {format_pct_text(analysis.get('change_pct'))} | 峰值: {format_pct_text(analysis.get('peak_pct'))} | 低点: {format_pct_text(analysis.get('trough_pct'))}",
+        f"最大阳线: {format_pct_text(analysis.get('max_green_bar_pct'))} | 最大阴线: {format_pct_text(analysis.get('max_red_bar_pct'))}",
+        f"均量: {format_money_text(analysis.get('avg_volume'))} | 量比: {to_float(analysis.get('volume_ratio') or analysis.get('post_trough_volume_ratio')):.2f}x",
+    ]
+    if analysis.get("drawdown_bucket"):
+        lines.append(f"回撤分层: {analysis.get('drawdown_bucket')}")
+    if analysis.get("peak_mcap"):
+        lines.append(f"峰值市值: {format_money_text(analysis.get('peak_mcap'))} | 低点市值: {format_money_text(analysis.get('trough_mcap'))}")
+    lines.extend(
+        [
+            f"数据: {analysis.get('resolution')} K线 {analysis.get('count', 0)}根",
+            f"CA: {address}",
+            f"https://gmgn.ai/sol/token/{address}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def maybe_send_post_push_local_followups(client: Any, key: Any, address: str, state: dict[str, Any]) -> dict[str, str]:
+    if not POST_PUSH_LOCAL_FOLLOWUP_ENABLED:
+        return {}
+    age_sec = post_push_track_age_sec(state)
+    signal_ts = to_int(state.get("signal_ts"))
+    message_id = to_int(state.get("message_id"))
+    entry_price = to_float(state.get("entry_price"))
+    entry_mcap = to_float(state.get("entry_mcap"))
+    signal_type = str(state.get("signal_type") or "")
+    if signal_ts <= 0 or not message_id:
+        return {}
+    updates: dict[str, str] = {}
+    for window_key, delay_sec in POST_PUSH_LOCAL_FOLLOWUP_WINDOWS:
+        sent_key = f"local_followup_{window_key}_sent"
+        if to_int(state.get(sent_key)) or age_sec < delay_sec:
+            continue
+        analysis = analyze_local_followup_window(
+            address=address,
+            signal_type=signal_type,
+            entry_price=entry_price,
+            entry_mcap=entry_mcap,
+            signal_ts=signal_ts,
+            window_key=window_key,
+        )
+        if not analysis.get("ready"):
+            continue
+        extra = {
+            "post_push_reply": True,
+            "post_push_reply_kind": f"local_followup_{window_key}",
+            "address": address,
+            "symbol": state.get("symbol") or "UNKNOWN",
+            "signal_type": signal_type,
+            "signal_ts": signal_ts,
+            "entry_mcap": entry_mcap,
+            "entry_price": entry_price,
+            "local_followup": analysis,
+            "source_docs": analysis.get("source_docs") or [],
+        }
+        text = format_local_followup_text(address, state, analysis)
+        publish_plugin_signal(text, "bottom_abnormal", status=f"local_followup_{window_key}", ca=address, extra=extra)
+        sent_message_id = send_tg_reply(text, message_id, extra)
+        updates[sent_key] = "1"
+        updates[f"local_followup_{window_key}_ts"] = str(now_ts())
+        if sent_message_id:
+            updates[f"local_followup_{window_key}_message_id"] = str(sent_message_id)
+        state.update(updates)
+        print(f"{address[:8]} local followup {window_key}: {analysis.get('verdict')} {analysis.get('change_pct', 0):+.1f}%")
+    return updates
+
+
 def scan_post_push_entry_drawdowns_once() -> None:
     if not POST_PUSH_REDIS_TRACK_ENABLED:
         return
@@ -3519,7 +3778,7 @@ def scan_post_push_entry_drawdowns_once() -> None:
     for key in keys:
         try:
             state = client.hgetall(key)
-            if not state or to_int(state.get("dd_alert_sent")):
+            if not state:
                 continue
             if not post_push_track_within_window(state):
                 client.delete(key)
@@ -3527,24 +3786,31 @@ def scan_post_push_entry_drawdowns_once() -> None:
             address = str(state.get("address") or "").strip() or str(key).split(":")[-1]
             if not valid_sol_ca(address):
                 continue
+            local_updates = maybe_send_post_push_local_followups(client, key, address, state)
             dynamic = fetch_binance_dynamic_metrics(address)
             current_mcap = to_float(dynamic.get("market_cap"))
             if current_mcap <= 0:
+                if local_updates:
+                    client.hset(key, mapping=local_updates)
+                    refresh_post_push_track_ttl(client, key, state)
                 continue
             pool_liquidity = to_float(dynamic.get("pool_liquidity"))
             pool_mcap_ratio = to_float(dynamic.get("pool_mcap_ratio"))
             candles = fetch_binance_kline(address, interval=POST_PUSH_KLINE_INTERVAL, limit=24)
-            sent_message_id = send_post_push_entry_drawdown_alert(
-                address,
-                state,
-                current_mcap,
-                pool_liquidity,
-                pool_mcap_ratio,
-                candles,
-                source="redis_poll",
-                kline_interval=POST_PUSH_KLINE_INTERVAL,
-            )
+            sent_message_id = None
+            if not to_int(state.get("dd_alert_sent")):
+                sent_message_id = send_post_push_entry_drawdown_alert(
+                    address,
+                    state,
+                    current_mcap,
+                    pool_liquidity,
+                    pool_mcap_ratio,
+                    candles,
+                    source="redis_poll",
+                    kline_interval=POST_PUSH_KLINE_INTERVAL,
+                )
             updates = {
+                **local_updates,
                 "last_mcap": str(current_mcap),
                 "updated_ts": str(now_ts()),
                 "last_binance_pool_liquidity": str(pool_liquidity),
