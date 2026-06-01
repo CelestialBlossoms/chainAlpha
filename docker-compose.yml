@@ -15,9 +15,11 @@ services:
       DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN: ${DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN:-10000}
       DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN: ${DEEP_ALPHA_SMART_SIGNAL_TRIGGER_MCAP_MIN:-10000}
       DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_ENABLED: ${DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_ENABLED:-1}
+      DEEP_ALPHA_SMART_SIGNAL_WALLET_LIMIT: ${DEEP_ALPHA_SMART_SIGNAL_WALLET_LIMIT:-20}
       DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_LIMIT: ${DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_LIMIT:-200}
       DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_ENABLED: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_ENABLED:-1}
-      DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC:-60}
+      DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_RESOLUTION: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_RESOLUTION:-5m}
+      DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC:-300}
       DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_MAX_WORKERS: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_MAX_WORKERS:-6}
       DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC:-8}
       DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED: ${DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED:-0}
@@ -35,6 +37,70 @@ services:
       - python
       - -m
       - deep_alpha.deep_alpha_pro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  deep-alpha-kline-cache-5m:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-kline-cache-5m
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      TZ: Asia/Shanghai
+      CHAIN_ALPHA_REDIS_ENABLED: "1"
+      DEEP_ALPHA_KLINE_CACHE_INTERVAL_SEC: ${DEEP_ALPHA_KLINE_CACHE_INTERVAL_SEC:-3600}
+      DEEP_ALPHA_KLINE_CACHE_WINDOW_HOURS: ${DEEP_ALPHA_KLINE_CACHE_WINDOW_HOURS:-24}
+      DEEP_ALPHA_KLINE_CACHE_HISTORY_HOURS: ${DEEP_ALPHA_KLINE_CACHE_HISTORY_HOURS:-48}
+      DEEP_ALPHA_KLINE_CACHE_LIMIT: ${DEEP_ALPHA_KLINE_CACHE_LIMIT:-500}
+      DEEP_ALPHA_KLINE_CACHE_DELAY_SEC: ${DEEP_ALPHA_KLINE_CACHE_DELAY_SEC:-0.1}
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    command:
+      - python
+      - -u
+      - -m
+      - web_dashboard.deep_alpha_kline_cache_worker
+      - --resolution
+      - 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  deep-alpha-kline-cache-1m:
+    image: chain-alpha-python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chain-alpha-kline-cache-1m
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      TZ: Asia/Shanghai
+      CHAIN_ALPHA_REDIS_ENABLED: "1"
+      DEEP_ALPHA_KLINE_CACHE_INTERVAL_SEC: ${DEEP_ALPHA_KLINE_CACHE_INTERVAL_SEC:-3600}
+      DEEP_ALPHA_KLINE_CACHE_WINDOW_HOURS: ${DEEP_ALPHA_KLINE_CACHE_WINDOW_HOURS:-24}
+      DEEP_ALPHA_KLINE_CACHE_HISTORY_HOURS: ${DEEP_ALPHA_KLINE_CACHE_HISTORY_HOURS:-48}
+      DEEP_ALPHA_KLINE_CACHE_LIMIT: ${DEEP_ALPHA_KLINE_CACHE_LIMIT:-500}
+      DEEP_ALPHA_KLINE_CACHE_DELAY_SEC: ${DEEP_ALPHA_KLINE_CACHE_DELAY_SEC:-0.1}
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    command:
+      - python
+      - -u
+      - -m
+      - web_dashboard.deep_alpha_kline_cache_worker
+      - --resolution
+      - 1m
     logging:
       driver: json-file
       options:

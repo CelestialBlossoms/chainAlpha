@@ -58,6 +58,21 @@
     .track-table tr:hover { background: #1f293740; }
     .track-table tr.removed { opacity: 0.45; }
     .track-table tr.removed td { text-decoration: line-through; text-decoration-color: #ef444480; }
+    .track-table tr.recent-push {
+      box-shadow: inset 3px 0 0 #ef4444, inset -3px 0 0 #ef4444;
+      background: #7f1d1d24;
+    }
+    .track-table tr.recent-push td {
+      border-top: 1px solid #ef4444aa;
+      border-bottom-color: #ef4444aa;
+    }
+    .recent-push-label {
+      display: block;
+      margin-top: 4px;
+      color: #fca5a5;
+      font-size: 11px;
+      font-weight: 700;
+    }
 
     .pnl-positive { color: #22c55e; font-weight: 700; }
     .pnl-negative { color: #ef4444; font-weight: 700; }
@@ -196,8 +211,8 @@
     <div class="wrap">
       <header class="topbar">
         <div>
-          <h1>Deep Alpha 实时追踪</h1>
-          <p class="desc">推送打新CA后实时追踪市值、池子、盈亏（{{ (alpha_live_track_ttl_sec // 3600) if alpha_live_track_ttl_sec else 24 }}小时窗口）</p>
+          <h1>聪明钱/异动数据追踪</h1>
+          <p class="desc">实时追踪聪明钱与异动信号的市值、池子、盈亏（{{ (alpha_live_track_ttl_sec // 3600) if alpha_live_track_ttl_sec else 24 }}小时窗口）</p>
         </div>
         <div class="nav-actions">
           <button id="sound-toggle" class="sound-toggle" onclick="toggleSound()" title="新CA推送铃声通知">
@@ -228,7 +243,6 @@
               <th class="sortable" data-sort="entry_mcap">推送市值</th>
               <th class="sortable" data-sort="current_mcap">当前市值</th>
               <th>盈亏</th>
-              <th>巅峰市值时间</th>
               <th>最高市值</th>
               <th>池子</th>
               <th>Holders</th>
@@ -299,6 +313,7 @@
     let evtSource = null;
     let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
+    const SMART_WALLET_VISIBLE_LIMIT = 10;
 
     // --- Notification sound ---
     const notifAudio = new Audio("/static/dragon-studio-notification-ping-372479.mp3");
@@ -427,6 +442,15 @@
       return `${m}m`;
     }
 
+    function formatSince(seconds) {
+      seconds = Math.max(0, Math.round(seconds));
+      if (seconds < 60) return `${seconds}s前`;
+      const m = Math.floor(seconds / 60);
+      if (m < 60) return `${m}M前`;
+      const h = Math.floor(m / 60);
+      return `${h}H${m % 60}M前`;
+    }
+
     function formatTokenAge(createdAt) {
       const ts = safeNum(createdAt);
       if (ts <= 0) return "";
@@ -495,7 +519,7 @@
     function smartWalletTitle(item) {
       const wallets = Array.isArray(item.smart_wallets) ? item.smart_wallets : [];
       if (!wallets.length) return "";
-      return wallets.slice(0, 5).map(w => {
+      return wallets.slice(0, 20).map(w => {
         const addr = String(w.address || "");
         const name = w.twitter_username ? `@${w.twitter_username}` : `${addr.slice(0, 4)}...${addr.slice(-4)}`;
         return `${name} ${formatCap(w.buy_amount)} ${formatTime(w.buy_timestamp)}`;
@@ -526,11 +550,11 @@
       const wallets = Array.isArray(item.smart_wallets) ? item.smart_wallets : [];
       const title = smartWalletTitle(item);
       const sellText = sellCount > 0 || sellTotal > 0 ? `卖出 ${sellCount || "-"}笔 ${sellTotal > 0 ? formatCap(sellTotal) : ""}` : "卖出 -";
-      const walletRows = wallets.slice(0, 3).map(w => {
+      const walletRows = wallets.slice(0, SMART_WALLET_VISIBLE_LIMIT).map(w => {
         const who = w.twitter_username ? `@${w.twitter_username}` : shortAddr(w.address);
         return `<div class="smart-flow-sub">买 ${htmlEscape(who)} ${htmlEscape(formatTime(w.buy_timestamp))} ${htmlEscape(formatCap(w.buy_amount))}</div>`;
       }).join("");
-      const moreWallets = wallets.length > 3 ? `<div class="smart-flow-sub">另 ${wallets.length - 3} 个钱包</div>` : "";
+      const moreWallets = wallets.length > SMART_WALLET_VISIBLE_LIMIT ? `<div class="smart-flow-sub">另 ${wallets.length - SMART_WALLET_VISIBLE_LIMIT} 个钱包</div>` : "";
       return `
         <div class="smart-flow" title="${htmlEscape(title)}">
           <div class="smart-flow-main">${htmlEscape(buyText)}</div>
@@ -593,7 +617,8 @@
         const age = now - safeNum(item.pushed_at, now);
         const remaining = Math.max(0, trackTtlSec - age);
         const isRemoved = item.status !== "tracking" && item.status !== "smart_signal" && item.status !== "market_signal";
-        const rowClass = isRemoved ? "removed" : "";
+        const isRecentPush = !isRemoved && age <= 600;
+        const rowClass = `${isRemoved ? "removed" : ""} ${isRecentPush ? "recent-push" : ""}`.trim();
         const pnl = safeNum(item.pnl_pct);
         const createdText = item.created_time || formatTime(item.created_at);
 
@@ -605,17 +630,20 @@
               ${createdText && createdText !== "-" ? `<div class="token-meta">创建 ${htmlEscape(createdText)}</div>` : ""}
               ${item.narrative ? `<div class="token-narrative" title="${htmlEscape(item.narrative)}">📌 ${htmlEscape(item.narrative)}</div>` : ""}
             </td>
-            <td><span>${formatTime(item.pushed_at)}</span></td>
+            <td>
+              <span>${formatTime(item.pushed_at)}</span>
+              ${isRecentPush ? `<span class="recent-push-label">最近推送 ${formatSince(age)} / 10M内</span>` : ""}
+            </td>
             <td><b>${formatCap(item.entry_mcap)}</b></td>
             <td>
               <b>${formatCap(item.current_mcap)}</b>
               ${mcapBarHtml(item.entry_mcap, item.current_mcap)}
             </td>
             <td><b class="${pnlClass(pnl)}">${formatPnl(pnl)}</b></td>
-            <td><span>${formatTime(item.peak_mcap_at || item.pushed_at)}</span></td>
             <td>
               <b>${formatCap(item.peak_mcap)}</b>
               <div class="${pnlClass(safeNum(item.peak_pnl_pct))}">${formatPnl(safeNum(item.peak_pnl_pct))}</div>
+              <div class="token-meta">峰值 ${formatTime(item.peak_mcap_at || item.pushed_at)}</div>
             </td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>

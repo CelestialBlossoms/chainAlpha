@@ -104,7 +104,7 @@ NEW_TOKEN_TG_ENABLED = os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_ENABLED", "1").strip()
 NEW_TOKEN_TG_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_NEW_TOKEN_TG_MAX_AGE_SEC", str(NEW_TOKEN_MAX_AGE_SEC)))
 
 # ---------------------------------------------------------------------------
-# Post-push 1m K-line tracking (P3)
+# Post-push K-line tracking (P3)
 # ---------------------------------------------------------------------------
 TRACK_REDIS_PREFIX = os.getenv("DEEP_ALPHA_TRACK_REDIS_PREFIX", "deep_alpha:track")
 TRACK_REDIS_TTL_SEC = int(os.getenv("DEEP_ALPHA_TRACK_REDIS_TTL_SEC", "5400"))  # 90min
@@ -129,10 +129,12 @@ SMART_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TRIGGER
 SMART_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_TOTAL_FEE_MIN", "0"))
 SMART_SIGNAL_NARRATIVE_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 SMART_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_NARRATIVE_LIMIT", "50"))
+SMART_SIGNAL_WALLET_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_WALLET_LIMIT", "20"))
 SMART_SIGNAL_SELL_TRACK_ENABLED = os.getenv("DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 SMART_SIGNAL_SELL_TRACK_LIMIT = int(os.getenv("DEEP_ALPHA_SMART_SIGNAL_SELL_TRACK_LIMIT", "200"))
 SIGNAL_POST_PEAK_KLINE_ENABLED = os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-SIGNAL_POST_PEAK_KLINE_PAD_SEC = int(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC", "60"))
+SIGNAL_POST_PEAK_KLINE_RESOLUTION = os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_RESOLUTION", "5m").strip().lower() or "5m"
+SIGNAL_POST_PEAK_KLINE_PAD_SEC = int(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_PAD_SEC", "300"))
 SIGNAL_POST_PEAK_KLINE_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_MAX_WORKERS", "6"))
 SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC = float(os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_TIMEOUT_SEC", "8"))
 SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED = os.getenv("DEEP_ALPHA_SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
@@ -942,7 +944,8 @@ def normalize_smart_wallets(wallets):
     result = []
     if not isinstance(wallets, list):
         return result
-    for wallet in wallets[:8]:
+    limit = max(1, SMART_SIGNAL_WALLET_LIMIT)
+    for wallet in wallets[:limit]:
         if not isinstance(wallet, dict):
             continue
         result.append(
@@ -1442,7 +1445,7 @@ def smart_signal_live_track_payload(item):
     trigger_at = int(safe_float(item.get("smart_signal_trigger_at") or item.get("pushed_at")) or time.time())
     entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("smart_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
     current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
-    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap)
     pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     payload = {
@@ -1489,7 +1492,7 @@ def market_signal_live_track_payload(item):
     trigger_at = int(safe_float(item.get("market_signal_trigger_at") or item.get("pushed_at")) or time.time())
     entry_mcap = safe_float(item.get("entry_mcap")) or safe_float(item.get("market_signal_trigger_mcap")) or safe_float(item.get("current_mcap"))
     current_mcap = safe_float(item.get("current_mcap")) or entry_mcap
-    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    peak_mcap = max(safe_float(item.get("peak_mcap")), entry_mcap)
     pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
     payload = {
@@ -2555,6 +2558,7 @@ def analyze_wallet_creation_clusters(holders_list):
 # Heavy 5m K-line health scoring stays disabled here; lightweight 1m filters and post-push tracking are enabled.
 BINANCE_KLINE_URL = "https://dquery.sintral.io/u-kline/v1/k-line/candles"
 BINANCE_HEADERS = {"Accept-Encoding": "identity", "User-Agent": "binance-web3/1.1 (Skill)"}
+_DEEP_ALPHA_KLINE_CACHE_TABLE_READY = False
 
 
 def parse_kline_rows(raw):
@@ -2572,16 +2576,86 @@ def parse_kline_rows(raw):
     return candles
 
 
+def _normalize_kline_resolution(resolution):
+    return "1m" if str(resolution or "").lower() in {"1", "1m", "1min"} else "5m"
+
+
 def _kline_table(resolution):
-    return "deep_alpha_kline_1m" if resolution == "1m" else "deep_alpha_kline_5m"
+    return "deep_alpha_cache_1m" if _normalize_kline_resolution(resolution) == "1m" else "deep_alpha_cache_5m"
+
+
+def ensure_deep_alpha_kline_cache_tables():
+    global _DEEP_ALPHA_KLINE_CACHE_TABLE_READY
+    if _DEEP_ALPHA_KLINE_CACHE_TABLE_READY:
+        return
+
+    def _op(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS deep_alpha_cache_5m (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_5m_addr_res_ts
+                ON deep_alpha_cache_5m(address, resolution, ts);
+            CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_5m_updated
+                ON deep_alpha_cache_5m(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS deep_alpha_cache_1m (
+                chain TEXT NOT NULL DEFAULT 'sol',
+                address TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                ts BIGINT NOT NULL,
+                open NUMERIC,
+                high NUMERIC,
+                low NUMERIC,
+                close NUMERIC,
+                volume NUMERIC,
+                amount NUMERIC,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (chain, address, resolution, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_1m_addr_res_ts
+                ON deep_alpha_cache_1m(address, resolution, ts);
+            CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_1m_updated
+                ON deep_alpha_cache_1m(updated_at DESC);
+            """
+        )
+
+    db_op(_op)
+    _DEEP_ALPHA_KLINE_CACHE_TABLE_READY = True
 
 
 def save_deep_alpha_klines(address, resolution, candles, chain="sol"):
     if not candles:
         return 0
+    ensure_deep_alpha_kline_cache_tables()
+    resolution = _normalize_kline_resolution(resolution)
     table = _kline_table(resolution)
     rows = [
-        (chain, address, int(c["ts"]), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume"))
+        (
+            chain,
+            address,
+            resolution,
+            int(c["ts"]),
+            c.get("open"),
+            c.get("high"),
+            c.get("low"),
+            c.get("close"),
+            c.get("volume"),
+            c.get("amount"),
+        )
         for c in candles if int(c.get("ts", 0)) > 0
     ]
     if not rows:
@@ -2590,11 +2664,11 @@ def save_deep_alpha_klines(address, resolution, candles, chain="sol"):
         def _op(conn):
             cur = conn.cursor()
             cur.executemany(
-                f"INSERT INTO {table} (chain, address, ts, open, high, low, close, volume) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (chain, address, ts) DO UPDATE SET "
+                f"INSERT INTO {table} (chain, address, resolution, ts, open, high, low, close, volume, amount) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (chain, address, resolution, ts) DO UPDATE SET "
                 "open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, "
-                "close=EXCLUDED.close, volume=EXCLUDED.volume, updated_at=NOW()",
+                "close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount, updated_at=NOW()",
                 rows,
             )
             return len(rows)
@@ -2604,36 +2678,65 @@ def save_deep_alpha_klines(address, resolution, candles, chain="sol"):
 
 
 def load_deep_alpha_klines(address, resolution, from_ts=0, to_ts=0, chain="sol"):
+    ensure_deep_alpha_kline_cache_tables()
+    resolution = _normalize_kline_resolution(resolution)
     table = _kline_table(resolution)
     try:
         def _op(conn):
             cur = conn.cursor()
             if from_ts and to_ts:
                 cur.execute(
-                    f"SELECT ts, open, high, low, close, volume FROM {table} "
-                    "WHERE chain=%s AND address=%s AND ts>=%s AND ts<=%s ORDER BY ts",
-                    (chain, address, from_ts, to_ts),
+                    f"SELECT ts, open, high, low, close, volume, amount FROM {table} "
+                    "WHERE chain=%s AND address=%s AND resolution=%s AND ts>=%s AND ts<=%s ORDER BY ts",
+                    (chain, address, resolution, from_ts, to_ts),
                 )
             elif from_ts:
                 cur.execute(
-                    f"SELECT ts, open, high, low, close, volume FROM {table} "
-                    "WHERE chain=%s AND address=%s AND ts>=%s ORDER BY ts",
-                    (chain, address, from_ts),
+                    f"SELECT ts, open, high, low, close, volume, amount FROM {table} "
+                    "WHERE chain=%s AND address=%s AND resolution=%s AND ts>=%s ORDER BY ts",
+                    (chain, address, resolution, from_ts),
                 )
             else:
                 cur.execute(
-                    f"SELECT ts, open, high, low, close, volume FROM {table} "
-                    "WHERE chain=%s AND address=%s ORDER BY ts",
-                    (chain, address),
+                    f"SELECT ts, open, high, low, close, volume, amount FROM {table} "
+                    "WHERE chain=%s AND address=%s AND resolution=%s ORDER BY ts",
+                    (chain, address, resolution),
                 )
             return [
                 {"ts": int(r[0]), "open": float(r[1] or 0), "high": float(r[2] or 0),
-                 "low": float(r[3] or 0), "close": float(r[4] or 0), "volume": float(r[5] or 0)}
+                 "low": float(r[3] or 0), "close": float(r[4] or 0), "volume": float(r[5] or 0),
+                 "amount": float(r[6] or 0)}
                 for r in cur.fetchall()
             ]
         return db_op(_op) or []
     except Exception:
         return []
+
+
+def latest_deep_alpha_kline_ts(address, resolution, chain="sol"):
+    if not address:
+        return 0
+    ensure_deep_alpha_kline_cache_tables()
+    resolution = _normalize_kline_resolution(resolution)
+    table = _kline_table(resolution)
+
+    try:
+        def _op(conn):
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT COALESCE(MAX(ts), 0)
+                FROM {table}
+                WHERE chain=%s AND address=%s AND resolution=%s
+                """,
+                (chain or "sol", address, resolution),
+            )
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+
+        return int(db_op(_op) or 0)
+    except Exception:
+        return 0
 
 
 def fetch_1m_klines(address, limit=12):
@@ -2657,15 +2760,21 @@ def fetch_1m_klines(address, limit=12):
 
 
 def fetch_1m_kline_range(address, from_ts, to_ts, chain="sol", use_cache=True):
-    """Fetch 1-minute Binance Web3 K-line for a bounded post-push window."""
+    return fetch_kline_range(address, from_ts, to_ts, "1m", chain=chain, use_cache=use_cache)
+
+
+def fetch_kline_range(address, from_ts, to_ts, resolution="5m", chain="sol", use_cache=True):
+    """Fetch Binance Web3 K-line for a bounded post-push window."""
     address = str(address or "").strip()
     from_ts = int(safe_float(from_ts))
     to_ts = int(safe_float(to_ts))
     if not address or from_ts <= 0 or to_ts <= 0 or from_ts > to_ts:
         return []
 
-    step = 60
-    cached = load_deep_alpha_klines(address, "1m", from_ts, to_ts, chain=chain or "sol") if use_cache else []
+    resolution = "5m" if str(resolution or "").lower() in {"5m", "5min"} else "1m"
+    interval = "5min" if resolution == "5m" else "1min"
+    step = 300 if resolution == "5m" else 60
+    cached = load_deep_alpha_klines(address, resolution, from_ts, to_ts, chain=chain or "sol") if use_cache else []
     earliest_cached_ts = min((int(safe_float(c.get("ts"))) for c in cached), default=0)
     latest_cached_ts = max((int(safe_float(c.get("ts"))) for c in cached), default=0)
     cache_has_start = bool(cached and earliest_cached_ts <= from_ts + step * 2)
@@ -2679,7 +2788,7 @@ def fetch_1m_kline_range(address, from_ts, to_ts, chain="sol", use_cache=True):
         params = {
             "address": address,
             "platform": "solana",
-            "interval": "1min",
+            "interval": interval,
             "pm": "p",
             "from": fetch_from * 1000,
             "to": to_ts * 1000,
@@ -2694,8 +2803,8 @@ def fetch_1m_kline_range(address, from_ts, to_ts, chain="sol", use_cache=True):
             if resp.status_code == 200:
                 fresh = parse_kline_rows(resp.json().get("data", []))
                 if fresh and use_cache:
-                    save_deep_alpha_klines(address, "1m", fresh, chain=chain or "sol")
-                    cached = load_deep_alpha_klines(address, "1m", from_ts, to_ts, chain=chain or "sol")
+                    save_deep_alpha_klines(address, resolution, fresh, chain=chain or "sol")
+                    cached = load_deep_alpha_klines(address, resolution, from_ts, to_ts, chain=chain or "sol")
         except Exception:
             pass
 
@@ -2715,7 +2824,9 @@ def post_push_peak_from_candles(
     entry_price=0,
     total_supply=0,
     current_ts=0,
+    resolution="1m",
 ):
+    step = 300 if str(resolution or "").lower() in {"5m", "5min"} else 60
     pushed_at = int(safe_float(pushed_at))
     entry_mcap = safe_float(entry_mcap)
     current_mcap = safe_float(current_mcap)
@@ -2725,7 +2836,7 @@ def post_push_peak_from_candles(
     post = [
         candle
         for candle in (candles or [])
-        if int(safe_float(candle.get("ts"))) + 60 > pushed_at
+        if int(safe_float(candle.get("ts"))) + step > pushed_at
     ]
     if not post:
         fallback_mcap = max(entry_mcap, current_mcap)
@@ -2746,9 +2857,6 @@ def post_push_peak_from_candles(
         peak_mcap = peak_price * total_supply
 
     peak_mcap_at = int(safe_float(peak_candle.get("ts"))) or pushed_at
-    if current_mcap > peak_mcap:
-        peak_mcap = current_mcap
-        peak_mcap_at = current_ts
     if entry_mcap > peak_mcap:
         peak_mcap = entry_mcap
         peak_mcap_at = pushed_at
@@ -2756,7 +2864,7 @@ def post_push_peak_from_candles(
     return {
         "peak_mcap": peak_mcap,
         "peak_mcap_at": peak_mcap_at,
-        "peak_source": "binance_kline",
+        "peak_source": f"binance_kline_{'5m' if step == 300 else '1m'}",
         "post_peak_price": peak_price,
         "post_peak_entry_price": entry_price_used,
         "post_peak_kline_count": len(post),
@@ -2786,11 +2894,13 @@ def enrich_signals_with_post_push_peak(items, chain):
         )
         if not address or pushed_at <= 0 or entry_mcap <= 0:
             return
-        from_ts = max(0, pushed_at - max(0, SIGNAL_POST_PEAK_KLINE_PAD_SEC))
-        candles = fetch_1m_kline_range(
+        resolution = SIGNAL_POST_PEAK_KLINE_RESOLUTION
+        step = 300 if resolution in {"5m", "5min"} else 60
+        candles = fetch_kline_range(
             address,
-            from_ts,
+            max(0, pushed_at - max(max(0, SIGNAL_POST_PEAK_KLINE_PAD_SEC), step)),
             now_ts,
+            resolution=resolution,
             chain=chain or item.get("chain") or "sol",
             use_cache=SIGNAL_POST_PEAK_KLINE_CACHE_ENABLED,
         )
@@ -2802,6 +2912,7 @@ def enrich_signals_with_post_push_peak(items, chain):
             entry_price=safe_float(item.get("entry_price") or item.get("price")),
             total_supply=safe_float(item.get("total_supply")),
             current_ts=now_ts,
+            resolution=resolution,
         )
         if peak.get("peak_mcap") > 0:
             item.update(peak)

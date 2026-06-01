@@ -168,6 +168,44 @@ def init_tables(conn):
             ON deep_alpha_kline_5m(address, ts);
         CREATE INDEX IF NOT EXISTS idx_deep_alpha_kline_5m_updated
             ON deep_alpha_kline_5m(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS deep_alpha_cache_5m (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            resolution TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            amount NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, resolution, ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_5m_addr_res_ts
+            ON deep_alpha_cache_5m(address, resolution, ts);
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_5m_updated
+            ON deep_alpha_cache_5m(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS deep_alpha_cache_1m (
+            chain TEXT NOT NULL DEFAULT 'sol',
+            address TEXT NOT NULL,
+            resolution TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            amount NUMERIC,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (chain, address, resolution, ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_1m_addr_res_ts
+            ON deep_alpha_cache_1m(address, resolution, ts);
+        CREATE INDEX IF NOT EXISTS idx_deep_alpha_cache_1m_updated
+            ON deep_alpha_cache_1m(updated_at DESC);
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS alpha_abnormal_analysis (
@@ -202,7 +240,7 @@ def init_tables(conn):
             narrative_category TEXT
         );
     """)
-    print("Initialized alpha_signals, alpha_token_candidates, deep_alpha_kline_1m, deep_alpha_kline_5m, alpha_abnormal_analysis, and onchain_trading_guides")
+    print("Initialized alpha_signals, alpha_token_candidates, deep_alpha_kline_1m, deep_alpha_kline_5m, deep_alpha_cache_1m, deep_alpha_cache_5m, alpha_abnormal_analysis, and onchain_trading_guides")
 
 
 if __name__ == "__main__":

@@ -89,7 +89,7 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
             current_ts=180,
         )
 
-        self.assertEqual(stats["peak_source"], "binance_kline")
+        self.assertEqual(stats["peak_source"], "binance_kline_1m")
         self.assertEqual(stats["peak_mcap"], 2_000)
         self.assertEqual(stats["peak_mcap_at"], 120)
 
@@ -108,6 +108,26 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
 
         self.assertEqual(smart["peak_mcap"], 100_000)
         self.assertEqual(market["peak_mcap"], 100_000)
+
+    def test_post_push_peak_does_not_use_dynamic_current_as_peak_when_kline_exists(self) -> None:
+        candles = [
+            {"ts": 0, "open": 0.10, "high": 0.12, "low": 0.09, "close": 0.11},
+            {"ts": 300, "open": 0.11, "high": 0.15, "low": 0.10, "close": 0.12},
+        ]
+
+        stats = post_push_peak_from_candles(
+            candles,
+            pushed_at=100,
+            entry_mcap=100_000,
+            current_mcap=177_000,
+            entry_price=0.10,
+            current_ts=600,
+            resolution="5m",
+        )
+
+        self.assertEqual(stats["peak_mcap"], 150_000)
+        self.assertEqual(stats["peak_mcap_at"], 300)
+        self.assertEqual(stats["peak_source"], "binance_kline_5m")
 
 
 if __name__ == "__main__":
