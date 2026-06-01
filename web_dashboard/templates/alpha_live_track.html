@@ -316,7 +316,7 @@
       const newAddrs = [];
       for (const item of (incomingItems || [])) {
         const addr = item.address;
-        if (addr && item.status === "tracking" && !knownCAs.has(addr)) {
+        if (addr && (item.status === "tracking" || item.status === "smart_signal" || item.status === "market_signal") && !knownCAs.has(addr)) {
           newAddrs.push(addr);
           knownCAs.add(addr);
         }
