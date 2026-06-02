@@ -2423,6 +2423,17 @@ def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
         return []
 
 
+def _recompute_live_track_mcap_metrics(item: dict[str, Any]) -> dict[str, Any]:
+    entry_mcap = _safe_float(item.get("entry_mcap"))
+    current_mcap = _safe_float(item.get("current_mcap")) or entry_mcap
+    peak_mcap = max(_safe_float(item.get("peak_mcap")), entry_mcap, current_mcap)
+    item["current_mcap"] = current_mcap
+    item["peak_mcap"] = peak_mcap
+    item["pnl_pct"] = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and current_mcap > 0 else 0.0
+    item["peak_pnl_pct"] = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
+    return item
+
+
 def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_address: dict[str, dict[str, Any]] = {}
     deleted_addresses = _alpha_deleted_today_addresses()
@@ -2470,7 +2481,7 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 smart_value = smart_item.get(field)
                 if smart_value not in (None, "", [], {}) and not merged.get(field):
                     merged[field] = smart_value
-            by_address[address] = merged
+            by_address[address] = _recompute_live_track_mcap_metrics(merged)
         elif smart_item and smart_item.get("market_signal"):
             merged = {
                 **item,
@@ -2488,9 +2499,9 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 market_value = smart_item.get(field)
                 if market_value not in (None, "", [], {}) and not merged.get(field):
                     merged[field] = market_value
-            by_address[address] = merged
+            by_address[address] = _recompute_live_track_mcap_metrics(merged)
         else:
-            by_address[address] = item
+            by_address[address] = _recompute_live_track_mcap_metrics(item)
     return _sort_live_track_by_push_time(list(by_address.values()))
 
 
