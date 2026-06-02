@@ -98,6 +98,15 @@
       color: #e5e7eb;
       font-size: 14px;
     }
+    .token-name {
+      font-size: 12px;
+      color: #cbd5e1;
+      margin-top: 2px;
+      max-width: 190px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .token-addr {
       font-size: 11px;
       color: #6b7280;
@@ -406,6 +415,22 @@
       return `${m}m`;
     }
 
+    function formatPeakElapsed(seconds) {
+      seconds = Math.max(0, Math.round(seconds));
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      if (h > 0) return `${h}小时${m}分钟`;
+      return `${m}分钟`;
+    }
+
+    function peakElapsedText(item) {
+      const pushedAt = safeNum(item && item.pushed_at);
+      const peakAt = safeNum(item && item.peak_mcap_at);
+      if (pushedAt <= 0 || peakAt <= 0) return "-";
+      if (peakAt <= pushedAt) return "推送时";
+      return formatPeakElapsed(peakAt - pushedAt);
+    }
+
     function formatSince(seconds) {
       seconds = Math.max(0, Math.round(seconds));
       if (seconds < 60) return `${seconds}s前`;
@@ -585,11 +610,15 @@
         const rowClass = `${isRemoved ? "removed" : ""} ${isRecentPush ? "recent-push" : ""}`.trim();
         const pnl = safeNum(item.pnl_pct);
         const createdText = item.created_time || formatTime(item.created_at);
+        const tokenName = String(item.name || "").trim();
+        const symbolText = String(item.symbol || "UNKNOWN").trim();
+        const showTokenName = tokenName && tokenName.toLowerCase() !== symbolText.toLowerCase();
 
         return `
           <tr class="${rowClass}" data-ca="${htmlEscape(item.address)}">
             <td>
               <div class="token-symbol">$${htmlEscape(item.symbol || "UNKNOWN")}</div>
+              ${showTokenName ? `<div class="token-name" title="${htmlEscape(tokenName)}">${htmlEscape(tokenName)}</div>` : ""}
               <div class="token-addr">${htmlEscape((item.address || "").slice(0, 8))}...${safeNum(item.created_at) > 0 ? ` <span class="token-age">🕐 ${formatTokenAge(item.created_at)}</span>` : ""}</div>
               ${createdText && createdText !== "-" ? `<div class="token-meta">创建 ${htmlEscape(createdText)}</div>` : ""}
               ${item.narrative ? `<div class="token-narrative" title="${htmlEscape(item.narrative)}">📌 ${htmlEscape(item.narrative)}</div>` : ""}
@@ -608,6 +637,7 @@
               <b>${formatCap(item.peak_mcap)}</b>
               <div class="${pnlClass(safeNum(item.peak_pnl_pct))}">${formatPnl(safeNum(item.peak_pnl_pct))}</div>
               <div class="token-meta">峰值 ${formatTime(item.peak_mcap_at || item.pushed_at)}</div>
+              <div class="token-meta">用时 ${htmlEscape(peakElapsedText(item))}</div>
             </td>
             <td>${formatCap(item.pool_liquidity)}</td>
             <td>${safeNum(item.holders) || "-"}</td>
