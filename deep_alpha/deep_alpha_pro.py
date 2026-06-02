@@ -1496,6 +1496,50 @@ def market_signal_live_track_payload(item):
     return payload
 
 
+def merge_live_track_payload(existing, payload):
+    """Merge a refreshed GMGN signal payload without losing first-push and peak state."""
+    if not isinstance(existing, dict) or not existing:
+        return payload
+    if not isinstance(payload, dict):
+        payload = {}
+
+    merged = {**existing, **payload}
+    entry_mcap = safe_float(existing.get("entry_mcap")) or safe_float(payload.get("entry_mcap"))
+    pushed_at = int(safe_float(existing.get("pushed_at")) or safe_float(payload.get("pushed_at")) or time.time())
+    current_mcap = safe_float(payload.get("current_mcap")) or safe_float(existing.get("current_mcap")) or entry_mcap
+
+    existing_peak = max(
+        safe_float(existing.get("peak_mcap")),
+        safe_float(existing.get("current_mcap")),
+        safe_float(existing.get("entry_mcap")),
+    )
+    payload_peak = max(
+        safe_float(payload.get("peak_mcap")),
+        current_mcap,
+        entry_mcap,
+    )
+    peak_mcap = max(existing_peak, payload_peak)
+
+    if peak_mcap == existing_peak and safe_float(existing.get("peak_mcap_at")) > 0:
+        peak_mcap_at = int(safe_float(existing.get("peak_mcap_at")))
+    elif peak_mcap == safe_float(payload.get("peak_mcap")) and safe_float(payload.get("peak_mcap_at")) > 0:
+        peak_mcap_at = int(safe_float(payload.get("peak_mcap_at")))
+    elif peak_mcap == current_mcap and current_mcap > existing_peak:
+        peak_mcap_at = int(safe_float(payload.get("last_updated")) or time.time())
+    else:
+        peak_mcap_at = pushed_at
+
+    merged["entry_mcap"] = entry_mcap
+    merged["pushed_at"] = pushed_at
+    merged["current_mcap"] = current_mcap
+    merged["peak_mcap"] = peak_mcap
+    merged["peak_mcap_at"] = peak_mcap_at
+    merged["pnl_pct"] = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and current_mcap > 0 else 0.0
+    merged["peak_pnl_pct"] = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
+    merged["last_updated"] = int(time.time())
+    return merged
+
+
 def _delete_redis_pattern(client, pattern):
     deleted = 0
     try:
@@ -1526,6 +1570,7 @@ def sync_signals_to_live_track(chain, smart_signals, market_signals=None):
             payload = smart_signal_live_track_payload(item)
             if not payload.get("address"):
                 continue
+            payload = merge_live_track_payload(load_live_track(payload["address"]), payload)
             client.setex(
                 live_track_redis_key(payload["address"]),
                 LIVE_TRACK_REDIS_TTL_SEC,
@@ -1538,6 +1583,7 @@ def sync_signals_to_live_track(chain, smart_signals, market_signals=None):
             payload = market_signal_live_track_payload(item)
             if not payload.get("address"):
                 continue
+            payload = merge_live_track_payload(load_live_track(payload["address"]), payload)
             client.setex(
                 live_track_redis_key(payload["address"]),
                 LIVE_TRACK_REDIS_TTL_SEC,

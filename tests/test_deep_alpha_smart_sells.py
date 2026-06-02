@@ -4,6 +4,7 @@ import unittest
 
 from deep_alpha.deep_alpha_pro import (
     aggregate_smart_sell_trades,
+    merge_live_track_payload,
     normalize_market_signal_item,
     normalize_smart_signal_item,
     post_push_peak_from_candles,
@@ -128,6 +129,34 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
         self.assertEqual(stats["peak_mcap"], 150_000)
         self.assertEqual(stats["peak_mcap_at"], 300)
         self.assertEqual(stats["peak_source"], "binance_kline_5m")
+
+    def test_live_track_merge_preserves_entry_and_peak_then_recomputes_pnl(self) -> None:
+        merged = merge_live_track_payload(
+            {
+                "entry_mcap": 110_000,
+                "pushed_at": 1_000,
+                "current_mcap": 150_000,
+                "peak_mcap": 175_000,
+                "peak_mcap_at": 1_300,
+                "pnl_pct": 36.36,
+                "peak_pnl_pct": 59.09,
+            },
+            {
+                "entry_mcap": 120_000,
+                "pushed_at": 2_000,
+                "current_mcap": 89_900,
+                "peak_mcap": 120_000,
+                "peak_mcap_at": 2_000,
+            },
+        )
+
+        self.assertEqual(merged["entry_mcap"], 110_000)
+        self.assertEqual(merged["pushed_at"], 1_000)
+        self.assertEqual(merged["current_mcap"], 89_900)
+        self.assertEqual(merged["peak_mcap"], 175_000)
+        self.assertEqual(merged["peak_mcap_at"], 1_300)
+        self.assertAlmostEqual(merged["pnl_pct"], -18.2727, places=3)
+        self.assertAlmostEqual(merged["peak_pnl_pct"], 59.0909, places=3)
 
 
 if __name__ == "__main__":
