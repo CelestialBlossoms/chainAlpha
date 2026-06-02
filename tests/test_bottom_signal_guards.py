@@ -155,6 +155,39 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(extra["deepseek_async_status"], "")
         self.assertFalse(bottom_monitor.deepseek_signal_eligible("quiet_runup"))
 
+    def test_bottom_abnormal_push_uses_local_hardcoded_analysis_without_deepseek_pending(self) -> None:
+        token = {
+            "address": "So11111111111111111111111111111111111111112",
+            "symbol": "LOCAL",
+            "market_cap": 120_000,
+            "price": 0.001,
+        }
+        summary = {"pool": {"total_liquidity": 30_000}}
+        analysis = {"signal_type": "new_revival", "current_mcap": 120_000, "price_change_pct": 42}
+
+        extra = bottom_monitor.build_bottom_signal_extra(token, summary, analysis, {})
+        attached = bottom_monitor.maybe_attach_deepseek_kline_prediction(
+            token=token,
+            summary=summary,
+            analysis=analysis,
+            candles_5m=[],
+            candles_1m=[],
+        )
+        scheduled = bottom_monitor.schedule_deepseek_post_push_analysis(
+            token=token,
+            summary=summary,
+            analysis=analysis,
+            candles_5m=[],
+            candles_1m=[],
+            base_extra=extra,
+            signal_text="test",
+        )
+
+        self.assertTrue(bottom_monitor.deepseek_signal_eligible("new_revival"))
+        self.assertEqual(extra["deepseek_async_status"], "")
+        self.assertNotIn("deepseek_kline_prediction", attached)
+        self.assertFalse(scheduled)
+
     def test_risk_tags_classify_known_failure_patterns_without_trade_advice(self) -> None:
         tags = compute_risk_tags(
             {

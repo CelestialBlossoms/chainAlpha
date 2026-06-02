@@ -844,6 +844,15 @@
       if (h > 0) return `${h}h${m}m`;
       return `${m}m`;
     }
+    function peakTimingText(item) {
+      const pushedAt = safeNum(item && item.pushed_at);
+      const peakAt = safeNum(item && item.peak_mcap_at);
+      if (peakAt <= 0) return "-";
+      if (pushedAt > 0 && peakAt > pushedAt) {
+        return `${formatTime(peakAt)} · +${formatDuration(peakAt - pushedAt)}`;
+      }
+      return `${formatTime(peakAt)} · 推送时`;
+    }
     function shortAddress(addr) {
       const s = String(addr || "");
       return s.length > 16 ? `${s.slice(0, 8)}...${s.slice(-6)}` : s;
@@ -1218,7 +1227,7 @@
             </td>
             <td>${renderValueCell(item)}</td>
             <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">峰值 ${formatPnl(peakPnl)}</div></td>
-            <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div></td>
+            <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div><div class="muted small">峰值 ${formatCap(peakMcap)} / ${htmlEscape(peakTimingText(item))}</div></td>
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
             <td>${renderFollowupChips(item)}</td>
             <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
@@ -1373,7 +1382,7 @@
           ${drawerMetric("当前盈亏", formatPnl(item.pnl_pct), pnlClass(item.pnl_pct))}
           ${drawerMetric("推送市值", formatCap(item.entry_mcap))}
           ${drawerMetric("当前市值", formatCap(item.current_mcap))}
-          ${drawerMetric("峰值市值", formatCap(item.peak_mcap))}
+          ${drawerMetric("峰值市值", `${formatCap(item.peak_mcap)} / ${htmlEscape(peakTimingText(item))}`)}
           ${drawerMetric("回撤", pInfo ? `-${pInfo.entryDrawdownPct.toFixed(1)}%` : "-")}
         </div>
         <section class="detail-panel">

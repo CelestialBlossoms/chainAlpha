@@ -188,13 +188,19 @@ BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
-BOTTOM_DEEPSEEK_ASYNC_ENABLED = os.getenv("BOTTOM_DEEPSEEK_ASYNC_ENABLED", "1").strip().lower() not in {
+BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED = os.getenv("BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED", "0").strip().lower() not in {
     "0",
     "false",
     "no",
     "off",
 }
-BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED = os.getenv("BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED", "1").strip().lower() not in {
+BOTTOM_DEEPSEEK_ASYNC_ENABLED = BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED and os.getenv("BOTTOM_DEEPSEEK_ASYNC_ENABLED", "0").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED = BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED and os.getenv("BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED", "0").strip().lower() not in {
     "0",
     "false",
     "no",
@@ -1931,6 +1937,8 @@ def maybe_attach_deepseek_kline_prediction(
     signal_ts: int = 0,
 ) -> dict[str, Any]:
     """Attach DeepSeek 5m/1m K-line prediction synchronously."""
+    if not BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED:
+        return analysis
     signal_type = str((analysis or {}).get("signal_type") or "")
     if not signal_type or signal_type == "watch" or analysis.get("deepseek_kline_prediction"):
         return analysis
@@ -3133,7 +3141,7 @@ def schedule_deepseek_post_push_analysis(
     signal_text: str,
     tg_message_id: int | None = None,
 ) -> bool:
-    if not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
+    if not BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED or not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
         return False
     signal_type = str((analysis or {}).get("signal_type") or base_extra.get("signal_type") or "")
     if not deepseek_signal_eligible(signal_type) or (analysis or {}).get("deepseek_kline_prediction"):
