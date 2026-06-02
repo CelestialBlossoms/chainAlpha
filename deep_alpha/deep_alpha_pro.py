@@ -147,6 +147,9 @@ MARKET_SIGNAL_TRIGGER_MCAP_MIN = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TRIGG
 MARKET_SIGNAL_TOTAL_FEE_MIN = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_TOTAL_FEE_MIN", "2"))
 MARKET_SIGNAL_MAX_DRAWDOWN_PCT = float(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_MAX_DRAWDOWN_PCT", "50"))
 MARKET_SIGNAL_NARRATIVE_LIMIT = int(os.getenv("DEEP_ALPHA_MARKET_SIGNAL_NARRATIVE_LIMIT", "20"))
+SIGNAL_TG_ENABLED = os.getenv("DEEP_ALPHA_SIGNAL_TG_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+SIGNAL_TG_MAX_AGE_SEC = int(os.getenv("DEEP_ALPHA_SIGNAL_TG_MAX_AGE_SEC", "300"))
+SIGNAL_TG_DEDUP_TTL_SEC = int(os.getenv("DEEP_ALPHA_SIGNAL_TG_DEDUP_TTL_SEC", str(24 * 3600)))
 
 # Keep the existing send/edit code paths on the Deep Alpha-specific Telegram target.
 TG_BOT_TOKEN = ALPHA_TG_BOT_TOKEN
@@ -1538,6 +1541,110 @@ def merge_live_track_payload(existing, payload):
     merged["peak_pnl_pct"] = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
     merged["last_updated"] = int(time.time())
     return merged
+
+
+def signal_tg_dedup_key(source, address, trigger_at):
+    return redis_key("deep_alpha:signal_tg_sent", source, address, int(safe_float(trigger_at)))
+
+
+def signal_tg_fresh_enough(trigger_at, now_value=None):
+    if SIGNAL_TG_MAX_AGE_SEC <= 0:
+        return True
+    trigger_at = int(safe_float(trigger_at))
+    if trigger_at <= 0:
+        return False
+    return 0 <= int(now_value or time.time()) - trigger_at <= SIGNAL_TG_MAX_AGE_SEC
+
+
+def format_signal_tg_text(item, source):
+    symbol = item.get("symbol") or "UNKNOWN"
+    address = item.get("address") or ""
+    entry_mcap = safe_float(item.get("entry_mcap"))
+    current_mcap = safe_float(item.get("current_mcap"))
+    peak_mcap = safe_float(item.get("peak_mcap"))
+    pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and current_mcap > 0 else 0.0
+    peak_pnl_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
+    pool_liquidity = safe_float(item.get("pool_liquidity"))
+    holders = int(safe_float(item.get("holders")))
+    narrative = str(item.get("narrative_desc") or item.get("narrative") or "").strip()
+    if len(narrative) > 120:
+        narrative = narrative[:117].rstrip() + "..."
+    if source == "smart_money_signal":
+        title = "Deep Alpha 聪明钱信号"
+        detail = (
+            f"聪明钱: {int(safe_float(item.get('smart_buy_count')))}笔 "
+            f"/ ${safe_float(item.get('smart_buy_total')):,.0f}"
+        )
+        trigger_at = int(safe_float(item.get("smart_signal_trigger_at") or item.get("pushed_at")))
+    else:
+        title = "Deep Alpha 异动信号"
+        detail = (
+            f"异动次数: {int(safe_float(item.get('market_signal_times')))} | "
+            f"费用: {safe_float(item.get('total_fee')):.2f} SOL"
+        )
+        trigger_at = int(safe_float(item.get("market_signal_trigger_at") or item.get("pushed_at")))
+    return (
+        f"{title} | ${symbol}\n"
+        f"{detail}\n"
+        f"推送市值: ${entry_mcap:,.0f} | 当前市值: ${current_mcap:,.0f}\n"
+        f"最高市值: ${peak_mcap:,.0f} | 当前盈亏: {pnl_pct:+.1f}% | 峰值涨幅: {peak_pnl_pct:+.1f}%\n"
+        f"流动性: ${pool_liquidity:,.0f} | Holders: {holders}\n"
+        f"叙事: {narrative or 'N/A'}\n"
+        f"触发时间: {datetime.fromtimestamp(trigger_at).strftime('%Y-%m-%d %H:%M:%S') if trigger_at > 0 else 'N/A'}\n"
+        f"CA: {address}\n"
+        f"https://gmgn.ai/sol/token/{address}"
+    )
+
+
+def maybe_send_signal_tg_alert(item, source, now_value=None):
+    if not SIGNAL_TG_ENABLED or not isinstance(item, dict):
+        return None
+    address = str(item.get("address") or "").strip()
+    if not address:
+        return None
+    trigger_at = int(
+        safe_float(
+            item.get("smart_signal_trigger_at")
+            if source == "smart_money_signal"
+            else item.get("market_signal_trigger_at")
+        )
+        or safe_float(item.get("pushed_at"))
+    )
+    if not signal_tg_fresh_enough(trigger_at, now_value):
+        return None
+    client = get_redis_client()
+    if client is None:
+        return None
+    key = signal_tg_dedup_key(source, address, trigger_at)
+    try:
+        if client.get(key):
+            return None
+    except Exception:
+        return None
+    message_id = send_tg_alert(
+        format_signal_tg_text(item, source),
+        ca=address,
+        extra={"address": address, "source": source, "signal": item},
+    )
+    if message_id:
+        try:
+            client.setex(key, max(60, SIGNAL_TG_DEDUP_TTL_SEC), str(message_id))
+        except Exception as exc:
+            print(f"  [SignalTG] dedup write failed {address[:8]}: {exc}")
+    return message_id
+
+
+def send_signal_tg_alerts(smart_signals, market_signals, now_value=None):
+    sent = 0
+    for item in smart_signals or []:
+        if maybe_send_signal_tg_alert(item, "smart_money_signal", now_value=now_value):
+            sent += 1
+    for item in market_signals or []:
+        if maybe_send_signal_tg_alert(item, "market_signal", now_value=now_value):
+            sent += 1
+    if sent:
+        print(f"  [SignalTG] sent {sent} smart/market signal alerts")
+    return sent
 
 
 def _delete_redis_pattern(client, pattern):
@@ -4226,6 +4333,7 @@ def scan_pro():
         market_signals = refresh_market_signals(chain)
         if smart_signals or market_signals:
             sync_signals_to_live_track(chain, smart_signals, market_signals)
+            send_signal_tg_alerts(smart_signals, market_signals)
         else:
             print(f"  [SignalSync] skip live-track cleanup for {chain}: no GMGN signal data")
         print(

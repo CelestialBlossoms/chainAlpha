@@ -5,6 +5,7 @@ import unittest
 from deep_alpha.deep_alpha_pro import (
     aggregate_smart_sell_trades,
     merge_live_track_payload,
+    maybe_send_signal_tg_alert,
     normalize_market_signal_item,
     normalize_smart_signal_item,
     post_push_peak_from_candles,
@@ -157,6 +158,83 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
         self.assertEqual(merged["peak_mcap_at"], 1_300)
         self.assertAlmostEqual(merged["pnl_pct"], -18.2727, places=3)
         self.assertAlmostEqual(merged["peak_pnl_pct"], 59.0909, places=3)
+
+    def test_fresh_signal_tg_alert_sends_once_and_writes_dedup(self) -> None:
+        from deep_alpha import deep_alpha_pro as dap
+
+        class FakeRedis:
+            def __init__(self):
+                self.values = {}
+
+            def get(self, key):
+                return self.values.get(key)
+
+            def setex(self, key, _ttl, value):
+                self.values[key] = value
+
+        fake_redis = FakeRedis()
+        sent = []
+        original_get_redis = dap.get_redis_client
+        original_send = dap.send_tg_alert
+        original_enabled = dap.SIGNAL_TG_ENABLED
+        original_max_age = dap.SIGNAL_TG_MAX_AGE_SEC
+        try:
+            dap.get_redis_client = lambda: fake_redis
+            dap.send_tg_alert = lambda text, **kwargs: sent.append((text, kwargs)) or 123
+            dap.SIGNAL_TG_ENABLED = True
+            dap.SIGNAL_TG_MAX_AGE_SEC = 300
+            item = {
+                "address": "Token111",
+                "symbol": "T111",
+                "smart_signal_trigger_at": 1_000,
+                "entry_mcap": 100_000,
+                "current_mcap": 120_000,
+                "peak_mcap": 150_000,
+            }
+
+            first = maybe_send_signal_tg_alert(item, "smart_money_signal", now_value=1_030)
+            second = maybe_send_signal_tg_alert(item, "smart_money_signal", now_value=1_040)
+        finally:
+            dap.get_redis_client = original_get_redis
+            dap.send_tg_alert = original_send
+            dap.SIGNAL_TG_ENABLED = original_enabled
+            dap.SIGNAL_TG_MAX_AGE_SEC = original_max_age
+
+        self.assertEqual(first, 123)
+        self.assertIsNone(second)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Deep Alpha 聪明钱信号", sent[0][0])
+
+    def test_old_signal_tg_alert_is_not_backfilled(self) -> None:
+        from deep_alpha import deep_alpha_pro as dap
+
+        sent = []
+        original_send = dap.send_tg_alert
+        original_enabled = dap.SIGNAL_TG_ENABLED
+        original_max_age = dap.SIGNAL_TG_MAX_AGE_SEC
+        try:
+            dap.send_tg_alert = lambda text, **kwargs: sent.append((text, kwargs)) or 123
+            dap.SIGNAL_TG_ENABLED = True
+            dap.SIGNAL_TG_MAX_AGE_SEC = 300
+            result = maybe_send_signal_tg_alert(
+                {
+                    "address": "Token111",
+                    "symbol": "T111",
+                    "market_signal_trigger_at": 1_000,
+                    "entry_mcap": 100_000,
+                    "current_mcap": 120_000,
+                    "peak_mcap": 150_000,
+                },
+                "market_signal",
+                now_value=1_301,
+            )
+        finally:
+            dap.send_tg_alert = original_send
+            dap.SIGNAL_TG_ENABLED = original_enabled
+            dap.SIGNAL_TG_MAX_AGE_SEC = original_max_age
+
+        self.assertIsNone(result)
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":
