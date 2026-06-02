@@ -68,6 +68,7 @@ LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_LOW_WINDOW
 LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_SEC", "30"))
 LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
 LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
+ALPHA_DELETED_TODAY_TTL_SEC = int(os.getenv("DEEP_ALPHA_DELETED_TODAY_TTL_SEC", str(30 * 60)))
 SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
 SMART_SIGNAL_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN", "10000"))
 MARKET_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_REDIS_PREFIX", "deep_alpha:market_signal")
@@ -142,6 +143,15 @@ def _safe_int(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _redis_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return value.decode("utf-8", errors="ignore")
+    return str(value or "")
 
 
 def _bottom_abnormal_ca(item: dict[str, Any]) -> str:
@@ -2231,7 +2241,31 @@ MARKET_SIGNAL_MERGE_FIELDS = (
 
 
 def _alpha_deleted_today_addresses() -> set[str]:
-    return set()
+    now_ts = int(time.time())
+    cutoff_sec = max(1, ALPHA_DELETED_TODAY_TTL_SEC)
+    addresses: set[str] = set()
+    client = get_redis_client()
+    if client is not None:
+        try:
+            for raw_addr in client.smembers(_alpha_deleted_today_index_key()):
+                address = _redis_text(raw_addr).strip()
+                if not address:
+                    continue
+                raw = client.get(_alpha_deleted_today_redis_key(address))
+                if not raw:
+                    continue
+                item = json.loads(raw)
+                removed_at = _safe_int(item.get("removed_at") or item.get("last_updated"))
+                if removed_at > 0 and now_ts - removed_at <= cutoff_sec:
+                    addresses.add(address)
+        except Exception:
+            pass
+    for item in _alpha_deleted_today_plugin_events(limit=500):
+        address = str(item.get("address") or "").strip()
+        removed_at = _safe_int(item.get("removed_at") or item.get("last_updated"))
+        if address and removed_at > 0 and now_ts - removed_at <= cutoff_sec:
+            addresses.add(address)
+    return addresses
 
 
 def _smart_signal_health_checked_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -2526,15 +2560,71 @@ def _alpha_deleted_today_index_key() -> str:
 
 
 def _alpha_deleted_today_save(address: str, track: dict[str, Any]) -> None:
-    return
+    address = str(address or "").strip()
+    if not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        now_ts = int(time.time())
+        pushed_at = _safe_int(track.get("pushed_at") or track.get("smart_signal_trigger_at") or track.get("market_signal_trigger_at"))
+        removed_at = _safe_int(track.get("removed_at")) or _safe_int(track.get("last_updated")) or now_ts
+        removed = {
+            **track,
+            "address": address,
+            "status": "removed",
+            "source": track.get("source") or ("smart_money_signal" if track.get("smart_signal") else "market_signal" if track.get("market_signal") else "deep_alpha_live_track"),
+            "removed_archive": True,
+            "removed_at": removed_at,
+            "last_updated": removed_at,
+            "removed_after_sec": max(0, removed_at - pushed_at) if pushed_at > 0 else 0,
+        }
+        client.setex(
+            _alpha_deleted_today_redis_key(address),
+            max(1, ALPHA_DELETED_TODAY_TTL_SEC),
+            json.dumps(removed, ensure_ascii=False),
+        )
+        client.sadd(_alpha_deleted_today_index_key(), address)
+        client.expire(_alpha_deleted_today_index_key(), max(1, ALPHA_DELETED_TODAY_TTL_SEC))
+    except Exception:
+        pass
 
 
 def _alpha_deleted_today_list() -> list[dict[str, Any]]:
-    return []
+    now_ts = int(time.time())
+    cutoff_sec = max(1, ALPHA_DELETED_TODAY_TTL_SEC)
+    by_address: dict[str, dict[str, Any]] = {}
+    client = get_redis_client()
+    if client is not None:
+        try:
+            for raw_addr in client.smembers(_alpha_deleted_today_index_key()):
+                address = _redis_text(raw_addr).strip()
+                if not address:
+                    continue
+                raw = client.get(_alpha_deleted_today_redis_key(address))
+                if not raw:
+                    client.srem(_alpha_deleted_today_index_key(), address)
+                    continue
+                item = json.loads(raw)
+                if not isinstance(item, dict):
+                    continue
+                removed_at = _safe_int(item.get("removed_at") or item.get("last_updated"))
+                if removed_at <= 0 or now_ts - removed_at > cutoff_sec:
+                    continue
+                by_address[address] = item
+        except Exception:
+            pass
+    for item in _alpha_deleted_today_plugin_events(limit=500):
+        address = str(item.get("address") or "").strip()
+        if address and address not in by_address:
+            by_address[address] = item
+    return _sort_live_track_by_push_time(list(by_address.values()))
 
 
 def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]:
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    now_ts = int(time.time())
+    cutoff_sec = max(1, ALPHA_DELETED_TODAY_TTL_SEC)
     items: list[dict[str, Any]] = []
     for event in read_recent_plugin_signals(limit):
         if event.get("source") != "deep_alpha_removal":
@@ -2544,13 +2634,16 @@ def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]
         if not address:
             continue
         ts = _safe_int(event.get("ts")) or _safe_int(extra.get("ts")) or int(time.time())
-        if ts < today_start:
+        if now_ts - ts > cutoff_sec:
             continue
         current_mcap = _safe_float(extra.get("mcap"))
+        pushed_at = _safe_int(extra.get("pushed_at")) or ts
         items.append({
             "address": address,
             "chain": extra.get("chain") or "sol",
             "symbol": extra.get("symbol") or event.get("title") or "UNKNOWN",
+            "source": "deep_alpha_removal",
+            "removed_archive": True,
             "entry_mcap": current_mcap,
             "current_mcap": current_mcap,
             "peak_mcap": current_mcap,
@@ -2560,7 +2653,9 @@ def _alpha_deleted_today_plugin_events(limit: int = 500) -> list[dict[str, Any]]
             "pnl_pct": 0,
             "status": "removed",
             "remove_reason": extra.get("reason") or "前端展示清退",
-            "pushed_at": _safe_int(extra.get("pushed_at")) or ts,
+            "pushed_at": pushed_at,
+            "removed_at": ts,
+            "removed_after_sec": max(0, ts - pushed_at),
             "last_updated": ts,
         })
     return items
@@ -2762,7 +2857,13 @@ def alpha_live_track_api(request: Request):
 
 @app.get("/api/alpha-live-track/deleted-today")
 def alpha_live_track_deleted_today_api(request: Request):
-    return {"items": []}
+    items = _alpha_deleted_today_list()
+    return {
+        "items": items,
+        "count": len(items),
+        "ts": int(time.time()),
+        "window_sec": ALPHA_DELETED_TODAY_TTL_SEC,
+    }
 
 
 @app.get("/api/alpha-live-track/events")
@@ -3242,13 +3343,31 @@ def _bottom_live_track_refresh_all() -> list[dict[str, Any]]:
     return _sort_live_track_by_push_time(results)
 
 
+def _bottom_live_track_with_alpha_deleted(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = list(items or [])
+    deleted = _alpha_deleted_today_list()
+    if deleted:
+        active_addresses = {str(item.get("address") or "").strip() for item in merged if item.get("status") == "tracking"}
+        for item in deleted:
+            address = str(item.get("address") or "").strip()
+            if address and address not in active_addresses:
+                merged.append(item)
+    return _sort_live_track_by_push_time(merged)
+
+
 def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
     client = get_redis_client()
     if client is None or not items:
         return
     try:
+        merged_items = _bottom_live_track_with_alpha_deleted(items)
         payload = json.dumps(
-            {"ts": int(time.time()), "items": _sort_live_track_by_push_time(items), "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+            {
+                "ts": int(time.time()),
+                "items": merged_items,
+                "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC,
+                "alpha_deleted_window_sec": ALPHA_DELETED_TODAY_TTL_SEC,
+            },
             ensure_ascii=False,
         )
         client.publish(BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL, payload)
@@ -3307,12 +3426,13 @@ def bottom_live_track_api(request: Request):
         if track:
             items.append(track)
     items = _bottom_live_track_attach_predictions(items)
-    items = _sort_live_track_by_push_time(items)
+    items = _bottom_live_track_with_alpha_deleted(items)
     return {
         "items": items,
         "count": len(items),
         "ts": int(time.time()),
         "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC,
+        "alpha_deleted_window_sec": ALPHA_DELETED_TODAY_TTL_SEC,
     }
 
 
@@ -3362,10 +3482,15 @@ async def bottom_live_track_events(request: Request):
             if track:
                 snapshot.append(track)
         snapshot = _bottom_live_track_attach_predictions(snapshot)
-        snapshot = _sort_live_track_by_push_time(snapshot)
+        snapshot = _bottom_live_track_with_alpha_deleted(snapshot)
         yield sse_message(
             "snapshot",
-            {"items": snapshot, "ts": int(time.time()), "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC},
+            {
+                "items": snapshot,
+                "ts": int(time.time()),
+                "track_ttl_sec": BOTTOM_LIVE_TRACK_TTL_SEC,
+                "alpha_deleted_window_sec": ALPHA_DELETED_TODAY_TTL_SEC,
+            },
         )
 
         pubsub = client.pubsub()

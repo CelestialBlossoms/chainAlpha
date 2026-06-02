@@ -455,6 +455,12 @@
     .status-badge.tracking { color: var(--green); background: var(--green-soft); }
     .status-badge.removed { color: var(--red); background: var(--red-soft); }
     .status-badge.expired { color: var(--amber); background: var(--amber-soft); }
+    .removed-meta {
+      color: #fca5a5;
+      font-size: 11px;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
 
     .mini-btn,
     .mini-link {
@@ -777,6 +783,7 @@
     let items = [];
     let evtSource = null;
     let trackTtlSec = {{ bottom_live_track_ttl_sec | default(43200) | int }};
+    let alphaDeletedWindowSec = 30 * 60;
     let sortState = { key: "pushed_at", dir: "desc" };
     let filterMode = "all";
     let hasInitialSnapshot = false;
@@ -852,6 +859,32 @@
         return `${formatTime(peakAt)} · +${formatDuration(peakAt - pushedAt)}`;
       }
       return `${formatTime(peakAt)} · 推送时`;
+    }
+    function removedAt(item) {
+      return safeNum(item && (item.removed_at || item.last_updated));
+    }
+    function removedAfterSec(item) {
+      const explicit = safeNum(item && item.removed_after_sec);
+      if (explicit > 0) return explicit;
+      const removed = removedAt(item);
+      const pushed = safeNum(item && item.pushed_at);
+      return removed > 0 && pushed > 0 ? Math.max(0, removed - pushed) : 0;
+    }
+    function removedSourceLabel(item) {
+      const source = String((item && item.source) || "");
+      if ((item && item.smart_signal) || source.includes("smart")) return "聪明钱淘汰";
+      if ((item && item.market_signal) || source.includes("market")) return "异动淘汰";
+      if (source.includes("deep_alpha")) return "Deep Alpha 淘汰";
+      return "已淘汰";
+    }
+    function removedMetaHtml(item) {
+      if (!item || item.status !== "removed") return "";
+      const ts = removedAt(item);
+      const durationSec = removedAfterSec(item);
+      const bits = [];
+      if (ts > 0) bits.push(`<div class="removed-meta">淘汰 ${formatTime(ts)}</div>`);
+      if (durationSec > 0) bits.push(`<div class="removed-meta">用时 ${formatDuration(durationSec)}</div>`);
+      return bits.join("");
     }
     function shortAddress(addr) {
       const s = String(addr || "");
@@ -1079,7 +1112,7 @@
 
     function statusBadge(item) {
       const status = item.status || "tracking";
-      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || "")}">已移除</span>`;
+      if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || "")}">${htmlEscape(removedSourceLabel(item))}</span>`;
       if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
       return `<span class="status-badge tracking">追踪中</span>`;
     }
@@ -1231,7 +1264,7 @@
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
             <td>${renderFollowupChips(item)}</td>
             <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
-            <td>${statusBadge(item)}</td>
+            <td>${statusBadge(item)}${isRemoved ? removedMetaHtml(item) : ""}</td>
             <td>
               <div class="actions">
                 <button class="mini-btn" type="button" onclick="copyCA('${htmlEscape(item.address || "")}', this, event);">复制</button>
@@ -1479,7 +1512,13 @@
       for (const item of items) byAddr[item.address] = item;
       for (const item of newItems) byAddr[item.address] = item;
       const now = Math.floor(Date.now() / 1000);
-      items = Object.values(byAddr).filter(item => item.status !== "removed" || now - safeNum(item.last_updated) < 120);
+      items = Object.values(byAddr).filter(item => {
+        if (item.removed_archive) {
+          const ts = removedAt(item);
+          return ts > 0 && now - ts < alphaDeletedWindowSec;
+        }
+        return item.status !== "removed" || now - safeNum(item.last_updated) < 120;
+      });
       items = sortTrackItems(items);
     }
     function unlockAudio() {
@@ -1546,6 +1585,7 @@
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          alphaDeletedWindowSec = safeNum(data.alpha_deleted_window_sec, alphaDeletedWindowSec);
           items = sortTrackItems(data.items || []);
           render();
           hasInitialSnapshot = true;
@@ -1557,6 +1597,7 @@
         try {
           const data = JSON.parse(e.data);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          alphaDeletedWindowSec = safeNum(data.alpha_deleted_window_sec, alphaDeletedWindowSec);
           notifyNewItems(data.items || []);
           mergeItems(data.items || []);
           render();
@@ -1600,6 +1641,7 @@
       .then(data => {
         items = sortTrackItems(data.items || []);
         trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+        alphaDeletedWindowSec = safeNum(data.alpha_deleted_window_sec, alphaDeletedWindowSec);
         render();
         hasInitialSnapshot = true;
         connectSSE();
@@ -1615,6 +1657,7 @@
           notifyNewItems(data.items || []);
           mergeItems(data.items || []);
           trackTtlSec = safeNum(data.track_ttl_sec, trackTtlSec);
+          alphaDeletedWindowSec = safeNum(data.alpha_deleted_window_sec, alphaDeletedWindowSec);
           render();
         })
         .catch(() => {});

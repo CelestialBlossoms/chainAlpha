@@ -55,6 +55,89 @@ class AlphaLiveTrackMergeTests(unittest.TestCase):
         self.assertAlmostEqual(merged[0]["peak_pnl_pct"], 105.6717, places=3)
         self.assertAlmostEqual(merged[0]["pnl_pct"], 5.3506, places=3)
 
+    def test_alpha_deleted_today_archive_round_trip(self) -> None:
+        class FakeRedis:
+            def __init__(self) -> None:
+                self.values: dict[str, str] = {}
+                self.sets: dict[str, set[str]] = {}
+
+            def setex(self, key: str, _ttl: int, value: str) -> None:
+                self.values[key] = value
+
+            def sadd(self, key: str, value: str) -> None:
+                self.sets.setdefault(key, set()).add(value)
+
+            def expire(self, _key: str, _ttl: int) -> None:
+                return None
+
+            def smembers(self, key: str) -> set[str]:
+                return self.sets.get(key, set())
+
+            def get(self, key: str) -> str | None:
+                return self.values.get(key)
+
+            def srem(self, key: str, value: str) -> None:
+                self.sets.get(key, set()).discard(value)
+
+        fake = FakeRedis()
+        now_ts = 1_800_000_000
+        original_redis = dashboard_app.get_redis_client
+        original_plugin = dashboard_app._alpha_deleted_today_plugin_events
+        original_ttl = dashboard_app.ALPHA_DELETED_TODAY_TTL_SEC
+        original_time = dashboard_app.time.time
+        try:
+            dashboard_app.get_redis_client = lambda: fake
+            dashboard_app._alpha_deleted_today_plugin_events = lambda limit=500: []
+            dashboard_app.ALPHA_DELETED_TODAY_TTL_SEC = 1800
+            dashboard_app.time.time = lambda: now_ts
+
+            dashboard_app._alpha_deleted_today_save(
+                "CA111",
+                {
+                    "address": "CA111",
+                    "symbol": "TEST",
+                    "smart_signal": True,
+                    "pushed_at": now_ts - 420,
+                    "last_updated": now_ts,
+                    "remove_reason": "30分钟内市值过低",
+                },
+            )
+            items = dashboard_app._alpha_deleted_today_list()
+        finally:
+            dashboard_app.get_redis_client = original_redis
+            dashboard_app._alpha_deleted_today_plugin_events = original_plugin
+            dashboard_app.ALPHA_DELETED_TODAY_TTL_SEC = original_ttl
+            dashboard_app.time.time = original_time
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["address"], "CA111")
+        self.assertTrue(items[0]["removed_archive"])
+        self.assertEqual(items[0]["removed_at"], now_ts)
+        self.assertEqual(items[0]["removed_after_sec"], 420)
+
+    def test_bottom_live_track_merges_alpha_deleted_archive(self) -> None:
+        original_deleted = dashboard_app._alpha_deleted_today_list
+        try:
+            dashboard_app._alpha_deleted_today_list = lambda: [
+                {
+                    "address": "REMOVED",
+                    "symbol": "DROP",
+                    "status": "removed",
+                    "source": "market_signal",
+                    "removed_archive": True,
+                    "pushed_at": 1000,
+                    "removed_at": 1200,
+                    "last_updated": 1200,
+                }
+            ]
+            items = dashboard_app._bottom_live_track_with_alpha_deleted([])
+        finally:
+            dashboard_app._alpha_deleted_today_list = original_deleted
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["address"], "REMOVED")
+        self.assertEqual(items[0]["status"], "removed")
+
 
 if __name__ == "__main__":
     unittest.main()
