@@ -981,10 +981,10 @@
       const asyncStatus = String(item.deepseek_async_status || pred.analysis_source_status || "").toLowerCase();
       const ds = pred.deepseek_kline_prediction || item.deepseek_kline_prediction || {};
       if (source === "pending_deepseek" || asyncStatus === "pending") {
-        return { key: "pending", label: "DeepSeek 分析中" };
+        return { key: "hardcoded", label: "硬编码分析" };
       }
       if (source === "deepseek" && String(ds.status || "").toLowerCase() === "ok") {
-        return { key: "deepseek", label: pred.analysis_source_label || "DeepSeek AI" };
+        return { key: "hardcoded", label: "硬编码分析" };
       }
       return { key: "hardcoded", label: source === "hardcoded" ? (pred.analysis_source_label || "硬编码兜底") : "硬编码兜底" };
     }
@@ -1501,7 +1501,7 @@
       return `
         <div class="drawer-grid">
           ${drawerMetric("购买价值", htmlEscape(buyValueLabel(item)), valueClass(item).includes("high") ? "pnl-positive" : valueClass(item).includes("low") ? "pnl-negative" : "pnl-zero")}
-          ${drawerMetric("分析来源", htmlEscape(source.label), source.key === "deepseek" ? "pnl-positive" : "pnl-zero")}
+          ${drawerMetric("分析来源", htmlEscape(source.label), "pnl-zero")}
           ${drawerMetric("价值评分", predictedWinrate(item) >= 0 ? `${predictedWinrate(item).toFixed(1)}%` : "-", predictedWinrate(item) >= 60 ? "pnl-positive" : "")}
           ${drawerMetric("当前盈亏", formatPnl(item.pnl_pct), pnlClass(item.pnl_pct))}
           ${drawerMetric("推送市值", formatCap(item.entry_mcap))}
@@ -1510,13 +1510,13 @@
           ${drawerMetric("回撤", pInfo ? `-${pInfo.entryDrawdownPct.toFixed(1)}%` : "-")}
         </div>
         <section class="detail-panel">
-          <h3>DeepSeek 分析结论</h3>
+          <h3>硬编码分析结论</h3>
           <div class="detail-content">
             <div class="drawer-grid">
-              ${drawerMetric("来源状态", htmlEscape(source.key === "deepseek" ? "DeepSeek API" : (prediction(item).analysis_source_status || "fallback")))}
-              ${drawerMetric("AI Bias", ds.ready ? `${htmlEscape(ds.bias || "unknown")} / ${htmlEscape(ds.confidence || "low")}` : "-")}
-              ${drawerMetric("AI购买价值", htmlEscape(dsPurchase.label || buyValueLabel(item)))}
-              ${drawerMetric("AI评分", safeNum(dsPurchase.score_pct, -1) >= 0 ? `${safeNum(dsPurchase.score_pct).toFixed(1)}%` : "-")}
+              ${drawerMetric("来源状态", htmlEscape(pred.analysis_source_status || "hardcoded"))}
+              ${drawerMetric("规则倾向", htmlEscape(confidenceText(pred.confidence)))}
+              ${drawerMetric("规则价值", htmlEscape(buyValueLabel(item)))}
+              ${drawerMetric("规则评分", predictedWinrate(item) >= 0 ? `${predictedWinrate(item).toFixed(1)}%` : "-")}
               ${drawerMetric("5m结构", htmlEscape(ds.ready ? (dsPattern.label || "-") : (journey.ready ? (journey.pre_structure || "-") : "-")))}
               ${drawerMetric("5m风险", htmlEscape(ds.ready ? (dsPattern.risk_level || "-") : "-"))}
               ${drawerMetric("观察窗口", htmlEscape(watchWindows[0] || "-"))}
@@ -1543,8 +1543,7 @@
             ${deepseekObservations.length ? `<p class="muted">观察依据：${htmlEscape(deepseekObservations.slice(0, 3).join("；"))}</p>` : ""}
             ${deepseekRisks.length ? `<p class="muted">可观察风险：${htmlEscape(deepseekRisks.slice(0, 3).join("；"))}</p>` : ""}
             ${scopeTags.length ? `<div class="hit-tags">${scopeTags.map(x => `<span class="tag">${htmlEscape(x)}</span>`).join("")}</div>` : ""}
-            ${source.key === "pending" ? `<p class="muted">基础信号已先推送，DeepSeek 正在后台补充分析。</p>` : ""}
-            ${source.key !== "deepseek" && source.key !== "pending" ? `<p class="muted">DeepSeek API 未返回可用结果，当前为硬编码兜底分析。</p>` : ""}
+            <p class="muted">当前为本地硬编码规则分析，不调用 DeepSeek API。</p>
           </div>
         </section>
         ${renderFollowupPanel(item)}

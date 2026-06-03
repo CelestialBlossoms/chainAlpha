@@ -210,24 +210,11 @@ BOTTOM_LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("BOTTOM_LIVE_TRACK_PUBSUB", "bottom
 BOTTOM_LIVE_TRACK_REMOVE_DEAD_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_DEAD_MCAP", "6000"))  # < 6K = dead
 BOTTOM_LIVE_TRACK_REMOVE_LOW_MCAP_USD = float(os.getenv("BOTTOM_LIVE_TRACK_LOW_MCAP", "10000"))  # < 10K within 30min
 BOTTOM_LIVE_TRACK_LOW_MCAP_WINDOW_SEC = int(os.getenv("BOTTOM_LIVE_TRACK_LOW_WINDOW", "1800"))  # 30min
-BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED = os.getenv("BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED", "0").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-BOTTOM_DEEPSEEK_ASYNC_ENABLED = BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED and os.getenv("BOTTOM_DEEPSEEK_ASYNC_ENABLED", "0").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED = BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED and os.getenv("BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED", "0").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
+# Bottom signal analysis is intentionally local-only. DeepSeek API calls are
+# disabled here even if legacy environment variables are still present.
+BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED = False
+BOTTOM_DEEPSEEK_ASYNC_ENABLED = False
+BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED = False
 BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS = max(1, int(os.getenv("BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS", "2")))
 _DEEPSEEK_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=BOTTOM_DEEPSEEK_ASYNC_MAX_WORKERS)
 _DEEPSEEK_ASYNC_INFLIGHT: set[str] = set()
@@ -1949,7 +1936,7 @@ def build_deepseek_kline_signal_context(
 
 
 def deepseek_signal_eligible(signal_type: str) -> bool:
-    return str(signal_type or "") == "quiet_runup"
+    return False
 
 
 def maybe_attach_deepseek_kline_prediction(
@@ -1961,58 +1948,8 @@ def maybe_attach_deepseek_kline_prediction(
     candles_1m: list[dict[str, Any]],
     signal_ts: int = 0,
 ) -> dict[str, Any]:
-    """Attach DeepSeek 5m/1m K-line prediction synchronously."""
-    if not BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED:
-        return analysis
-    signal_type = str((analysis or {}).get("signal_type") or "")
-    if not signal_type or signal_type == "watch" or analysis.get("deepseek_kline_prediction"):
-        return analysis
-    if not deepseek_signal_eligible(signal_type):
-        return analysis
-    address = token_address(token)
-    if not address:
-        return analysis
-    try:
-        from bottom_detection.deepseek_kline_predictor import analyze_deepseek_kline_prediction, warmup_deepseek_cache
-        warmup_deepseek_cache()  # non-blocking, pre-warms prompt cache
-        signal_ts = to_int(signal_ts) or to_int(analysis.get("event_ts") or analysis.get("signal_ts")) or now_ts()
-        scoped_5m, scoped_1m, window_meta = fetch_deepseek_signal_kline_windows(address, token, signal_ts)
-        if not scoped_5m:
-            spec = deepseek_kline_window_spec(token, signal_ts)
-            scoped_5m = _candles_until(candles_5m, signal_ts, to_int(spec.get("5m_limit")))
-            window_meta = {**window_meta, "5m_count": len(scoped_5m), "5m_fallback": "cached"}
-        if not scoped_1m:
-            spec = deepseek_kline_window_spec(token, signal_ts)
-            scoped_1m = _candles_until(candles_1m, signal_ts, to_int(spec.get("1m_limit")))
-            window_meta = {**window_meta, "1m_count": len(scoped_1m), "1m_fallback": "cached"}
-        pre_signal_peak = estimate_pre_signal_peak_mcap(
-            to_float(analysis.get("current_mcap") or summary.get("mcap") or calc_mcap(token)),
-            scoped_5m,
-        )
-
-        prediction = analyze_deepseek_kline_prediction(
-            address=address,
-            signal=build_deepseek_kline_signal_context(
-                token,
-                summary,
-                analysis,
-                signal_ts=signal_ts,
-                kline_window=window_meta,
-                pre_signal_peak=pre_signal_peak,
-            ),
-            candles_5m=scoped_5m,
-            candles_1m=scoped_1m,
-            signal_ts=signal_ts,
-        )
-    except Exception as exc:
-        print(f"{address[:8]} deepseek kline prediction exception: {exc}")
-        return analysis
-    if not prediction.get("ready"):
-        status = prediction.get("status") or "not_ready"
-        if status not in {"disabled", "missing_api_key"}:
-            print(f"{address[:8]} deepseek kline prediction skipped: {status}")
-        return analysis
-    return {**analysis, "deepseek_kline_prediction": prediction}
+    """DeepSeek API analysis is disabled; keep hardcoded analysis only."""
+    return analysis
 
 
 def merge_token_metadata(token: dict[str, Any], info: dict[str, Any], security: dict[str, Any]) -> dict[str, Any]:
@@ -2779,27 +2716,6 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
 
 
 def format_deepseek_tg_section(extra: dict[str, Any]) -> str:
-    prediction = (
-        extra.get("deepseek_kline_prediction")
-        if isinstance((extra or {}).get("deepseek_kline_prediction"), dict)
-        else {}
-    )
-    if is_deepseek_api_prediction(prediction):
-        purchase = prediction.get("purchase_value") if isinstance(prediction.get("purchase_value"), dict) else {}
-        pattern_5m = prediction.get("pattern_5m") if isinstance(prediction.get("pattern_5m"), dict) else {}
-        micro_1m = prediction.get("micro_1m") if isinstance(prediction.get("micro_1m"), dict) else {}
-        risks = prediction.get("risk_factors") if isinstance(prediction.get("risk_factors"), list) else []
-        risk_text = "；".join(str(item) for item in risks if item)
-        return (
-            f"DeepSeek: {prediction.get('confidence') or '-'} / {prediction.get('bias') or '-'} | "
-            f"{purchase.get('label') or '-'}\n"
-            f"DeepSeek摘要: {short_text(prediction.get('summary'), 160) or '-'}\n"
-            f"DeepSeek结构: 5m {pattern_5m.get('label') or '-'} | "
-            f"1m {micro_1m.get('label') or '-'}\n"
-            f"DeepSeek风险: {short_text(risk_text, 160) or '-'}\n"
-        )
-    if str((extra or {}).get("deepseek_async_status") or "").lower() == "pending":
-        return "DeepSeek: 分析中，完成后会回复补充结论\n"
     return ""
 
 
@@ -3193,33 +3109,7 @@ def schedule_deepseek_post_push_analysis(
     signal_text: str,
     tg_message_id: int | None = None,
 ) -> bool:
-    if not BOTTOM_DEEPSEEK_API_ANALYSIS_ENABLED or not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
-        return False
-    signal_type = str((analysis or {}).get("signal_type") or base_extra.get("signal_type") or "")
-    if not deepseek_signal_eligible(signal_type) or (analysis or {}).get("deepseek_kline_prediction"):
-        return False
-    address = token_address(token)
-    if not address:
-        return False
-    key = _deepseek_async_key(address, signal_type, to_int((analysis or {}).get("snapshot_id") or base_extra.get("snapshot_id")))
-    with _DEEPSEEK_ASYNC_LOCK:
-        if key in _DEEPSEEK_ASYNC_INFLIGHT:
-            return False
-        _DEEPSEEK_ASYNC_INFLIGHT.add(key)
-    _DEEPSEEK_ASYNC_EXECUTOR.submit(
-        _run_deepseek_post_push_analysis,
-        key=key,
-        token=json_safe(token),
-        summary=json_safe(summary),
-        analysis=json_safe(analysis),
-        candles_5m=json_safe(candles_5m or []),
-        candles_1m=json_safe(candles_1m or []),
-        base_extra=json_safe(base_extra or {}),
-        signal_text=signal_text or "",
-        tg_message_id=to_int(tg_message_id),
-    )
-    print(f"{address[:8]} deepseek async scheduled signal={signal_type} tg_reply={to_int(tg_message_id)}")
-    return True
+    return False
 
 
 def send_tg_reply(text: str, reply_to_message_id: int, extra: dict[str, Any]) -> int | None:
@@ -4847,19 +4737,8 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
     strategy = compute_strategy_profile(extra, risk_tags)
     extra.update(strategy)
 
-    # Prefer DeepSeek prediction; fall back to hardcoded only when DeepSeek unavailable
-    ds_pred = extra.get("deepseek_kline_prediction") if isinstance(extra.get("deepseek_kline_prediction"), dict) else {}
-    if is_deepseek_api_prediction(ds_pred):
-        extra["winrate_prediction"] = _build_winrate_from_deepseek(extra, ds_pred)
-    else:
-        extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
-        if str(extra.get("deepseek_async_status") or "").lower() == "pending":
-            extra["winrate_prediction"] = {
-                **(extra.get("winrate_prediction") or {}),
-                "analysis_source": "pending_deepseek",
-                "analysis_source_label": "DeepSeek 分析中",
-                "analysis_source_status": "pending",
-            }
+    extra.pop("deepseek_async_status", None)
+    extra["winrate_prediction"] = compute_historical_winrate_prediction(extra)
     return extra
 
 
@@ -6414,7 +6293,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 )
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
-                f"(frontend first, DeepSeek quiet_runup only) "
+                f"(frontend first, local hardcoded analysis only) "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )
