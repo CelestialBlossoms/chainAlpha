@@ -872,10 +872,7 @@
       let label = type;
       if (type === "new_revival") cls = "good";
       else if (type === "abnormal") cls = "warn";
-      else if (type === "quiet_runup") {
-        cls = "blue";
-        label = "静默拉升";
-      } else if (type === "quiet_breakout") {
+      else if (type === "quiet_breakout") {
         cls = "blue";
         label = "突破观察";
       }
@@ -884,7 +881,6 @@
     function signalTypeLabel(type) {
       if (type === "new_revival") return "新币异动";
       if (type === "abnormal") return "老币异动";
-      if (type === "quiet_runup") return "静默拉升";
       if (type === "quiet_breakout") return "突破观察";
       return type || "CA 异动";
     }
@@ -1192,6 +1188,7 @@
     function filteredItems() {
       const q = filterInput.value.trim().toLowerCase();
       return items.filter(item => {
+        if (String(item.signal_type || "") === "quiet_runup") return false;
         const isAlert = Boolean(pullbackInfo(item));
         if (filterMode === "new_revival" && String(item.signal_type || "") !== "new_revival") return false;
         if (filterMode === "abnormal" && String(item.signal_type || "") !== "abnormal") return false;
@@ -1609,6 +1606,7 @@
       for (const item of newItems) byAddr[item.address] = item;
       const now = Math.floor(Date.now() / 1000);
       items = Object.values(byAddr).filter(item => {
+        if (String(item.signal_type || "") === "quiet_runup") return false;
         if (item.removed_archive) {
           const ts = removedAt(item);
           return ts > 0 && now - ts < alphaDeletedWindowSec;

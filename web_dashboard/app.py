@@ -3355,12 +3355,16 @@ def _bottom_live_track_with_alpha_deleted(items: list[dict[str, Any]]) -> list[d
     return _sort_live_track_by_push_time(merged)
 
 
+def _bottom_live_track_visible_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in items if str(item.get("signal_type") or "") != "quiet_runup"]
+
+
 def _bottom_live_track_broadcast(items: list[dict[str, Any]]) -> None:
     client = get_redis_client()
     if client is None or not items:
         return
     try:
-        merged_items = _bottom_live_track_with_alpha_deleted(items)
+        merged_items = _bottom_live_track_visible_items(_bottom_live_track_with_alpha_deleted(items))
         payload = json.dumps(
             {
                 "ts": int(time.time()),
@@ -3427,6 +3431,7 @@ def bottom_live_track_api(request: Request):
             items.append(track)
     items = _bottom_live_track_attach_predictions(items)
     items = _bottom_live_track_with_alpha_deleted(items)
+    items = _bottom_live_track_visible_items(items)
     return {
         "items": items,
         "count": len(items),
@@ -3483,6 +3488,7 @@ async def bottom_live_track_events(request: Request):
                 snapshot.append(track)
         snapshot = _bottom_live_track_attach_predictions(snapshot)
         snapshot = _bottom_live_track_with_alpha_deleted(snapshot)
+        snapshot = _bottom_live_track_visible_items(snapshot)
         yield sse_message(
             "snapshot",
             {

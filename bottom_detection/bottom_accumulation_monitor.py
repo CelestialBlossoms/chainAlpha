@@ -128,7 +128,7 @@ QUIET_BREAKOUT_LOW_MCAP_MAX_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_LOW_MCA
 QUIET_BREAKOUT_HIGH_MCAP_MIN_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_HIGH_MCAP_MIN_USD", "1000000"))
 QUIET_BREAKOUT_MIN_VOLUME_RATIO = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_VOLUME_RATIO", "3"))
 QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD = float(os.getenv("BOTTOM_QUIET_BREAKOUT_MIN_BREAKOUT_VOLUME_USD", "5000"))
-QUIET_RUNUP_ENABLED = os.getenv("BOTTOM_QUIET_RUNUP_ENABLED", "1") != "0"
+QUIET_RUNUP_ENABLED = os.getenv("BOTTOM_QUIET_RUNUP_ENABLED", "0") != "0"
 QUIET_RUNUP_LOOKBACK_BARS = int(os.getenv("BOTTOM_QUIET_RUNUP_LOOKBACK_BARS", "120"))
 QUIET_RUNUP_MIN_QUIET_BARS = int(os.getenv("BOTTOM_QUIET_RUNUP_MIN_QUIET_BARS", "6"))
 QUIET_RUNUP_MAX_RANGE_PCT = float(os.getenv("BOTTOM_QUIET_RUNUP_MAX_RANGE_PCT", "10"))
@@ -5348,8 +5348,8 @@ def signal_type_text(signal_type: str) -> str:
         "drop_50w": "新币跌破50W",
         "drop_40w": "新币跌破40W",
         "new_revival": "新币异动",
-        "quiet_breakout": "横盘异动",
-        "quiet_runup": "横盘拉升",
+        "quiet_breakout": "突破观察",
+        "quiet_runup": "quiet_runup",
         "ema_golden_cross": "EMA金叉",
     }
     return mapping.get(signal_type, signal_type or "未知")
