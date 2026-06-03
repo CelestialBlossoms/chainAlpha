@@ -761,7 +761,7 @@
                 <th class="sortable" data-sort="pnl">盈亏</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
                 <th class="sortable" data-sort="liquidity">流动性</th>
-                <th>后续跟踪</th>
+                <th>跟踪</th>
                 <th class="sortable" data-sort="pushed_at">推送</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -1258,17 +1258,21 @@
       if (["panic_continues", "extreme_drawdown", "recovery_weak", "no_recovery", "failed_recovery", "weak_open"].includes(verdict)) return "warn";
       return "";
     }
+    function followupForWindow(followups, key) {
+      if (key === "1h") return followups["1h"] || followups["60m"] || followups["4h"] || {};
+      return followups[key] || {};
+    }
     function renderFollowupChips(item, compact = true) {
       const fus = localFollowups(item);
-      const rows = ["5m", "30m", "4h"].map(key => {
-        const fu = fus[key] || {};
-        if (!fu.ready) return `<span class="tag">${key}: 待回传</span>`;
+      const rows = [["1h", "1h"], ["30m", "30m"], ["5m", "5m"]].map(([key, windowLabel]) => {
+        const fu = followupForWindow(fus, key);
+        if (!fu.ready) return `<span class="tag">${windowLabel}: 待回传</span>`;
         const pct = safeNum(fu.change_pct);
         const peak = safeNum(fu.peak_pct);
-        const label = compact
-          ? `${key} ${formatPnl(pct)}`
-          : `${key} ${fu.label || fu.verdict || "-"} / 区间${formatPnl(pct)} / 峰${formatPnl(peak)}`;
-        return `<span class="tag ${followupClass(fu)}" title="${htmlEscape(fu.label || fu.verdict || "")}">${htmlEscape(label)}</span>`;
+        const chipLabel = compact
+          ? `${windowLabel} ${formatPnl(pct)}`
+          : `${windowLabel} ${fu.label || fu.verdict || "-"} / 走势${formatPnl(pct)} / 峰${formatPnl(peak)}`;
+        return `<span class="tag ${followupClass(fu)}" title="${htmlEscape(fu.label || fu.verdict || "")}">${htmlEscape(chipLabel)}</span>`;
       });
       return `<div class="hit-tags">${rows.join("")}</div>`;
     }
@@ -1325,8 +1329,8 @@
                 <div class="token-addr">${htmlEscape(item.address || "")}</div>
               </div>
             </td>
-            <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">峰值 ${formatPnl(peakPnl)}</div></td>
-            <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div><div class="muted small">峰值 ${formatCap(peakMcap)} / ${htmlEscape(peakTimingText(item))}</div></td>
+            <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div></td>
+            <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div><div class="muted small">峰值 ${formatCap(peakMcap)} / <span class="${pnlClass(peakPnl)}">${formatPnl(peakPnl)}</span> / ${htmlEscape(peakTimingText(item))}</div></td>
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
             <td>${renderFollowupChips(item)}</td>
             <td><div>${formatTime(item.pushed_at)}</div><div class="muted small">${formatDuration(age)} 前</div></td>
@@ -1408,8 +1412,8 @@
     }
     function renderFollowupPanel(item) {
       const fus = localFollowups(item);
-      const cards = [["5m", "T+5min"], ["30m", "T+30min"], ["4h", "T+4h"]].map(([key, title]) => {
-        const fu = fus[key] || {};
+      const cards = [["1h", "T+1h"], ["30m", "T+30m"], ["5m", "T+5m"]].map(([key, title]) => {
+        const fu = followupForWindow(fus, key);
         if (!fu.ready) {
           return `<div class="kv"><span>${title}</span><b class="pnl-zero">待回传</b></div>`;
         }
@@ -1427,10 +1431,10 @@
       }).join("");
       return `
         <section class="detail-panel">
-          <h3>本地后续跟踪</h3>
+          <h3>本地跟踪</h3>
           <div class="detail-content">
             <div class="drawer-grid">${cards}</div>
-            <p class="muted">T+5 使用推送后 1m 量价确认；T+30 使用转正、回撤和触底后量比；T+4h 使用 WR20/WR50、峰值和回撤结构。</p>
+            <p class="muted">展示推送前后 1h、30m、5m 的走势变化、峰值、低点和量比。</p>
           </div>
         </section>`;
     }
