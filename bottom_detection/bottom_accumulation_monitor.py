@@ -2748,6 +2748,7 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
     avoid_reasons = extra.get("avoid_reasons") if isinstance(extra.get("avoid_reasons"), list) else []
     avoid_text = "；".join(str(item) for item in avoid_reasons) if avoid_reasons else "无硬过滤项"
     ath_ratio = to_float(extra.get("ath_mcap_ratio"))
+    deepseek_text = format_deepseek_tg_section(extra)
 
     return (
         f"底部异动 | ${symbol}\n"
@@ -2762,9 +2763,35 @@ def format_bottom_tg_message(text: str, extra: dict[str, Any]) -> str:
         f"最高市值: {format_money_text(ath_mcap)} | 流动性: {format_money_text(liquidity)}\n"
         f"池子: {pool_label} | 池/市值: {pool_ratio:.1%}\n"
         f"异动时间: {format_ts_text(event_ts)}\n"
+        f"{deepseek_text}"
         f"CA: {address}\n"
         f"https://gmgn.ai/sol/token/{address}"
     )
+
+
+def format_deepseek_tg_section(extra: dict[str, Any]) -> str:
+    prediction = (
+        extra.get("deepseek_kline_prediction")
+        if isinstance((extra or {}).get("deepseek_kline_prediction"), dict)
+        else {}
+    )
+    if is_deepseek_api_prediction(prediction):
+        purchase = prediction.get("purchase_value") if isinstance(prediction.get("purchase_value"), dict) else {}
+        pattern_5m = prediction.get("pattern_5m") if isinstance(prediction.get("pattern_5m"), dict) else {}
+        micro_1m = prediction.get("micro_1m") if isinstance(prediction.get("micro_1m"), dict) else {}
+        risks = prediction.get("risk_factors") if isinstance(prediction.get("risk_factors"), list) else []
+        risk_text = "；".join(str(item) for item in risks if item)
+        return (
+            f"DeepSeek: {prediction.get('confidence') or '-'} / {prediction.get('bias') or '-'} | "
+            f"{purchase.get('label') or '-'}\n"
+            f"DeepSeek摘要: {short_text(prediction.get('summary'), 160) or '-'}\n"
+            f"DeepSeek结构: 5m {pattern_5m.get('label') or '-'} | "
+            f"1m {micro_1m.get('label') or '-'}\n"
+            f"DeepSeek风险: {short_text(risk_text, 160) or '-'}\n"
+        )
+    if str((extra or {}).get("deepseek_async_status") or "").lower() == "pending":
+        return "DeepSeek: 分析中，完成后会回复补充结论\n"
+    return ""
 
 
 def extract_address_from_text(text: str) -> str:
@@ -6271,6 +6298,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 snapshot_id=runup_snapshot_id,
             )
             if published:
+                runup_message_id = send_tg(runup_text, extra=runup_extra)
                 schedule_deepseek_post_push_analysis(
                     token=token,
                     summary=summary,
@@ -6279,7 +6307,7 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                     candles_1m=candles_1m,
                     base_extra=runup_extra,
                     signal_text=runup_text,
-                    tg_message_id=None,
+                    tg_message_id=runup_message_id,
                 )
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
