@@ -27,8 +27,8 @@ DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "
 MAX_5M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_5M_CANDLES", "48"))
 MAX_1M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_1M_CANDLES", "60"))
 SOURCE_DOCS = (
-    "onchain_trading_guides/11-CA分析方法论.md",
-    "onchain_trading_guides/08-K线指纹百科全书.md",
+    "onchain_trading_guides/03-CA分析方法论.md",
+    "onchain_trading_guides/02-K线指纹百科全书.md",
 )
 
 # Cached strategy docs with mtime-based invalidation

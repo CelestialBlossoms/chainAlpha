@@ -567,7 +567,7 @@ You have analyzed {total_signals} trading signals ({new_revival} new_revival + {
 
 Now write TWO documents in Chinese:
 
-## Document 1: 08-K线指纹百科全书.md
+## Document 1: 02-K线指纹百科全书.md
 The complete encyclopedia of 5m+1m bar-level patterns. Structure:
 - 术语速查 (terminology reference)
 - 前置模式总览 (overview of all pre-push patterns, ranked by frequency)
@@ -593,7 +593,7 @@ Synthesis results:
 
 Output a JSON object:
 {{
-  "doc_08": "Full markdown content of 08-K线指纹百科全书.md",
+  "doc_08": "Full markdown content of 02-K线指纹百科全书.md",
   "doc_09": "Full markdown content of 09-bar-level-strategy.md"
 }}"""
 
@@ -618,7 +618,7 @@ def run_document_generation(synthesis: dict, records: list) -> dict:
 
     if result:
         # Write the two documents
-        for key, filename in [("doc_08", "08-K线指纹百科全书.md"),
+        for key, filename in [("doc_08", "02-K线指纹百科全书.md"),
                                ("doc_09", "09-bar-level-strategy.md")]:
             content = result.get(key, "")
             if content:

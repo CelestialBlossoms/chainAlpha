@@ -1580,7 +1580,7 @@ def classify_kline_journey(
 ) -> dict[str, Any]:
     """
     Classify the 5m pre-signal 4h structure from
-    onchain_trading_guides/08-K线指纹百科全书.md.
+    onchain_trading_guides/02-K线指纹百科全书.md.
     """
     valid = [
         c
@@ -1646,7 +1646,7 @@ def classify_kline_journey(
         doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
     return {
         "ready": True,
-        "source_doc": "onchain_trading_guides/08-K线指纹百科全书.md",
+        "source_doc": "onchain_trading_guides/02-K线指纹百科全书.md",
         "resolution": resolution,
         "count": len(valid),
         "pre_bars": len(pre),
@@ -1677,7 +1677,7 @@ def enrich_kline_journey_for_signal(journey: dict[str, Any] | None, signal_type:
         doc = (KLINE_JOURNEY_BASELINES.get(signal_key) or {}).get("其他结构") or {}
     journey.update(
         {
-            "source_doc": "onchain_trading_guides/08-K线指纹百科全书.md",
+            "source_doc": "onchain_trading_guides/02-K线指纹百科全书.md",
             "doc_wr20_pct": to_float(doc.get("wr20")),
             "doc_med_peak": doc.get("med_peak") or "-",
             "doc_boom_prob_pct": to_float(doc.get("boom_prob")),
@@ -1917,8 +1917,8 @@ def build_deepseek_kline_signal_context(
         "local_5m_journey": journey if isinstance(journey, dict) else {},
         "local_1m_micro": micro_1m,
         "source_docs_expected": [
-            "onchain_trading_guides/11-CA分析方法论.md",
-            "onchain_trading_guides/08-K线指纹百科全书.md",
+            "onchain_trading_guides/03-CA分析方法论.md",
+            "onchain_trading_guides/02-K线指纹百科全书.md",
         ],
     }
 
@@ -3734,7 +3734,7 @@ def analyze_local_followup_window(
         "peak_mcap": entry_mcap * (1 + peak / 100) if entry_mcap > 0 else 0.0,
         "trough_mcap": entry_mcap * (1 + trough / 100) if entry_mcap > 0 else 0.0,
         "source_docs": [
-            "onchain_trading_guides/08-K线指纹百科全书.md",
+            "onchain_trading_guides/02-K线指纹百科全书.md",
             "onchain_trading_guides/10-drawdown-recovery-fingerprints.md",
         ],
     }
@@ -4684,7 +4684,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "kline_1m_micro": micro_1m,
         "deepseek_kline_prediction": deepseek_kline,
         "strategy_plan": strategy_plan,
-        "source_doc": "hardcoded_fallback + onchain_trading_guides/11-CA分析方法论.md + onchain_trading_guides/08-K线指纹百科全书.md",
+        "source_doc": "hardcoded_fallback + onchain_trading_guides/03-CA分析方法论.md + onchain_trading_guides/02-K线指纹百科全书.md",
     }
 
 
@@ -4858,7 +4858,7 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "kline_journey": local_journey or pattern_5m,
         "kline_1m_micro": local_micro_1m or micro_1m,
         "strategy_plan": strategy_plan,
-        "source_doc": "deepseek_api + onchain_trading_guides/08-K线指纹百科全书.md + onchain_trading_guides/09-bar-level-strategy.md",
+        "source_doc": "deepseek_api + onchain_trading_guides/02-K线指纹百科全书.md + onchain_trading_guides/09-bar-level-strategy.md",
     }
 
 
