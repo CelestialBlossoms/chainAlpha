@@ -1,0 +1,160 @@
+# 底部异动交易策略
+
+> 基于515个信号的5m+1m K线全量数据分析提炼
+> 纯数据驱动，每条规则都有统计支撑
+
+---
+
+## 一、入场前5秒判断
+
+### 1.1 信号类型
+
+| 信号 | WR20 | 优先级 |
+|------|------|--------|
+| new_revival | 59% | 🟢 优先 |
+| abnormal | 45% | 🟡 谨慎 |
+
+### 1.2 市值
+
+| 市值 | new_revival | abnormal |
+|------|------------|----------|
+| <$30K | 59% | 样本太少 |
+| $30-50K | 55% | 43% |
+| $50-100K | 53% | 52% |
+| **$100-300K** | **69%** | 44% |
+| $300K+ | — | 39% |
+
+### 1.3 PoolRatio
+
+| PoolRatio | WR20 |
+|-----------|------|
+| <25% | 49% |
+| 25-35% | 53% |
+| >45% | 61% |
+
+---
+
+## 二、推送后第一根5m Bar — 最强判定
+
+```
+涨(>+1%) → 44%概率涨超30%, 可考虑入场
+跌(<-1%) → 68%是死透信号, 但不绝对, 要看回撤深度
+```
+
+参考: [08-5m-fingerprint-encyclopedia.md §二](./08-5m-fingerprint-encyclopedia.md)
+
+---
+
+## 三、三级确认体系
+
+### Level 1: 5分钟 (1m K线)
+
+```
+涨>3%  → 43% WR20 → 可入场
+横盘   → 等30min确认
+跌<-3% → 35% WR20 → 大概率放弃
+```
+
+### Level 2: 30分钟 (1m K线)
+
+```
+涨>0%          → ~60% WR20 → 确认加仓
+跌<0% + 量比>1.5x → 恐慌抛售 → 放弃
+跌<0% + 量比<1.0x → 卖压枯竭 → 可能底部
+```
+
+### Level 3: 回撤深度 (5m K线)
+
+```
+回撤<20%(轻度)    → 71% WR20 → 入场
+回撤20-50%(中度)  → 46% WR20 → 等>15%放量阳线确认
+回撤50-80%(重度)  → 42% WR20 → 等缩量触底+>20%阳线, 试错
+回撤>80%(极端)    → 40% WR20 → 不建议(样本小)
+```
+
+参考: [10-drawdown-recovery-fingerprints.md](./10-drawdown-recovery-fingerprints.md)
+
+---
+
+## 四、四类走势模式
+
+| 类型 | 回撤 | AvgPeak | 动作 |
+|------|------|---------|------|
+| **A: 浅跌爆发** | <10% | +323% | 5min涨>3%直接追 |
+| **B: V反恢复** | 20-50% | +84% | 等>15%放量阳线, 入场 |
+| **C: 深跌暴力反弹** | 50-80% | +83% | 等缩量触底+>20%阳线, 试错 |
+| **D: 死透** | — | <5% | 第一根跌+30min量比>1.5x, 放弃 |
+
+参考: [08-5m-fingerprint-encyclopedia.md §三](./08-5m-fingerprint-encyclopedia.md)
+
+---
+
+## 五、仓位管理
+
+| 类型 | 仓位 | 止损 | 止盈 |
+|------|------|------|------|
+| A(浅跌爆发) | 正常 | -10% | +30%出50%, +50%出30%, +100%出20% |
+| B(V反) | 正常 | -15% | +20%出50%, +50%出30%, +100%出20% |
+| C(深跌反弹) | 1/3 | -15% | +30%出50%, +50%出50% |
+| D(死透) | 0 | — | — |
+
+---
+
+## 六、不碰清单
+
+- 推送前涨幅>500%
+- 推送后第一根5m跌 + 30min还在跌 + 量比>1.5x
+- 极端回撤(>80%)——样本太少,不确定
+- PoolRatio没有绝对红线,但<$30K市值要谨慎
+
+---
+
+## 七、完整分析流程
+
+用户输入CA → 执行 `python scripts/entry_check.py <CA>`
+
+```
+Step 1: 查推送记录 → 信号类型/市值/PoolRatio/ATH
+Step 2: 拉5m+1m K线 → 计算pre涨跌幅/post回撤/当前状态
+Step 3: 查历史同类 → WR20基准
+Step 4: 看推送后第一根5m bar方向
+Step 5: 等5min 1m数据 → 涨>3%入, 跌<-3%弃
+Step 6: 等30min确认 → 涨>0%加仓, 跌+量比>1.5x弃
+Step 7: 按四类模式匹配 → A/B/C/D → 决定仓位
+```
+
+参考: [11-ca-analysis-methodology.md](./11-ca-analysis-methodology.md)
+
+---
+
+## 八、关键数字一秒记
+
+| 数字 | 含义 |
+|------|------|
+| 53% | 整体WR20 |
+| 59% | new_revival WR20 |
+| 69% | new_revival+$100-300K |
+| 44% vs 10% | 第一根5m涨vs跌的WR30概率 |
+| 5min | 最快入场确认窗口 |
+| 30min | 决定性确认窗口 |
+| 80min | 跌后恢复的中位到底时间 |
+| 5min | 底到顶的中位时间(V反极快!) |
+
+---
+
+## 九、文档索引
+
+| 文档 | 内容 |
+|------|------|
+| [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | K线百科: 13种模式/1m指纹/回撤恢复/决策流程 |
+| [09-bar-level-strategy.md](./09-bar-level-strategy.md) | Bar级策略: 投降Bar/5min/30min/ATH回撤 |
+| [10-drawdown-recovery-fingerprints.md](./10-drawdown-recovery-fingerprints.md) | 回撤恢复: 4区间的bar级指纹和量能 |
+| [11-ca-analysis-methodology.md](./11-ca-analysis-methodology.md) | 分析方法论: 6步流程/1m+5m联合 |
+| [12-successful-recovery-patterns.md](./12-successful-recovery-patterns.md) | 成功案例K线图鉴: 4胜利+4失败对比 |
+| [13-push-time-distribution.md](./13-push-time-distribution.md) | 推送时间分布: 星期×4h全矩阵 |
+| [14-full-data-analysis.md](./14-full-data-analysis.md) | 全量数据分析: 515信号完整统计 |
+
+---
+
+*数据: 515信号, bottom_kline_cache(5m) + bottom_kline_cache_1m(1m)*
+*分析日期: 2026-06-03*
