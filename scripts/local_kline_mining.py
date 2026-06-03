@@ -2,7 +2,7 @@
 Local K-line pattern discovery pipeline. No API calls — pure Python clustering + statistics.
 
 Output:
-  onchain_trading_guides/08-5m-fingerprint-encyclopedia.md
+  onchain_trading_guides/08-K线指纹百科全书.md
   onchain_trading_guides/09-bar-level-strategy.md
 """
 import sys, os, io, json, math
@@ -529,7 +529,7 @@ def discover_universal_rules(all_features):
 # ============================================================================
 
 def generate_doc_08(clusters, all_features, universal_rules, records):
-    """Generate 08-5m-fingerprint-encyclopedia.md"""
+    """Generate 08-K线指纹百科全书.md"""
     n_total = len(all_features)
     n_revival = sum(1 for f in all_features if f["signal_type"] == "new_revival")
     n_abnormal = sum(1 for f in all_features if f["signal_type"] == "abnormal")
@@ -919,7 +919,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     doc_08 = generate_doc_08(cluster_stats, all_features, universal_rules, records)
-    doc_08_path = OUTPUT_DIR / "08-5m-fingerprint-encyclopedia.md"
+    doc_08_path = OUTPUT_DIR / "08-K线指纹百科全书.md"
     with open(doc_08_path, "w", encoding="utf-8") as f:
         f.write(doc_08)
     print(f"  Written: {doc_08_path} ({len(doc_08)} chars)")
