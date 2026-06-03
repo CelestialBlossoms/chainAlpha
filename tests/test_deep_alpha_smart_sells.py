@@ -205,6 +205,65 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("Deep Alpha 聪明钱信号", sent[0][0])
 
+    def test_signal_tg_alert_dedups_by_source_and_address_when_trigger_changes(self) -> None:
+        from deep_alpha import deep_alpha_pro as dap
+
+        class FakeRedis:
+            def __init__(self):
+                self.values = {}
+
+            def get(self, key):
+                return self.values.get(key)
+
+            def setex(self, key, _ttl, value):
+                self.values[key] = value
+
+        fake_redis = FakeRedis()
+        sent = []
+        original_get_redis = dap.get_redis_client
+        original_send = dap.send_tg_alert
+        original_enabled = dap.SIGNAL_TG_ENABLED
+        original_max_age = dap.SIGNAL_TG_MAX_AGE_SEC
+        try:
+            dap.get_redis_client = lambda: fake_redis
+            dap.send_tg_alert = lambda text, **kwargs: sent.append((text, kwargs)) or 456
+            dap.SIGNAL_TG_ENABLED = True
+            dap.SIGNAL_TG_MAX_AGE_SEC = 300
+
+            first = maybe_send_signal_tg_alert(
+                {
+                    "address": "Token222",
+                    "symbol": "T222",
+                    "market_signal_trigger_at": 2_000,
+                    "entry_mcap": 100_000,
+                    "current_mcap": 120_000,
+                    "peak_mcap": 150_000,
+                },
+                "market_signal",
+                now_value=2_010,
+            )
+            second = maybe_send_signal_tg_alert(
+                {
+                    "address": "Token222",
+                    "symbol": "T222",
+                    "market_signal_trigger_at": 2_030,
+                    "entry_mcap": 100_000,
+                    "current_mcap": 130_000,
+                    "peak_mcap": 160_000,
+                },
+                "market_signal",
+                now_value=2_040,
+            )
+        finally:
+            dap.get_redis_client = original_get_redis
+            dap.send_tg_alert = original_send
+            dap.SIGNAL_TG_ENABLED = original_enabled
+            dap.SIGNAL_TG_MAX_AGE_SEC = original_max_age
+
+        self.assertEqual(first, 456)
+        self.assertIsNone(second)
+        self.assertEqual(len(sent), 1)
+
     def test_old_signal_tg_alert_is_not_backfilled(self) -> None:
         from deep_alpha import deep_alpha_pro as dap
 

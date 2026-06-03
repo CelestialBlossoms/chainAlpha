@@ -1547,6 +1547,10 @@ def signal_tg_dedup_key(source, address, trigger_at):
     return redis_key("deep_alpha:signal_tg_sent", source, address, int(safe_float(trigger_at)))
 
 
+def signal_tg_address_dedup_key(source, address):
+    return redis_key("deep_alpha:signal_tg_sent", source, address)
+
+
 def signal_tg_fresh_enough(trigger_at, now_value=None):
     if SIGNAL_TG_MAX_AGE_SEC <= 0:
         return True
@@ -1616,8 +1620,9 @@ def maybe_send_signal_tg_alert(item, source, now_value=None):
     if client is None:
         return None
     key = signal_tg_dedup_key(source, address, trigger_at)
+    address_key = signal_tg_address_dedup_key(source, address)
     try:
-        if client.get(key):
+        if client.get(address_key) or client.get(key):
             return None
     except Exception:
         return None
@@ -1629,6 +1634,7 @@ def maybe_send_signal_tg_alert(item, source, now_value=None):
     if message_id:
         try:
             client.setex(key, max(60, SIGNAL_TG_DEDUP_TTL_SEC), str(message_id))
+            client.setex(address_key, max(60, SIGNAL_TG_DEDUP_TTL_SEC), str(message_id))
         except Exception as exc:
             print(f"  [SignalTG] dedup write failed {address[:8]}: {exc}")
     return message_id
