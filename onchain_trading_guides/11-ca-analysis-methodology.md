@@ -114,7 +114,7 @@ recovery    = (当前价 - post_trough) / post_trough × 100
 signal_type × mcap_bucket × trough_zone
 ```
 
-参考数据 (来自 `10-drawdown-recovery-fingerprints.md`):
+参考数据 (来自 `08-5m-fingerprint-encyclopedia.md §八`):
 
 | 信号×市值×回撤 | n | WR20 | 建议 |
 |---------------|-----|------|------|
@@ -169,7 +169,7 @@ signal_type × mcap_bucket × trough_zone
 - `post_trough_vol` = 触底后的平均成交量  
 - `vol_ratio` = post/pre — **>1.5x说明有资金进场**
 
-**Bar级信号扫描** (来自 `10-drawdown-recovery-fingerprints.md`):
+**Bar级信号扫描** (来自 `08-5m-fingerprint-encyclopedia.md §三`):
 
 | 信号 | 条件 | 含义 |
 |------|------|------|
@@ -255,8 +255,8 @@ python scripts/entry_check.py <CA地址>
 |------|------|
 | `data/deepseek_discovery/signal_kline_records.jsonl` | 363个信号的历史outcome |
 | `onchain_trading_guides/08-5m-fingerprint-encyclopedia.md` | 14种前置模式详解 |
-| `onchain_trading_guides/09-bar-level-strategy.md` | 投降Bar/5min/30min策略 |
-| `onchain_trading_guides/10-drawdown-recovery-fingerprints.md` | 回撤恢复K线指纹 |
+
+
 | `onchain_trading_guides/11-ca-analysis-methodology.md` | 本文档 |
 
 ### 手工分析步骤速查

@@ -1,7 +1,7 @@
 # 底部异动检测框架
 
 > 数据来源: 363个信号(173 new_revival + 190 abnormal)的逐根5m+1m K线分析
-> 策略文档: [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) (14种前置模式) | [09-bar-level-strategy.md](./09-bar-level-strategy.md) (交易策略)
+> 策略文档: [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | [00-trading-strategy.md](./00-trading-strategy.md)
 
 ---
 
@@ -164,4 +164,4 @@
 ---
 
 *更新时间: 2026-05-29 | 数据: 363个信号逐根5m+1m K线, 本地聚类分析*
-*配套: [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | [09-bar-level-strategy.md](./09-bar-level-strategy.md)*
+*配套: [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | [00-trading-strategy.md](./00-trading-strategy.md)*

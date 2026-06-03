@@ -72,7 +72,7 @@
 回撤>80%(极端)    → 40% WR20 → 不建议(样本小)
 ```
 
-参考: [10-drawdown-recovery-fingerprints.md](./10-drawdown-recovery-fingerprints.md)
+参考: [08-5m-fingerprint-encyclopedia.md §八](./08-5m-fingerprint-encyclopedia.md)
 
 ---
 
@@ -146,10 +146,8 @@ Step 7: 按四类模式匹配 → A/B/C/D → 决定仓位
 
 | 文档 | 内容 |
 |------|------|
-| [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | K线百科: 13模式/1m指纹/回撤恢复/决策 |
+| [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | K线百科: 13模式/1m指纹/时间分布/回撤/决策 |
 | [11-ca-analysis-methodology.md](./11-ca-analysis-methodology.md) | 分析方法论: 6步流程/1m+5m联合 |
-| [13-push-time-distribution.md](./13-push-time-distribution.md) | 推送时间分布: 星期×4h全矩阵 |
-| [14-full-data-analysis.md](./14-full-data-analysis.md) | 全量数据: 515信号完整统计 |
 
 ---
 
