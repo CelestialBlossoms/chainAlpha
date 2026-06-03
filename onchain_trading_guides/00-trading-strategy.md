@@ -146,13 +146,10 @@ Step 7: 按四类模式匹配 → A/B/C/D → 决定仓位
 
 | 文档 | 内容 |
 |------|------|
-| [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | K线百科: 13种模式/1m指纹/回撤恢复/决策流程 |
-| [09-bar-level-strategy.md](./09-bar-level-strategy.md) | Bar级策略: 投降Bar/5min/30min/ATH回撤 |
-| [10-drawdown-recovery-fingerprints.md](./10-drawdown-recovery-fingerprints.md) | 回撤恢复: 4区间的bar级指纹和量能 |
+| [08-5m-fingerprint-encyclopedia.md](./08-5m-fingerprint-encyclopedia.md) | K线百科: 13模式/1m指纹/回撤恢复/决策 |
 | [11-ca-analysis-methodology.md](./11-ca-analysis-methodology.md) | 分析方法论: 6步流程/1m+5m联合 |
-| [12-successful-recovery-patterns.md](./12-successful-recovery-patterns.md) | 成功案例K线图鉴: 4胜利+4失败对比 |
 | [13-push-time-distribution.md](./13-push-time-distribution.md) | 推送时间分布: 星期×4h全矩阵 |
-| [14-full-data-analysis.md](./14-full-data-analysis.md) | 全量数据分析: 515信号完整统计 |
+| [14-full-data-analysis.md](./14-full-data-analysis.md) | 全量数据: 515信号完整统计 |
 
 ---
 
