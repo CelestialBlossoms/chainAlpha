@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 import requests
+import threading
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1213,7 +1214,7 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
     }
 
 
-def refresh_smart_money_signals(chain):
+def refresh_smart_money_signals(chain, skip_enrichment=False):
     if not SMART_SIGNAL_ENABLED:
         return []
     args = [
@@ -1239,28 +1240,22 @@ def refresh_smart_money_signals(chain):
     items = []
     seen = set()
     for idx, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
-        item = normalize_smart_signal_item(raw, chain, enrich_narrative=idx < SMART_SIGNAL_NARRATIVE_LIMIT)
+        enrich_narrative = (not skip_enrichment) and (idx < SMART_SIGNAL_NARRATIVE_LIMIT)
+        item = normalize_smart_signal_item(raw, chain, enrich_narrative=enrich_narrative)
         if not item or item["address"] in seen:
             continue
         seen.add(item["address"])
         items.append(item)
-    enrich_smart_signals_with_sells(items, chain)
-    enrich_signals_with_post_push_peak(items, chain)
-    client = get_redis_client()
-    if client is not None:
-        try:
-            client.setex(
-                smart_signal_redis_key(chain),
-                SMART_SIGNAL_REDIS_TTL_SEC,
-                json.dumps({"ts": int(time.time()), "chain": chain or "sol", "items": items}, ensure_ascii=False),
-            )
-        except Exception as exc:
-            print(f"  [SmartSignal] Redis write failed {chain}: {exc}")
-    print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money signals")
+    if not skip_enrichment:
+        enrich_smart_signals_with_sells(items, chain)
+        enrich_signals_with_post_push_peak(items, chain)
+    _write_signal_cache("smart", chain, items)
+    mode = "fast" if skip_enrichment else "full"
+    print(f"  [SmartSignal] {chain} loaded {len(items)} smart-money signals ({mode})")
     return items
 
 
-def refresh_market_signals(chain):
+def refresh_market_signals(chain, skip_enrichment=False):
     if not MARKET_SIGNAL_ENABLED:
         return []
     args = [
@@ -1286,24 +1281,91 @@ def refresh_market_signals(chain):
     items = []
     seen = set()
     for idx, raw in enumerate(raw_items if isinstance(raw_items, list) else []):
-        item = normalize_market_signal_item(raw, chain, enrich_narrative=idx < MARKET_SIGNAL_NARRATIVE_LIMIT)
+        enrich_narrative = (not skip_enrichment) and (idx < MARKET_SIGNAL_NARRATIVE_LIMIT)
+        item = normalize_market_signal_item(raw, chain, enrich_narrative=enrich_narrative)
         if not item or item["address"] in seen:
             continue
         seen.add(item["address"])
         items.append(item)
-    enrich_signals_with_post_push_peak(items, chain)
+    if not skip_enrichment:
+        enrich_signals_with_post_push_peak(items, chain)
+    _write_signal_cache("market", chain, items)
+    mode = "fast" if skip_enrichment else "full"
+    print(f"  [MarketSignal] {chain} loaded {len(items)} filtered market signals ({mode})")
+    return items
+
+
+def _write_signal_cache(signal_type, chain, items):
+    """Write signal items to Redis cache. signal_type is 'smart' or 'market'."""
+    if signal_type == "smart":
+        key = smart_signal_redis_key(chain)
+        ttl = SMART_SIGNAL_REDIS_TTL_SEC
+        label = "SmartSignal"
+    else:
+        key = market_signal_redis_key(chain)
+        ttl = MARKET_SIGNAL_REDIS_TTL_SEC
+        label = "MarketSignal"
     client = get_redis_client()
     if client is not None:
         try:
             client.setex(
-                market_signal_redis_key(chain),
-                MARKET_SIGNAL_REDIS_TTL_SEC,
+                key,
+                ttl,
                 json.dumps({"ts": int(time.time()), "chain": chain or "sol", "items": items}, ensure_ascii=False),
             )
         except Exception as exc:
-            print(f"  [MarketSignal] Redis write failed {chain}: {exc}")
-    print(f"  [MarketSignal] {chain} loaded {len(items)} filtered market signals")
-    return items
+            print(f"  [{label}] Redis write failed {chain}: {exc}")
+
+
+def _enrich_signal_narratives(items, limit):
+    """Enrich items with Binance narrative data (for items that don't have it yet)."""
+    enriched = 0
+    for idx, item in enumerate(items or []):
+        if idx >= limit:
+            break
+        if item.get("narrative"):
+            continue
+        narrative_obj = smart_signal_narrative(
+            item.get("address", ""),
+            item.get("symbol", ""),
+            item.get("name", ""),
+        )
+        if narrative_obj:
+            item["narrative"] = narrative_obj.get("narrative_desc") or ""
+            item["narrative_desc"] = narrative_obj.get("narrative_desc") or ""
+            item["narrative_type"] = narrative_obj.get("narrative_type") or ""
+            item["narrative_category"] = narrative_obj.get("narrative_category") or ""
+            item["binance_narrative"] = narrative_obj
+            enriched += 1
+    return enriched
+
+
+def enrich_and_update_signals(chain, smart_signals, market_signals):
+    """Phase 2: Enrich signals with narrative, sells, kline peaks; update Redis + live_track."""
+    t0 = time.time()
+    # --- Smart signals enrichment ---
+    if smart_signals:
+        n_narr = _enrich_signal_narratives(smart_signals, SMART_SIGNAL_NARRATIVE_LIMIT)
+        enrich_smart_signals_with_sells(smart_signals, chain)
+        enrich_signals_with_post_push_peak(smart_signals, chain)
+        _write_signal_cache("smart", chain, smart_signals)
+        if n_narr:
+            print(f"  [Enrich] {chain} smart: {n_narr} narratives enriched")
+
+    # --- Market signals enrichment ---
+    if market_signals:
+        n_narr = _enrich_signal_narratives(market_signals, MARKET_SIGNAL_NARRATIVE_LIMIT)
+        enrich_signals_with_post_push_peak(market_signals, chain)
+        _write_signal_cache("market", chain, market_signals)
+        if n_narr:
+            print(f"  [Enrich] {chain} market: {n_narr} narratives enriched")
+
+    # --- Update live_track with enriched data ---
+    if smart_signals or market_signals:
+        sync_signals_to_live_track(chain, smart_signals, market_signals)
+
+    elapsed = time.time() - t0
+    print(f"  [Enrich] {chain} enrichment completed in {elapsed:.1f}s")
 
 
 def live_track_deleted_today_key(address):
@@ -1539,6 +1601,22 @@ def merge_live_track_payload(existing, payload):
     merged["peak_mcap_at"] = peak_mcap_at
     merged["pnl_pct"] = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and current_mcap > 0 else 0.0
     merged["peak_pnl_pct"] = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
+
+    # Preserve narrative fields if payload has them empty but existing has them
+    for key in ["narrative", "narrative_desc", "narrative_type", "narrative_category", "binance_narrative"]:
+        val = payload.get(key)
+        existing_val = existing.get(key)
+        if (val is None or val == "" or val == {}) and existing_val:
+            merged[key] = existing_val
+
+    # Preserve smart money sell wallets and stats if payload has them empty/zero
+    if not payload.get("smart_sell_wallets") and existing.get("smart_sell_wallets"):
+        merged["smart_sell_wallets"] = existing["smart_sell_wallets"]
+        if existing.get("smart_sell_count"):
+            merged["smart_sell_count"] = max(payload.get("smart_sell_count") or 0, existing["smart_sell_count"])
+        if existing.get("smart_sell_total"):
+            merged["smart_sell_total"] = max(payload.get("smart_sell_total") or 0.0, existing["smart_sell_total"])
+
     merged["last_updated"] = int(time.time())
     return merged
 
@@ -4334,17 +4412,37 @@ def _finalize_track(track, reason):
 # ---------------------------------------------------------------------------
 def scan_pro():
     for chain in CHAINS:
-        # Refresh GMGN market signals only; legacy 1m trending windows stay disabled.
-        smart_signals = refresh_smart_money_signals(chain)
-        market_signals = refresh_market_signals(chain)
+        # Phase 1: Fast fetch (skip narrative/sells/kline) -> immediate push
+        t0 = time.time()
+        smart_signals = refresh_smart_money_signals(chain, skip_enrichment=True)
+        market_signals = refresh_market_signals(chain, skip_enrichment=True)
         if smart_signals or market_signals:
             sync_signals_to_live_track(chain, smart_signals, market_signals)
             send_signal_tg_alerts(smart_signals, market_signals)
+            t_push = time.time() - t0
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] "
+                f"{chain} Phase1 PUSHED in {t_push:.1f}s: "
+                f"smart={len(smart_signals)} market={len(market_signals)}"
+            )
+            # Phase 2: Slow enrichment (narrative/sells/kline) -> update Redis + live_track in background
+            def run_enrichment_bg(c, ss, ms):
+                try:
+                    enrich_and_update_signals(c, ss, ms)
+                except Exception as e:
+                    print(f"  [EnrichBG] Background enrichment failed for {c}: {e}")
+
+            threading.Thread(
+                target=run_enrichment_bg,
+                args=(chain, smart_signals, market_signals),
+                daemon=True,
+            ).start()
         else:
             print(f"  [SignalSync] skip live-track cleanup for {chain}: no GMGN signal data")
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] "
-            f"{chain} smart-money signals: {len(smart_signals)} market signals: {len(market_signals)}"
+            f"{chain} scan complete: smart={len(smart_signals)} market={len(market_signals)} "
+            f"total={time.time() - t0:.1f}s"
         )
 
 if __name__ == "__main__":
