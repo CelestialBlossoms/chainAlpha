@@ -67,6 +67,14 @@ ONCHAIN_GUIDE_ANALYSIS_SCOPE = [
     {"key": "volume_liquidity", "label": "量能/流动性", "checks": ["breakout_volume", "breakout_volume_ratio", "pool_liquidity", "pool/mcap"]},
     {"key": "risk_factors", "label": "风险因子", "checks": ["追高", "放量下跌", "高集中度", "低流动性", "极端回撤"]},
 ]
+ONCHAIN_GUIDE_METHODOLOGY_STEPS = [
+    {"step": 1, "key": "push_record", "label": "查推送记录", "data_source": "DB", "checks": ["signal_type", "current_mcap", "ath_mcap", "pool_mcap_ratio"]},
+    {"step": 2, "key": "kline_baseline", "label": "拉5m+1m K线并计算baseline/峰/谷/回撤", "data_source": "DB或API", "checks": ["baseline", "post_peak", "post_trough", "pullback"]},
+    {"step": 3, "key": "bar_level_analysis", "label": "逐bar分析5m结构和1m微观真相", "data_source": "K线数据", "checks": ["5m structure", "1m micro"]},
+    {"step": 4, "key": "historical_peer_baseline", "label": "查历史同类WR20基准", "data_source": "515信号JSONL", "checks": ["signal", "pullback", "mcap", "ATH"]},
+    {"step": 5, "key": "five_dimension_score", "label": "5维打分", "data_source": "综合", "checks": ["signal", "pullback", "ATH", "1m", "5m"]},
+    {"step": 6, "key": "conclusion", "label": "输出结论", "data_source": "methodology_result", "checks": ["可入场/等确认/放弃", "具体条件"]},
+]
 _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = False
 _BOTTOM_TOP100_TRADER_COLUMNS_READY = False
 TREND_INTERVALS = tuple(
@@ -1935,6 +1943,7 @@ def build_deepseek_kline_signal_context(
         "local_5m_journey": journey if isinstance(journey, dict) else {},
         "local_1m_micro": micro_1m,
         "analysis_scope_expected": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "methodology_steps_expected": ONCHAIN_GUIDE_METHODOLOGY_STEPS,
         "source_docs_expected": ONCHAIN_GUIDE_SOURCE_DOCS,
     }
 
@@ -4410,6 +4419,7 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
         "source_doc": " + ".join(ONCHAIN_GUIDE_SOURCE_DOCS),
         "source_docs": ONCHAIN_GUIDE_SOURCE_DOCS,
         "analysis_scope": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "methodology_steps": ONCHAIN_GUIDE_METHODOLOGY_STEPS,
         "winner_definition": "观察后任意时间价格涨到>=20%",
         "signal_bucket": _mcap_bucket(signal_mcap),
         "buy_value_label": bucket["buy_value"],
@@ -4472,6 +4482,83 @@ def is_deepseek_api_prediction(prediction: dict[str, Any] | None) -> bool:
     status = str(prediction.get("status") or "").lower()
     model = str(prediction.get("model") or "").lower()
     return status == "ok" and model and not model.startswith("local_")
+
+
+def compute_methodology_result(extra: dict[str, Any], predicted_wr20: float, risk_factors: list[str] | None = None) -> dict[str, Any]:
+    extra = dict(extra or {})
+    signal_type = str(extra.get("signal_type") or "unknown")
+    current_mcap = to_float(extra.get("current_mcap") or extra.get("entry_mcap"))
+    entry_mcap = to_float(extra.get("entry_mcap") or extra.get("first_signal_mcap") or current_mcap)
+    peak_mcap = max(to_float(extra.get("peak_mcap")), to_float(extra.get("post_signal_peak_mcap")), current_mcap, entry_mcap)
+    ath_mcap = to_float(extra.get("ath_mcap") or extra.get("pre_signal_ath_mcap"))
+    ath_ratio = ath_mcap / current_mcap if current_mcap > 0 and ath_mcap > 0 else 0.0
+    pnl = to_float(extra.get("pnl_pct"))
+    peak_pct = (peak_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 and peak_mcap > 0 else 0.0
+    pullback = (current_mcap - peak_mcap) / peak_mcap * 100 if peak_mcap > 0 and current_mcap > 0 else 0.0
+    journey = extra.get("kline_journey") if isinstance(extra.get("kline_journey"), dict) else {}
+    micro = extra.get("kline_1m_micro") if isinstance(extra.get("kline_1m_micro"), dict) else {}
+    bucket = _historical_bottom_bucket(signal_type, entry_mcap or current_mcap)
+    green_lights = 0
+    red_lights = 0
+    if signal_type == "new_revival":
+        green_lights += 1
+    elif signal_type == "abnormal":
+        red_lights += 1
+    if pullback > -20:
+        green_lights += 1
+    elif pullback <= -50:
+        red_lights += 1
+    if ath_ratio >= 3:
+        green_lights += 1
+    elif 0 < ath_ratio < 1.5:
+        red_lights += 1
+    if to_float(micro.get("change_pct")) > 3 or str(micro.get("direction") or "").lower() in {"up", "bullish"}:
+        green_lights += 1
+    elif to_float(micro.get("change_pct")) < -3 or str(micro.get("direction") or "").lower() in {"down", "bearish"}:
+        red_lights += 1
+    score_delta = to_float(journey.get("score_delta"))
+    if score_delta > 0:
+        green_lights += 1
+    elif score_delta < 0:
+        red_lights += 1
+    if predicted_wr20 >= 65 and green_lights >= 3:
+        conclusion = "可入场"
+    elif predicted_wr20 >= 45 and red_lights <= 2:
+        conclusion = "等确认"
+    else:
+        conclusion = "放弃"
+    return {
+        "step1_push_record": (
+            f"signal={signal_type}, current_mcap={current_mcap:.0f}, ath_ratio={ath_ratio:.2f}x, "
+            f"pool_ratio={to_float(extra.get('pool_mcap_ratio')):.2%}, age={to_int(extra.get('age_sec'))}s"
+        ),
+        "step2_kline_baseline": (
+            f"entry={entry_mcap:.0f}, current={current_mcap:.0f}, peak={peak_mcap:.0f}, "
+            f"pnl={pnl:.1f}%, peak_pct={peak_pct:.1f}%, pullback_from_peak={pullback:.1f}%"
+        ),
+        "step3_bar_analysis": (
+            f"5m={journey.get('pre_structure') or journey.get('structure') or '-'}, "
+            f"1m={micro.get('label') or micro.get('direction') or '-'}, "
+            f"1m_change={to_float(micro.get('change_pct')):.1f}%"
+        ),
+        "step4_historical_baseline": (
+            f"{signal_type}×{_mcap_bucket(entry_mcap or current_mcap)} guide WR20={to_float(bucket.get('wr20')):.1f}% "
+            "source=data/deepseek_discovery/signal_kline_records.jsonl"
+        ),
+        "step5_five_dimension_score": (
+            f"green={green_lights}, red={red_lights}, predicted_wr20={predicted_wr20:.1f}%; "
+            "dimensions=signal/pullback/ATH/1m_confirm/5m_pattern"
+        ),
+        "step6_conclusion": {
+            "label": conclusion,
+            "conditions": [
+                f"1m change {to_float(micro.get('change_pct')):.1f}%",
+                f"5m structure {journey.get('pre_structure') or journey.get('structure') or '-'}",
+                f"ATH ratio {ath_ratio:.2f}x",
+            ],
+            "reasons": list(risk_factors or [])[:4] or [f"historical WR20 baseline {to_float(bucket.get('wr20')):.1f}%"],
+        },
+    }
 
 
 def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
@@ -4708,6 +4795,13 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             "deepseek_confidence": ds_confidence,
         }
 
+    deepseek_methodology = (
+        deepseek_kline.get("methodology_result")
+        if isinstance(deepseek_kline.get("methodology_result"), dict)
+        else {}
+    )
+    methodology_result = deepseek_methodology or compute_methodology_result(extra, predicted, risk_factors)
+
     return {
         "target": "max_gain_gte_20pct",
         "predicted_winrate_pct": round(predicted, 1),
@@ -4716,6 +4810,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "overall_sample_count": 315,
         "winner_definition": "观察后任意时间价格涨到>=20%",
         "analysis_scope": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "methodology_steps": ONCHAIN_GUIDE_METHODOLOGY_STEPS,
+        "methodology_result": methodology_result,
         "source_docs": ONCHAIN_GUIDE_SOURCE_DOCS,
         "label": label,
         "buy_value_label": label,
@@ -4867,6 +4963,11 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "deepseek_watch_windows": ds_pred.get("watch_windows") or [],
         "deepseek_strategy_observations": ds_pred.get("strategy_observations") or [],
     }
+    methodology_result = (
+        ds_pred.get("methodology_result")
+        if isinstance(ds_pred.get("methodology_result"), dict)
+        else compute_methodology_result(extra, predicted_wr20, risk_factors)
+    )
 
     return {
         "target": "max_gain_gte_20pct",
@@ -4878,6 +4979,8 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "overall_sample_count": 315,
         "winner_definition": "观察后任意时间价格涨到>=20%",
         "analysis_scope": ds_pred.get("analysis_scope") if isinstance(ds_pred.get("analysis_scope"), list) else ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "methodology_steps": ds_pred.get("methodology_steps") if isinstance(ds_pred.get("methodology_steps"), list) else ONCHAIN_GUIDE_METHODOLOGY_STEPS,
+        "methodology_result": methodology_result,
         "source_docs": ds_pred.get("source_docs") if isinstance(ds_pred.get("source_docs"), list) else ONCHAIN_GUIDE_SOURCE_DOCS,
         "label": label,
         "buy_value_label": label,

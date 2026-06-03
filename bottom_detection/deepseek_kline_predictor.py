@@ -40,6 +40,50 @@ ANALYSIS_SCOPE = (
     {"key": "volume_liquidity", "label": "量能/流动性", "checks": ["breakout_volume", "breakout_volume_ratio", "pool_liquidity", "pool/mcap"]},
     {"key": "risk_factors", "label": "风险因子", "checks": ["追高", "放量下跌", "高集中度", "低流动性", "极端回撤"]},
 )
+METHODOLOGY_STEPS = (
+    {
+        "step": 1,
+        "key": "push_record",
+        "label": "查推送记录",
+        "checks": ["signal_type", "current_mcap", "ath_mcap", "pool_mcap_ratio", "age_sec", "price_change_pct"],
+        "data_source": "bottom_top100_push_records / signal payload",
+    },
+    {
+        "step": 2,
+        "key": "kline_baseline",
+        "label": "拉5m+1m K线并计算baseline/峰/谷/回撤",
+        "checks": ["pre_signal_baseline", "pre_high_low", "post_peak", "post_trough", "pullback", "current_state"],
+        "data_source": "bottom_kline_cache / bottom_kline_cache_1m / Binance API",
+    },
+    {
+        "step": 3,
+        "key": "bar_level_analysis",
+        "label": "逐bar分析",
+        "checks": ["5m结构", "1m微观真相", "缩量企稳", "隐藏砸盘", "抢跑", "放量确认"],
+        "data_source": "5m+1m OHLCV",
+    },
+    {
+        "step": 4,
+        "key": "historical_peer_baseline",
+        "label": "查历史同类WR20基准",
+        "checks": ["same_signal_type", "same_pullback_bucket", "same_mcap_bucket", "same_ath_ratio"],
+        "data_source": "data/deepseek_discovery/signal_kline_records.jsonl",
+    },
+    {
+        "step": 5,
+        "key": "five_dimension_score",
+        "label": "5维打分",
+        "checks": ["信号类型", "回撤深度", "ATH空间", "1m确认", "5m形态"],
+        "data_source": "综合",
+    },
+    {
+        "step": 6,
+        "key": "conclusion",
+        "label": "输出结论",
+        "checks": ["可入场/等确认/放弃", "具体条件", "可观察风险"],
+        "data_source": "methodology_result",
+    },
+)
 
 # Cached strategy docs with mtime-based invalidation
 _doc_cache: dict[str, tuple[float, str]] = {}
@@ -59,6 +103,8 @@ REQUIRED_SCHEMA = {
     "forecast": {},
     "purchase_value": {"label": "", "score_pct": 0, "basis": ""},
     "analysis_scope": list(ANALYSIS_SCOPE),
+    "methodology_steps": list(METHODOLOGY_STEPS),
+    "methodology_result": {},
     "strategy_observations": [],
     "risk_factors": [],
     "watch_windows": [],
@@ -210,6 +256,9 @@ def compute_local_fingerprints(
     rng_l = min(b["l"] for b in window)
     last_close = window[-1]["c"]
     position = (last_close - rng_l) / (rng_h - rng_l) * 100 if rng_h > rng_l else 50
+    baseline = last_close
+    range_pct = (rng_h - rng_l) / rng_l * 100 if rng_l > 0 else 0.0
+    pullback_from_high_pct = (baseline - rng_h) / rng_h * 100 if rng_h > 0 else 0.0
 
     # ---- Volume trend ----
     if len(window) >= 12:
@@ -281,6 +330,11 @@ def compute_local_fingerprints(
     fp["shooting_stars_last12"] = stars
     fp["position_pct"] = round(position, 1)
     fp["position_zone"] = "floor" if position < 20 else ("ceiling" if position > 80 else "mid")
+    fp["baseline_close"] = _round_price(baseline)
+    fp["window_high"] = _round_price(rng_h)
+    fp["window_low"] = _round_price(rng_l)
+    fp["range_pct"] = round(range_pct, 1)
+    fp["pullback_from_high_pct"] = round(pullback_from_high_pct, 1)
     fp["vol_trend"] = round(vol_trend, 2)
     fp["vol_trend_label"] = "shrinking" if vol_trend < 0.5 else ("expanding" if vol_trend > 2 else "normal")
     fp["segments_30m"] = segs
@@ -357,7 +411,13 @@ def build_cached_system_prompt() -> str:
         "The local_fingerprints are pre-computed hints — validate them against raw K-line data, "
         "correct any errors, and incorporate them into your analysis. "
         "Use the CA methodology document as the decision workflow and the 5m fingerprint encyclopedia as the pattern reference. "
+        "Every analysis must follow the 03-CA分析方法论 six-step workflow exactly: "
+        "1) push record, 2) 5m+1m baseline/peak/trough/pullback, 3) bar-level 5m structure and 1m micro truth, "
+        "4) historical peer WR20 baseline by signal×pullback×mcap×ATH, 5) five-dimension scoring, 6) conclusion label with concrete conditions. "
         "Before scoring, explicitly cover the supplied analysis_scope dimensions: push record, chip distribution, 5m price structure, 1m micro structure, volume/liquidity, and observable risk factors. "
+        "Populate methodology_steps and methodology_result in the returned JSON. "
+        "methodology_result must include step1_push_record, step2_kline_baseline, step3_bar_analysis, step4_historical_baseline, step5_five_dimension_score, and step6_conclusion. "
+        "For step6_conclusion.label use one of: 可入场, 等确认, 放弃; include conditions and reasons, but do not include position sizing, stop-loss, or take-profit. "
         "Return observable purchase-value and K-line analysis only. "
         "Do not give trading advice, order instructions, position sizing, stop-loss, or take-profit recommendations. "
         "For purchase_value.label use one of: 高价值观察, 中等价值观察, 低价值/回避, 待观察. "
@@ -395,6 +455,39 @@ def _safe_list(value: Any, limit: int = 5, text_limit: int = 140) -> list[str]:
     return result
 
 
+def normalize_methodology_result(value: dict[str, Any] | None) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+
+    def _step(key: str, limit: int = 220) -> str:
+        step = data.get(key)
+        if isinstance(step, dict):
+            parts = [
+                step.get("summary"),
+                step.get("basis"),
+                step.get("result"),
+                step.get("label"),
+            ]
+            return _safe_text("；".join(str(item) for item in parts if item), limit)
+        return _safe_text(step, limit)
+
+    conclusion = data.get("step6_conclusion") if isinstance(data.get("step6_conclusion"), dict) else {}
+    label = _safe_text(conclusion.get("label"), 20)
+    if label not in {"可入场", "等确认", "放弃"}:
+        label = "等确认"
+    return {
+        "step1_push_record": _step("step1_push_record"),
+        "step2_kline_baseline": _step("step2_kline_baseline"),
+        "step3_bar_analysis": _step("step3_bar_analysis"),
+        "step4_historical_baseline": _step("step4_historical_baseline"),
+        "step5_five_dimension_score": _step("step5_five_dimension_score"),
+        "step6_conclusion": {
+            "label": label,
+            "conditions": _safe_list(conclusion.get("conditions"), 4, 120),
+            "reasons": _safe_list(conclusion.get("reasons"), 4, 120),
+        },
+    }
+
+
 def _extract_json_object(content: str) -> dict[str, Any] | None:
     text = (content or "").strip()
     if not text:
@@ -423,6 +516,7 @@ def normalize_prediction(data: dict[str, Any], *, model: str, elapsed_ms: int) -
     micro = data.get("micro_1m") if isinstance(data.get("micro_1m"), dict) else {}
     forecast = data.get("forecast") if isinstance(data.get("forecast"), dict) else {}
     purchase = data.get("purchase_value") if isinstance(data.get("purchase_value"), dict) else {}
+    methodology = data.get("methodology_result") if isinstance(data.get("methodology_result"), dict) else {}
     confidence = str(data.get("confidence") or "low").lower()
     if confidence not in {"high", "medium", "low"}:
         confidence = "low"
@@ -463,6 +557,8 @@ def normalize_prediction(data: dict[str, Any], *, model: str, elapsed_ms: int) -
             "basis": _safe_text(purchase.get("basis"), 180),
         },
         "analysis_scope": list(ANALYSIS_SCOPE),
+        "methodology_steps": list(METHODOLOGY_STEPS),
+        "methodology_result": normalize_methodology_result(methodology),
         "strategy_observations": _safe_list(data.get("strategy_observations"), 5, 140),
         "risk_factors": _safe_list(data.get("risk_factors"), 5, 140),
         "watch_windows": _safe_list(data.get("watch_windows"), 4, 120),
@@ -484,6 +580,7 @@ def build_prompt_payload(
         "task": "bottom_abnormal_ca_kline_prediction",
         "schema": REQUIRED_SCHEMA,
         "analysis_scope": list(ANALYSIS_SCOPE),
+        "methodology_steps": list(METHODOLOGY_STEPS),
         "address": address,
         "signal": signal,
         "signal_ts": signal_ts,
@@ -521,9 +618,9 @@ def analyze_deepseek_kline_prediction(
     local_fp = compute_local_fingerprints(candles_5m, candles_1m, signal_ts=signal_ts)
 
     if not DEEPSEEK_KLINE_ENABLED:
-        return _fallback_from_fingerprints(local_fp, status="disabled")
+        return _fallback_from_fingerprints(local_fp, status="disabled", signal=signal)
     if not DEEPSEEK_API_KEY:
-        return _fallback_from_fingerprints(local_fp, status="missing_api_key")
+        return _fallback_from_fingerprints(local_fp, status="missing_api_key", signal=signal)
 
     prompt_payload = build_prompt_payload(
         address=address,
@@ -534,7 +631,7 @@ def analyze_deepseek_kline_prediction(
         signal_ts=signal_ts,
     )
     if not prompt_payload["kline_5m"] or not prompt_payload["kline_1m"]:
-        return _fallback_from_fingerprints(local_fp, status="missing_kline_data")
+        return _fallback_from_fingerprints(local_fp, status="missing_kline_data", signal=signal)
 
     # System prompt: role + full strategy docs (cached by DeepSeek across calls)
     system_prompt = build_cached_system_prompt()
@@ -558,25 +655,25 @@ def analyze_deepseek_kline_prediction(
             timeout=DEEPSEEK_TIMEOUT,
         )
     except Exception as exc:
-        return _fallback_from_fingerprints(local_fp, status=f"exception:{exc}")
+        return _fallback_from_fingerprints(local_fp, status=f"exception:{exc}", signal=signal)
 
     elapsed_ms = int((time.time() - started) * 1000)
     if not resp.ok:
-        return _fallback_from_fingerprints(local_fp, status=f"http_{resp.status_code}")
+        return _fallback_from_fingerprints(local_fp, status=f"http_{resp.status_code}", signal=signal)
 
     try:
         message = resp.json().get("choices", [{}])[0].get("message", {}) or {}
         content = message.get("content") or ""
         reasoning_content = message.get("reasoning_content") or ""
     except (ValueError, TypeError, KeyError, IndexError) as exc:
-        return _fallback_from_fingerprints(local_fp, status=f"bad_response:{exc}")
+        return _fallback_from_fingerprints(local_fp, status=f"bad_response:{exc}", signal=signal)
 
     if not content and reasoning_content:
-        return _fallback_from_fingerprints(local_fp, status="reasoning_only_no_json")
+        return _fallback_from_fingerprints(local_fp, status="reasoning_only_no_json", signal=signal)
 
     data = _extract_json_object(content)
     if not data:
-        return _fallback_from_fingerprints(local_fp, status="json_parse_failed")
+        return _fallback_from_fingerprints(local_fp, status="json_parse_failed", signal=signal)
 
     result = normalize_prediction(data, model=DEEPSEEK_MODEL, elapsed_ms=elapsed_ms)
     # Attach local fingerprints for downstream consumers
@@ -584,10 +681,90 @@ def analyze_deepseek_kline_prediction(
     return result
 
 
-def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[str, Any]:
+def _fallback_methodology_result(local_fp: dict[str, Any], status: str, signal: dict[str, Any] | None = None) -> dict[str, Any]:
+    signal = signal or {}
+    m1p = local_fp.get("m1_post", {}) if isinstance(local_fp.get("m1_post"), dict) else {}
+    signal_type = str(signal.get("signal_type") or "unknown")
+    mcap = _to_float(signal.get("current_mcap"))
+    ath = _to_float(signal.get("ath_mcap") or signal.get("pre_signal_ath_mcap"))
+    ath_ratio = ath / mcap if mcap > 0 and ath > 0 else 0.0
+    pos = _to_float(local_fp.get("position_pct"), 50.0)
+    chg5 = _to_float(m1p.get("chg_5min"))
+    has_cap = bool(local_fp.get("has_capitulation"))
+    green_lights = 0
+    red_lights = 0
+    if signal_type == "new_revival":
+        green_lights += 1
+    elif signal_type == "abnormal":
+        red_lights += 1
+    if _to_float(local_fp.get("pullback_from_high_pct")) > -20:
+        green_lights += 1
+    elif _to_float(local_fp.get("pullback_from_high_pct")) <= -50:
+        red_lights += 1
+    if ath_ratio >= 3:
+        green_lights += 1
+    elif 0 < ath_ratio < 1.5:
+        red_lights += 1
+    if chg5 > 3:
+        green_lights += 1
+    elif chg5 < -3:
+        red_lights += 1
+    if has_cap and pos < 35:
+        green_lights += 1
+    elif pos > 80 and not has_cap:
+        red_lights += 1
+    if green_lights >= 4:
+        label = "可入场"
+    elif green_lights >= 3 and red_lights <= 1:
+        label = "等确认"
+    else:
+        label = "放弃"
+    return {
+        "step1_push_record": (
+            f"signal={signal_type}, mcap={mcap:.0f}, ath_ratio={ath_ratio:.2f}x, "
+            f"pool_ratio={_to_float(signal.get('pool_mcap_ratio')):.2%}, age={_to_int(signal.get('age_sec'))}s"
+        ),
+        "step2_kline_baseline": (
+            f"baseline={local_fp.get('baseline_close')}, high={local_fp.get('window_high')}, "
+            f"low={local_fp.get('window_low')}, range={local_fp.get('range_pct')}%, "
+            f"pullback={local_fp.get('pullback_from_high_pct')}%"
+        ),
+        "step3_bar_analysis": (
+            f"5m pos={pos:.1f}%/{local_fp.get('position_zone')}, cap={has_cap}, "
+            f"vol={local_fp.get('vol_trend_label')}; 1m 5min={chg5:+.1f}%, "
+            f"direction={m1p.get('direction', '-')}"
+        ),
+        "step4_historical_baseline": (
+            "local fallback uses guide bucket baseline; JSONL peer traversal requires DeepSeek/API path or offline entry_check"
+        ),
+        "step5_five_dimension_score": (
+            f"green={green_lights}, red={red_lights}; dimensions=signal,pullback,ATH,1m_confirm,5m_pattern"
+        ),
+        "step6_conclusion": {
+            "label": label,
+            "conditions": [
+                f"1m 5min change {chg5:+.1f}%",
+                f"5m position {pos:.1f}% in window",
+            ],
+            "reasons": [
+                f"DeepSeek unavailable ({status}); hard traversal used local K-line fingerprints",
+                local_fp.get("quick_verdict", "no_clear_signal"),
+            ],
+        },
+    }
+
+
+def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str, signal: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build a minimal prediction from local fingerprints when DeepSeek is unavailable."""
     if not local_fp.get("ready"):
-        return {"ready": False, "status": status, "analysis_scope": list(ANALYSIS_SCOPE), "source_docs": list(SOURCE_DOCS)}
+        return {
+            "ready": False,
+            "status": status,
+            "analysis_scope": list(ANALYSIS_SCOPE),
+            "methodology_steps": list(METHODOLOGY_STEPS),
+            "methodology_result": normalize_methodology_result(_fallback_methodology_result(local_fp, status, signal)),
+            "source_docs": list(SOURCE_DOCS),
+        }
 
     pos = local_fp.get("position_pct", 50)
     has_cap = local_fp.get("has_capitulation", False)
@@ -664,6 +841,8 @@ def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[s
         ),
         "watch_windows": ["5min", "30min"],
         "analysis_scope": list(ANALYSIS_SCOPE),
+        "methodology_steps": list(METHODOLOGY_STEPS),
+        "methodology_result": normalize_methodology_result(_fallback_methodology_result(local_fp, status, signal)),
         "source_docs": list(SOURCE_DOCS),
         "local_fingerprints": local_fp,
     }
