@@ -27,8 +27,18 @@ DEEPSEEK_KLINE_ENABLED = os.getenv("BOTTOM_DEEPSEEK_KLINE_PREDICTION_ENABLED", "
 MAX_5M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_5M_CANDLES", "48"))
 MAX_1M_CANDLES = int(os.getenv("BOTTOM_DEEPSEEK_KLINE_1M_CANDLES", "60"))
 SOURCE_DOCS = (
+    "onchain_trading_guides/00-交易策略速查.md",
+    "onchain_trading_guides/01-底部异动检测框架.md",
     "onchain_trading_guides/03-CA分析方法论.md",
     "onchain_trading_guides/02-K线指纹百科全书.md",
+)
+ANALYSIS_SCOPE = (
+    {"key": "push_record", "label": "推送记录", "checks": ["signal_type", "current_mcap", "ath_mcap", "age_sec", "pool_mcap_ratio"]},
+    {"key": "chip_distribution", "label": "筹码分布", "checks": ["Top10/20/50/100集中度", "Top100吸筹/减持delta", "净流入"]},
+    {"key": "price_structure_5m", "label": "5m价格结构", "checks": ["前4h前置结构", "pre-pump", "post回撤", "WR20/WR50历史分组"]},
+    {"key": "micro_structure_1m", "label": "1m微结构", "checks": ["推送前后5min", "30min确认", "量比", "涨跌方向"]},
+    {"key": "volume_liquidity", "label": "量能/流动性", "checks": ["breakout_volume", "breakout_volume_ratio", "pool_liquidity", "pool/mcap"]},
+    {"key": "risk_factors", "label": "风险因子", "checks": ["追高", "放量下跌", "高集中度", "低流动性", "极端回撤"]},
 )
 
 # Cached strategy docs with mtime-based invalidation
@@ -48,6 +58,7 @@ REQUIRED_SCHEMA = {
     "micro_1m": {},
     "forecast": {},
     "purchase_value": {"label": "", "score_pct": 0, "basis": ""},
+    "analysis_scope": list(ANALYSIS_SCOPE),
     "strategy_observations": [],
     "risk_factors": [],
     "watch_windows": [],
@@ -346,6 +357,7 @@ def build_cached_system_prompt() -> str:
         "The local_fingerprints are pre-computed hints — validate them against raw K-line data, "
         "correct any errors, and incorporate them into your analysis. "
         "Use the CA methodology document as the decision workflow and the 5m fingerprint encyclopedia as the pattern reference. "
+        "Before scoring, explicitly cover the supplied analysis_scope dimensions: push record, chip distribution, 5m price structure, 1m micro structure, volume/liquidity, and observable risk factors. "
         "Return observable purchase-value and K-line analysis only. "
         "Do not give trading advice, order instructions, position sizing, stop-loss, or take-profit recommendations. "
         "For purchase_value.label use one of: 高价值观察, 中等价值观察, 低价值/回避, 待观察. "
@@ -450,6 +462,7 @@ def normalize_prediction(data: dict[str, Any], *, model: str, elapsed_ms: int) -
             "score_pct": max(0.0, min(100.0, round(_to_float(purchase.get("score_pct")), 1))),
             "basis": _safe_text(purchase.get("basis"), 180),
         },
+        "analysis_scope": list(ANALYSIS_SCOPE),
         "strategy_observations": _safe_list(data.get("strategy_observations"), 5, 140),
         "risk_factors": _safe_list(data.get("risk_factors"), 5, 140),
         "watch_windows": _safe_list(data.get("watch_windows"), 4, 120),
@@ -470,6 +483,7 @@ def build_prompt_payload(
     payload: dict[str, Any] = {
         "task": "bottom_abnormal_ca_kline_prediction",
         "schema": REQUIRED_SCHEMA,
+        "analysis_scope": list(ANALYSIS_SCOPE),
         "address": address,
         "signal": signal,
         "signal_ts": signal_ts,
@@ -573,7 +587,7 @@ def analyze_deepseek_kline_prediction(
 def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[str, Any]:
     """Build a minimal prediction from local fingerprints when DeepSeek is unavailable."""
     if not local_fp.get("ready"):
-        return {"ready": False, "status": status, "source_docs": list(SOURCE_DOCS)}
+        return {"ready": False, "status": status, "analysis_scope": list(ANALYSIS_SCOPE), "source_docs": list(SOURCE_DOCS)}
 
     pos = local_fp.get("position_pct", 50)
     has_cap = local_fp.get("has_capitulation", False)
@@ -649,6 +663,7 @@ def _fallback_from_fingerprints(local_fp: dict[str, Any], status: str) -> dict[s
             ["capitulation_without_recovery"] if has_cap and chg5 < -5 else []
         ),
         "watch_windows": ["5min", "30min"],
+        "analysis_scope": list(ANALYSIS_SCOPE),
         "source_docs": list(SOURCE_DOCS),
         "local_fingerprints": local_fp,
     }

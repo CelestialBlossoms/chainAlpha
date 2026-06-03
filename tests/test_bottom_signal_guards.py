@@ -138,7 +138,7 @@ class BottomSignalGuardTests(unittest.TestCase):
         self.assertEqual(saved[address]["last_local_followup_key"], "30m")
         self.assertEqual(len(broadcasts), 1)
 
-    def test_quiet_runup_is_local_only_for_deepseek_status(self) -> None:
+    def test_quiet_runup_is_the_only_deepseek_eligible_bottom_signal(self) -> None:
         extra = bottom_monitor.build_bottom_signal_extra(
             {
                 "address": "So11111111111111111111111111111111111111112",
@@ -153,7 +153,10 @@ class BottomSignalGuardTests(unittest.TestCase):
 
         self.assertEqual(extra["signal_type"], "quiet_runup")
         self.assertEqual(extra["deepseek_async_status"], "")
-        self.assertFalse(bottom_monitor.deepseek_signal_eligible("quiet_runup"))
+        self.assertTrue(bottom_monitor.deepseek_signal_eligible("quiet_runup"))
+        self.assertFalse(bottom_monitor.deepseek_signal_eligible("abnormal"))
+        self.assertFalse(bottom_monitor.deepseek_signal_eligible("new_revival"))
+        self.assertFalse(bottom_monitor.deepseek_signal_eligible("watchlist_abnormal"))
 
     def test_bottom_abnormal_push_uses_local_hardcoded_analysis_without_deepseek_pending(self) -> None:
         token = {
@@ -183,7 +186,7 @@ class BottomSignalGuardTests(unittest.TestCase):
             signal_text="test",
         )
 
-        self.assertTrue(bottom_monitor.deepseek_signal_eligible("new_revival"))
+        self.assertFalse(bottom_monitor.deepseek_signal_eligible("new_revival"))
         self.assertEqual(extra["deepseek_async_status"], "")
         self.assertNotIn("deepseek_kline_prediction", attached)
         self.assertFalse(scheduled)

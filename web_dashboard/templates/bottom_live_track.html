@@ -1361,7 +1361,7 @@
           <h3>本地后续跟踪</h3>
           <div class="detail-content">
             <div class="drawer-grid">${cards}</div>
-            <p class="muted">T+5 使用 09 的推送后 1m 量价确认；T+30 使用 09/10 的转正、回撤和触底后量比；T+4h 使用 08/10 的 WR20/WR50、峰值和回撤结构。</p>
+            <p class="muted">T+5 使用推送后 1m 量价确认；T+30 使用转正、回撤和触底后量比；T+4h 使用 WR20/WR50、峰值和回撤结构。</p>
           </div>
         </section>`;
     }
@@ -1398,6 +1398,30 @@
         ...(Array.isArray(plan.risk_points) ? plan.risk_points : []),
         item.remove_reason || "",
       ].filter(Boolean);
+      const deepseekConclusion = [
+        ds.ready ? (ds.summary || "") : "",
+        dsPurchase.basis || plan.purchase_value_basis || "",
+      ].filter(Boolean);
+      const deepseekObservations = [
+        ...(Array.isArray(ds.strategy_observations) ? ds.strategy_observations : []),
+        ...(Array.isArray(plan.deepseek_strategy_observations) ? plan.deepseek_strategy_observations : []),
+      ].filter(Boolean);
+      const deepseekRisks = [
+        ...(Array.isArray(ds.risk_factors) ? ds.risk_factors : []),
+      ].filter(Boolean);
+      const analysisScope = [
+        ...(Array.isArray(ds.analysis_scope) ? ds.analysis_scope : []),
+        ...(Array.isArray(pred.analysis_scope) ? pred.analysis_scope : []),
+        ...(Array.isArray(plan.analysis_scope) ? plan.analysis_scope : []),
+      ];
+      const scopeTags = [];
+      const seenScopes = new Set();
+      analysisScope.forEach(scope => {
+        const label = scope && (scope.label || scope.key);
+        if (!label || seenScopes.has(label)) return;
+        seenScopes.add(label);
+        scopeTags.push(label);
+      });
       const walletTags = [
         item.holders ? `Holders ${safeNum(item.holders)}` : "",
         item.pool_liquidity ? `流动性 ${formatCap(item.pool_liquidity)}` : "",
@@ -1416,7 +1440,7 @@
           ${drawerMetric("回撤", pInfo ? `-${pInfo.entryDrawdownPct.toFixed(1)}%` : "-")}
         </div>
         <section class="detail-panel">
-          <h3>DeepSeek 统一分析</h3>
+          <h3>DeepSeek 分析结论</h3>
           <div class="detail-content">
             <div class="drawer-grid">
               ${drawerMetric("来源状态", htmlEscape(source.key === "deepseek" ? "DeepSeek API" : (prediction(item).analysis_source_status || "fallback")))}
@@ -1445,8 +1469,10 @@
               ${drawerMetric("未来30m", htmlEscape(ds.ready ? (dsForecast.next_30m || "-") : "-"))}
               ${drawerMetric("未来4h", htmlEscape(ds.ready ? (dsForecast.next_4h || "-") : "-"))}
             </div>
-            ${(dsPurchase.basis || plan.purchase_value_basis) ? `<p class="muted">${htmlEscape(dsPurchase.basis || plan.purchase_value_basis)}</p>` : ""}
-            ${ds.ready ? `<p class="muted">${htmlEscape(ds.summary || "")}</p>` : ""}
+            ${deepseekConclusion.length ? `<p class="muted">${htmlEscape(deepseekConclusion.join("；"))}</p>` : ""}
+            ${deepseekObservations.length ? `<p class="muted">观察依据：${htmlEscape(deepseekObservations.slice(0, 3).join("；"))}</p>` : ""}
+            ${deepseekRisks.length ? `<p class="muted">可观察风险：${htmlEscape(deepseekRisks.slice(0, 3).join("；"))}</p>` : ""}
+            ${scopeTags.length ? `<div class="hit-tags">${scopeTags.map(x => `<span class="tag">${htmlEscape(x)}</span>`).join("")}</div>` : ""}
             ${source.key === "pending" ? `<p class="muted">基础信号已先推送，DeepSeek 正在后台补充分析。</p>` : ""}
             ${source.key !== "deepseek" && source.key !== "pending" ? `<p class="muted">DeepSeek API 未返回可用结果，当前为硬编码兜底分析。</p>` : ""}
           </div>

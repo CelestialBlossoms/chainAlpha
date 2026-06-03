@@ -53,6 +53,20 @@ from bottom_detection.top100_push_record_store import (
 
 
 CHAIN = "sol"
+ONCHAIN_GUIDE_SOURCE_DOCS = [
+    "onchain_trading_guides/00-交易策略速查.md",
+    "onchain_trading_guides/01-底部异动检测框架.md",
+    "onchain_trading_guides/02-K线指纹百科全书.md",
+    "onchain_trading_guides/03-CA分析方法论.md",
+]
+ONCHAIN_GUIDE_ANALYSIS_SCOPE = [
+    {"key": "push_record", "label": "推送记录", "checks": ["signal_type", "current_mcap", "ath_mcap", "age_sec", "pool_mcap_ratio"]},
+    {"key": "chip_distribution", "label": "筹码分布", "checks": ["Top10/20/50/100集中度", "Top100吸筹/减持delta", "净流入"]},
+    {"key": "price_structure_5m", "label": "5m价格结构", "checks": ["前4h前置结构", "pre-pump", "post回撤", "WR20/WR50历史分组"]},
+    {"key": "micro_structure_1m", "label": "1m微结构", "checks": ["推送前后5min", "30min确认", "量比", "涨跌方向"]},
+    {"key": "volume_liquidity", "label": "量能/流动性", "checks": ["breakout_volume", "breakout_volume_ratio", "pool_liquidity", "pool/mcap"]},
+    {"key": "risk_factors", "label": "风险因子", "checks": ["追高", "放量下跌", "高集中度", "低流动性", "极端回撤"]},
+]
 _BOTTOM_TOP100_SNAPSHOT_COMMENTS_READY = False
 _BOTTOM_TOP100_TRADER_COLUMNS_READY = False
 TREND_INTERVALS = tuple(
@@ -1695,7 +1709,7 @@ def classify_1m_micro_strategy(
     current_mcap: float,
 ) -> dict[str, Any]:
     """
-    Classify the 1m micro setup using the 09 bar-level strategy:
+    Classify the 1m micro setup using the onchain guide workflow:
     recent 5m average volume / prior 30m average volume.
     """
     valid = [
@@ -1741,20 +1755,20 @@ def classify_1m_micro_strategy(
     doc_wr20 = 0.0
     doc_med_peak = "-"
     decision = "观察"
-    note = "09 bar策略：推送后5分钟量价用于短线确认。"
+    note = "指南流程：推送后5分钟量价用于短线确认。"
     if signal_type == "new_revival":
         if volume_label == "天量":
             score_delta = -18
             doc_wr20 = 40
             doc_med_peak = "+13.8%"
             decision = "回避/仅观察"
-            note = "推送后5分钟天量>4x，09策略标记为接盘风险。"
+            note = "推送后5分钟天量>4x，指南标记为接盘风险。"
         elif direction == "跌为主" and volume_label == "平量":
             score_delta = 12
             doc_wr20 = 83
             doc_med_peak = "+66.8%"
             decision = "高价值确认"
-            note = "跌为主+平量是09策略最佳1m确认：恐慌下跌但量能正常。"
+            note = "跌为主+平量是指南最佳1m确认：恐慌下跌但量能正常。"
         elif direction == "跌为主" and volume_label == "缩量":
             score_delta = 8
             doc_wr20 = 78
@@ -1766,7 +1780,7 @@ def classify_1m_micro_strategy(
             doc_wr20 = 77
             doc_med_peak = "+59.1%"
             decision = "中高价值确认"
-            note = "震荡缩量在09策略中后4h稳健上涨概率高。"
+            note = "震荡缩量在指南速查中属于后续稳健上涨概率较高的微结构。"
         elif direction == "涨跌互现" and volume_label == "平量":
             score_delta = 5
             doc_wr20 = 70
@@ -1782,13 +1796,13 @@ def classify_1m_micro_strategy(
         elif volume_label == "放量":
             score_delta = -5
             decision = "放量观察"
-            note = "09策略将2-4x放量列为异常量，需等5m/后4h确认。"
+            note = "指南将2-4x放量列为异常量，需等5m/后4h确认。"
     elif signal_type == "abnormal":
         if direction == "跌为主" and volume_label in {"平量", "放量"}:
             score_delta = -14
             doc_wr20 = 17
             decision = "低价值/回避"
-            note = "09策略红灯：abnormal 后5min跌+正常量，WR20约17%。"
+            note = "指南红灯：abnormal 后5min跌+正常量，WR20约17%。"
         elif volume_label == "天量":
             score_delta = -16
             decision = "低价值/回避"
@@ -1800,7 +1814,11 @@ def classify_1m_micro_strategy(
 
     return {
         "ready": True,
-        "source_doc": "onchain_trading_guides/09-bar-level-strategy.md",
+        "source_doc": "onchain_trading_guides/00-交易策略速查.md",
+        "source_docs": [
+            "onchain_trading_guides/00-交易策略速查.md",
+            "onchain_trading_guides/03-CA分析方法论.md",
+        ],
         "resolution": "1m",
         "count": len(valid),
         "pre_minutes": len(pre),
@@ -1916,15 +1934,13 @@ def build_deepseek_kline_signal_context(
         "deepseek_kline_window": window_meta,
         "local_5m_journey": journey if isinstance(journey, dict) else {},
         "local_1m_micro": micro_1m,
-        "source_docs_expected": [
-            "onchain_trading_guides/03-CA分析方法论.md",
-            "onchain_trading_guides/02-K线指纹百科全书.md",
-        ],
+        "analysis_scope_expected": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "source_docs_expected": ONCHAIN_GUIDE_SOURCE_DOCS,
     }
 
 
 def deepseek_signal_eligible(signal_type: str) -> bool:
-    return str(signal_type or "") in {"new_revival", "abnormal", "watchlist_abnormal"}
+    return str(signal_type or "") == "quiet_runup"
 
 
 def maybe_attach_deepseek_kline_prediction(
@@ -3672,7 +3688,10 @@ def analyze_local_followup_window(
             "verdict": verdict,
             "label": label,
             "volume_ratio": round(vol_ratio, 2),
-            "source_docs": ["onchain_trading_guides/09-bar-level-strategy.md"],
+            "source_docs": [
+                "onchain_trading_guides/00-交易策略速查.md",
+                "onchain_trading_guides/03-CA分析方法论.md",
+            ],
         }
 
     if window_key == "30m":
@@ -3701,8 +3720,9 @@ def analyze_local_followup_window(
             "label": label,
             "drawdown_bucket": bucket,
             "source_docs": [
-                "onchain_trading_guides/09-bar-level-strategy.md",
-                "onchain_trading_guides/10-drawdown-recovery-fingerprints.md",
+                "onchain_trading_guides/00-交易策略速查.md",
+                "onchain_trading_guides/02-K线指纹百科全书.md",
+                "onchain_trading_guides/03-CA分析方法论.md",
             ],
         }
 
@@ -3734,8 +3754,9 @@ def analyze_local_followup_window(
         "peak_mcap": entry_mcap * (1 + peak / 100) if entry_mcap > 0 else 0.0,
         "trough_mcap": entry_mcap * (1 + trough / 100) if entry_mcap > 0 else 0.0,
         "source_docs": [
+            "onchain_trading_guides/00-交易策略速查.md",
             "onchain_trading_guides/02-K线指纹百科全书.md",
-            "onchain_trading_guides/10-drawdown-recovery-fingerprints.md",
+            "onchain_trading_guides/03-CA分析方法论.md",
         ],
     }
 
@@ -4317,7 +4338,7 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
         "entry_window": "文档无该组合主策略",
         "exit_window": "仅观察",
         "priority": "低", "buy_value": "回避/仅观察",
-        "timing_note": "09-bar-level-strategy.md 未将该组合列为有效主策略。",
+        "timing_note": "onchain_trading_guides 当前指南未将该组合列为有效主策略。",
         "kline_forecast": "缺少v3统计映射，仅保留观察。",
         "peak_window": peak_window,
     }
@@ -4333,7 +4354,7 @@ def _historical_bottom_bucket(signal_type: str, mcap: float) -> dict[str, Any]:
 
 
 def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[str] | None = None) -> dict[str, Any]:
-    """Build timing and profit context from onchain_trading_guides/09-bar-level-strategy.md."""
+    """Build timing and profit context from the onchain_trading_guides workflow."""
     signal_mcap = to_float(extra.get("current_mcap") or extra.get("entry_mcap"))
     signal_price = to_float(extra.get("price") or extra.get("entry_price"))
     signal_ts = to_int(extra.get("event_ts") or extra.get("signal_ts") or extra.get("pushed_at") or now_ts())
@@ -4353,13 +4374,15 @@ def compute_historical_strategy_plan(extra: dict[str, Any], risk_factors: list[s
 
     risk_points = list(risk_factors or [])
     risk_points.extend([
-        "09策略显示峰值中位时间较短：new_revival约90min，abnormal约150min",
+        "指南统计显示峰值中位时间较短：new_revival约90min，abnormal约150min",
         "固定时间观察历史收益弱，后续判断必须结合涨幅到达率和回撤速度",
         "若推送时已大幅拉升或池/市值过低，WR会被明显折损",
     ])
 
     return {
-        "source_doc": "onchain_trading_guides/09-bar-level-strategy.md",
+        "source_doc": " + ".join(ONCHAIN_GUIDE_SOURCE_DOCS),
+        "source_docs": ONCHAIN_GUIDE_SOURCE_DOCS,
+        "analysis_scope": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
         "winner_definition": "观察后任意时间价格涨到>=20%",
         "signal_bucket": _mcap_bucket(signal_mcap),
         "buy_value_label": bucket["buy_value"],
@@ -4427,7 +4450,7 @@ def is_deepseek_api_prediction(prediction: dict[str, Any] | None) -> bool:
 def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[str, Any]:
     """
     Estimate the probability that a bottom-abnormal CA reaches the historical
-    WR20 threshold from onchain_trading_guides/09-bar-level-strategy.md.
+    WR20 threshold from the onchain_trading_guides workflow.
     This is a data-derived observation score, not trading advice.
     """
     extra = dict(extra or {})
@@ -4439,8 +4462,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
     score = float(bucket["wr20"])
     sample_count = int(bucket["samples"])
     evidence = [
-        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 09策略 WR20 {bucket['wr20']:.1f}%",
-        f"09策略中位峰值 {bucket['avg_peak']}，峰值窗口 {bucket.get('peak_window') or '-'}",
+        f"{signal_type or 'unknown'} × {_mcap_bucket(mcap)} 指南基线 WR20 {bucket['wr20']:.1f}%",
+        f"指南中位峰值 {bucket['avg_peak']}，峰值窗口 {bucket.get('peak_window') or '-'}",
     ]
     risk_factors: list[str] = []
 
@@ -4477,13 +4500,13 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
             risk_factors.append("当前市值<30K，深度不足")
         elif signal_type == "new_revival" and mcap < 300_000:
             score += 3
-            evidence.append("new_revival<300K 在09策略中WR20均>=71%")
+            evidence.append("new_revival<300K 在指南基线中WR20均>=71%")
         elif signal_type == "abnormal" and 100_000 <= mcap < 300_000:
             score += 3
-            evidence.append("abnormal 100K-300K 是09策略中相对较优档")
+            evidence.append("abnormal 100K-300K 是指南基线中相对较优档")
         elif signal_type == "abnormal" and mcap < 50_000:
             score -= 6
-            risk_factors.append("09策略显示 abnormal <50K WR20仅50%，属于弱档")
+            risk_factors.append("指南基线显示 abnormal <50K WR20仅50%，属于弱档")
         elif mcap >= 300_000:
             score -= 8
             risk_factors.append("市值>=300K，弹性和回吐风险需要更严格过滤")
@@ -4547,9 +4570,9 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         label_1m = str(micro_1m.get("label") or "")
         doc_wr20_1m = to_float(micro_1m.get("doc_wr20_pct"))
         if doc_wr20_1m > 0:
-            evidence.append(f"09 1m确认: {label_1m}，WR20 {doc_wr20_1m:.0f}%")
+            evidence.append(f"指南1m确认: {label_1m}，WR20 {doc_wr20_1m:.0f}%")
         else:
-            evidence.append(f"09 1m确认: {label_1m}")
+            evidence.append(f"指南1m确认: {label_1m}")
         if micro_1m.get("note") and micro_delta < 0:
             risk_factors.append(str(micro_1m.get("note")))
         elif micro_1m.get("note"):
@@ -4591,7 +4614,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         if score_delta:
             score += score_delta
         evidence.append(
-            f"08 K线结构: {structure}，文档WR20 {doc_wr20:.0f}%"
+            f"指南5m结构: {structure}，文档WR20 {doc_wr20:.0f}%"
             f"，MedPeak {journey.get('doc_med_peak') or '-'}"
         )
         if journey.get("volume_label"):
@@ -4665,6 +4688,8 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "baseline_sample_count": sample_count,
         "overall_sample_count": 315,
         "winner_definition": "观察后任意时间价格涨到>=20%",
+        "analysis_scope": ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "source_docs": ONCHAIN_GUIDE_SOURCE_DOCS,
         "label": label,
         "buy_value_label": label,
         "confidence": confidence,
@@ -4684,7 +4709,7 @@ def compute_historical_winrate_prediction(extra: dict[str, Any] | None) -> dict[
         "kline_1m_micro": micro_1m,
         "deepseek_kline_prediction": deepseek_kline,
         "strategy_plan": strategy_plan,
-        "source_doc": "hardcoded_fallback + onchain_trading_guides/03-CA分析方法论.md + onchain_trading_guides/02-K线指纹百科全书.md",
+        "source_doc": "hardcoded_fallback + " + " + ".join(ONCHAIN_GUIDE_SOURCE_DOCS),
     }
 
 
@@ -4716,7 +4741,7 @@ def enrich_signal_strategy_extra(extra: dict[str, Any] | None) -> dict[str, Any]
 
 
 def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any]) -> dict[str, Any]:
-    """Build winrate_prediction from DeepSeek while preserving local 08/09 guide fields."""
+    """Build winrate_prediction from DeepSeek while preserving local guide fields."""
     ds_bias = str(ds_pred.get("bias") or "unknown")
     ds_confidence = str(ds_pred.get("confidence") or "low")
     ds_summary = str(ds_pred.get("summary") or "")
@@ -4772,7 +4797,7 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         evidence.append(f"1m微结构: {micro_1m.get('label')}")
     if local_journey.get("ready"):
         evidence.append(
-            f"08 K线结构: {local_journey.get('pre_structure') or '-'}，"
+            f"指南5m结构: {local_journey.get('pre_structure') or '-'}，"
             f"文档WR20 {to_float(local_journey.get('doc_wr20_pct')):.0f}%，"
             f"MedPeak {local_journey.get('doc_med_peak') or '-'}"
         )
@@ -4783,7 +4808,7 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
             )
     if local_micro_1m.get("ready"):
         evidence.append(
-            f"09 1m确认: {local_micro_1m.get('label') or '-'}，"
+            f"指南1m确认: {local_micro_1m.get('label') or '-'}，"
             f"涨跌 {to_float(local_micro_1m.get('change_pct')):+.1f}%，"
             f"量比 {to_float(local_micro_1m.get('volume_ratio')):.2f}x"
         )
@@ -4825,6 +4850,8 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "baseline_sample_count": int(bucket["samples"]),
         "overall_sample_count": 315,
         "winner_definition": "观察后任意时间价格涨到>=20%",
+        "analysis_scope": ds_pred.get("analysis_scope") if isinstance(ds_pred.get("analysis_scope"), list) else ONCHAIN_GUIDE_ANALYSIS_SCOPE,
+        "source_docs": ds_pred.get("source_docs") if isinstance(ds_pred.get("source_docs"), list) else ONCHAIN_GUIDE_SOURCE_DOCS,
         "label": label,
         "buy_value_label": label,
         "confidence": ds_confidence,
@@ -4858,7 +4885,7 @@ def _build_winrate_from_deepseek(extra: dict[str, Any], ds_pred: dict[str, Any])
         "kline_journey": local_journey or pattern_5m,
         "kline_1m_micro": local_micro_1m or micro_1m,
         "strategy_plan": strategy_plan,
-        "source_doc": "deepseek_api + onchain_trading_guides/02-K线指纹百科全书.md + onchain_trading_guides/09-bar-level-strategy.md",
+        "source_doc": "deepseek_api + " + " + ".join(ONCHAIN_GUIDE_SOURCE_DOCS),
     }
 
 
@@ -6227,18 +6254,36 @@ def handle_token(scan_id: str, token: dict[str, Any], notify: bool, frontend_upd
                 top_loss_traders,
             )
             quiet_runup = {**quiet_runup, "snapshot_id": runup_snapshot_id}
+            if BOTTOM_DEEPSEEK_PUSH_LEFT_ENABLED or not BOTTOM_DEEPSEEK_ASYNC_ENABLED:
+                quiet_runup = maybe_attach_deepseek_kline_prediction(
+                    token=token,
+                    summary=summary,
+                    analysis=quiet_runup,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                )
             runup_extra = build_bottom_signal_extra(token, summary, quiet_runup, runup_baseline)
             runup_text = quiet_breakout_signal_text(token, quiet_runup)
-            # quiet_runup is frontend-only and uses local followup rules, not DeepSeek.
-            publish_frontend_signal_update(
+            published = publish_frontend_signal_update(
                 runup_text,
                 runup_extra,
                 status="quiet_runup_frontend",
                 snapshot_id=runup_snapshot_id,
             )
+            if published:
+                schedule_deepseek_post_push_analysis(
+                    token=token,
+                    summary=summary,
+                    analysis=quiet_runup,
+                    candles_5m=candles_5m,
+                    candles_1m=candles_1m,
+                    base_extra=runup_extra,
+                    signal_text=runup_text,
+                    tg_message_id=None,
+                )
             print(
                 f"{token_label(token)} quiet_runup {quiet_runup['price_change_pct']:.1f}% "
-                f"(frontend only, local rules) "
+                f"(frontend first, DeepSeek quiet_runup only) "
                 f"after quiet range={quiet_runup['quiet_range_pct']:.1f}% "
                 f"vol_ratio={quiet_runup['breakout_volume_ratio']:.1f}x"
             )
