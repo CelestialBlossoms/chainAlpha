@@ -392,15 +392,14 @@
     .track-table tr:hover td { background: rgba(30, 41, 59, 0.45) !important; color: #f8fafc; }
     .track-table tr.removed td { opacity: .5; }
     .track-table tr.pullback-zone td { box-shadow: inset 3px 0 0 var(--red); }
-    .track-table th:nth-child(1), .track-table td:nth-child(1) { width: 20%; }
+    .track-table th:nth-child(1), .track-table td:nth-child(1) { width: 23%; }
     .track-table th:nth-child(2), .track-table td:nth-child(2) { width: 12%; }
-    .track-table th:nth-child(3), .track-table td:nth-child(3) { width: 12%; }
+    .track-table th:nth-child(3), .track-table td:nth-child(3) { width: 15%; }
     .track-table th:nth-child(4), .track-table td:nth-child(4) { width: 12%; }
-    .track-table th:nth-child(5), .track-table td:nth-child(5) { width: 11%; }
-    .track-table th:nth-child(6), .track-table td:nth-child(6) { width: 13%; }
-    .track-table th:nth-child(7), .track-table td:nth-child(7) { width: 10%; }
-    .track-table th:nth-child(8), .track-table td:nth-child(8) { width: 5%; }
-    .track-table th:nth-child(9), .track-table td:nth-child(9) { width: 5%; }
+    .track-table th:nth-child(5), .track-table td:nth-child(5) { width: 15%; }
+    .track-table th:nth-child(6), .track-table td:nth-child(6) { width: 11%; }
+    .track-table th:nth-child(7), .track-table td:nth-child(7) { width: 6%; }
+    .track-table th:nth-child(8), .track-table td:nth-child(8) { width: 6%; }
 
     .token-cell { display: grid; gap: 5px; min-width: 0; }
     .token-line {
@@ -719,7 +718,6 @@
             <thead>
               <tr>
                 <th>Token / CA</th>
-                <th class="sortable" data-sort="winrate">购买价值</th>
                 <th class="sortable" data-sort="pnl">盈亏</th>
                 <th class="sortable" data-sort="current_mcap">当前市值</th>
                 <th class="sortable" data-sort="liquidity">流动性</th>
@@ -1258,7 +1256,6 @@
                 <div class="token-addr">${htmlEscape(item.address || "")}</div>
               </div>
             </td>
-            <td>${renderValueCell(item)}</td>
             <td><div class="num-strong ${pnlClass(pnl)}">${formatPnl(pnl)}</div><div class="muted small">峰值 ${formatPnl(peakPnl)}</div></td>
             <td><div class="cap-main">${formatCap(currentMcap)}</div><div class="muted small">${formatCap(entryMcap)} -> ${formatCap(currentMcap)}</div><div class="muted small">峰值 ${formatCap(peakMcap)} / ${htmlEscape(peakTimingText(item))}</div></td>
             <td><div class="cap-main">${formatCap(item.pool_liquidity)}</div><div class="muted small">Holders ${safeNum(item.holders) || "-"}</div></td>
