@@ -69,6 +69,8 @@ LIVE_TRACK_REFRESH_INTERVAL_SEC = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_REFRESH_S
 LIVE_TRACK_PUBSUB_CHANNEL = os.getenv("DEEP_ALPHA_LIVE_TRACK_PUBSUB", "deep_alpha:live_track:updates")
 LIVE_TRACK_MAX_WORKERS = int(os.getenv("DEEP_ALPHA_LIVE_TRACK_MAX_WORKERS", "4"))
 ALPHA_DELETED_TODAY_TTL_SEC = int(os.getenv("DEEP_ALPHA_DELETED_TODAY_TTL_SEC", str(30 * 60)))
+ALPHA_FAILURE_RECOVERY_GAIN_PCT = float(os.getenv("DEEP_ALPHA_FAILURE_RECOVERY_GAIN_PCT", "20"))
+ALPHA_FAILURE_MIN_AGE_SEC = int(os.getenv("DEEP_ALPHA_FAILURE_MIN_AGE_SEC", "60"))
 SMART_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_SMART_SIGNAL_REDIS_PREFIX", "deep_alpha:smart_money_signal")
 SMART_SIGNAL_MCAP_MIN = float(os.getenv("DEEP_ALPHA_SMART_SIGNAL_MCAP_MIN", "10000"))
 MARKET_SIGNAL_REDIS_PREFIX = os.getenv("DEEP_ALPHA_MARKET_SIGNAL_REDIS_PREFIX", "deep_alpha:market_signal")
@@ -2268,6 +2270,70 @@ def _alpha_deleted_today_addresses() -> set[str]:
     return addresses
 
 
+def _alpha_deleted_today_forget(address: str) -> None:
+    address = str(address or "").strip()
+    if not address:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_alpha_deleted_today_redis_key(address))
+        client.srem(_alpha_deleted_today_index_key(), address)
+    except Exception:
+        pass
+
+
+def _alpha_live_track_has_recovered(item: dict[str, Any]) -> bool:
+    peak_gain = _safe_float(item.get("peak_pnl_pct"))
+    current_gain = _safe_float(item.get("pnl_pct"))
+    if peak_gain <= 0 or current_gain <= 0:
+        entry_mcap = _safe_float(item.get("entry_mcap"))
+        current_mcap = _safe_float(item.get("current_mcap"))
+        peak_mcap = _safe_float(item.get("peak_mcap"))
+        if entry_mcap > 0:
+            if current_gain <= 0 and current_mcap > 0:
+                current_gain = (current_mcap - entry_mcap) / entry_mcap * 100
+            if peak_gain <= 0 and peak_mcap > 0:
+                peak_gain = (peak_mcap - entry_mcap) / entry_mcap * 100
+    return max(peak_gain, current_gain) >= ALPHA_FAILURE_RECOVERY_GAIN_PCT
+
+
+def _alpha_live_track_failure_checked_item(item: dict[str, Any]) -> dict[str, Any]:
+    item = _recompute_live_track_mcap_metrics(dict(item))
+    status = str(item.get("status") or "")
+    pushed_at = _safe_int(item.get("pushed_at") or item.get("smart_signal_trigger_at") or item.get("market_signal_trigger_at"))
+    now_ts = int(time.time())
+    age_seconds = max(0, now_ts - pushed_at) if pushed_at > 0 else 0
+    pnl_pct = _safe_float(item.get("pnl_pct"))
+    peak_pnl_pct = _safe_float(item.get("peak_pnl_pct"))
+    peak_at = _safe_int(item.get("peak_mcap_at")) or pushed_at
+    recovered = _alpha_live_track_has_recovered(item)
+
+    item["failure_bucket"] = False
+    item["failure_reason"] = ""
+    item["failure_recovery_gain_pct"] = ALPHA_FAILURE_RECOVERY_GAIN_PCT
+    item["failure_age_sec"] = age_seconds
+
+    if recovered:
+        if item.get("address"):
+            _alpha_deleted_today_forget(str(item.get("address")))
+        return item
+
+    if status == "removed" or item.get("removed_archive"):
+        item["failure_bucket"] = True
+        item["failure_reason"] = item.get("remove_reason") or "removed before recovery"
+        return item
+
+    if age_seconds >= ALPHA_FAILURE_MIN_AGE_SEC and peak_pnl_pct < ALPHA_FAILURE_RECOVERY_GAIN_PCT and pnl_pct < 0:
+        item["failure_bucket"] = True
+        if peak_at <= pushed_at + 60:
+            item["failure_reason"] = f"push-time peak; no +{ALPHA_FAILURE_RECOVERY_GAIN_PCT:g}% recovery"
+        else:
+            item["failure_reason"] = f"below +{ALPHA_FAILURE_RECOVERY_GAIN_PCT:g}% and now negative"
+    return item
+
+
 def _smart_signal_health_checked_item(item: dict[str, Any]) -> dict[str, Any]:
     address = str(item.get("address") or "")
     current_mcap = _safe_float(item.get("current_mcap"))
@@ -2473,9 +2539,12 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
     deleted_addresses = _alpha_deleted_today_addresses()
     for item in _load_smart_money_signal_items("sol"):
         address = str(item.get("address") or "")
-        if not address or address in deleted_addresses:
+        if not address:
             continue
         checked_item = _smart_signal_health_checked_item(item)
+        checked_item = _alpha_live_track_failure_checked_item(checked_item)
+        if address in deleted_addresses and not _alpha_live_track_has_recovered(checked_item):
+            continue
         if checked_item.get("status") == "removed":
             by_address[address] = checked_item
             deleted_addresses.add(address)
@@ -2483,9 +2552,12 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
         by_address[address] = checked_item
     for item in _load_market_signal_items("sol"):
         address = str(item.get("address") or "")
-        if not address or address in deleted_addresses or address in by_address:
+        if not address or address in by_address:
             continue
-        by_address[address] = item
+        checked_item = _alpha_live_track_failure_checked_item(item)
+        if address in deleted_addresses and not _alpha_live_track_has_recovered(checked_item):
+            continue
+        by_address[address] = checked_item
     signal_addresses = set(by_address)
     for item in live_items:
         if not isinstance(item, dict):
@@ -2515,7 +2587,7 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 smart_value = smart_item.get(field)
                 if smart_value not in (None, "", [], {}) and not merged.get(field):
                     merged[field] = smart_value
-            by_address[address] = _recompute_live_track_mcap_metrics(merged)
+            by_address[address] = _alpha_live_track_failure_checked_item(merged)
         elif smart_item and smart_item.get("market_signal"):
             merged = {
                 **item,
@@ -2533,9 +2605,14 @@ def _merge_live_track_smart_signals(live_items: list[dict[str, Any]]) -> list[di
                 market_value = smart_item.get(field)
                 if market_value not in (None, "", [], {}) and not merged.get(field):
                     merged[field] = market_value
-            by_address[address] = _recompute_live_track_mcap_metrics(merged)
+            by_address[address] = _alpha_live_track_failure_checked_item(merged)
         else:
-            by_address[address] = _recompute_live_track_mcap_metrics(item)
+            by_address[address] = _alpha_live_track_failure_checked_item(item)
+    for item in _alpha_deleted_today_list():
+        address = str(item.get("address") or "")
+        if not address or address in by_address:
+            continue
+        by_address[address] = _alpha_live_track_failure_checked_item(item)
     return _sort_live_track_by_push_time(list(by_address.values()))
 
 

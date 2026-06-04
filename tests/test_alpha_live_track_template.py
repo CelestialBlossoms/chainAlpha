@@ -11,4 +11,7 @@ def test_alpha_live_track_renders_token_name_and_peak_elapsed():
     assert "formatPeakElapsed(peakAt - pushedAt)" in html
     assert "const tokenName = String(item.name || \"\").trim();" in html
     assert "showTokenName" in html
-    assert "用时 ${htmlEscape(peakElapsedText(item))}" in html
+    assert 'id="failed-track-rows"' in html
+    assert "function isFailedItem(item)" in html
+    assert "failedRowsEl.appendChild(row);" in html
+    assert "htmlEscape(peakElapsedText(item))" in html

@@ -58,6 +58,10 @@
     .track-table tr:hover { background: #1f293740; }
     .track-table tr.removed { opacity: 0.45; }
     .track-table tr.removed td { text-decoration: line-through; text-decoration-color: #ef444480; }
+    .track-table tr.failed-ca {
+      box-shadow: inset 3px 0 0 #f97316;
+      background: #7c2d1220;
+    }
     .track-table tr.recent-push {
       box-shadow: inset 3px 0 0 #ef4444, inset -3px 0 0 #ef4444;
       background: #7f1d1d24;
@@ -143,6 +147,7 @@
     .status-badge.tracking { background: #064e3b; color: #34d399; }
     .status-badge.removed { background: #7f1d1d; color: #fca5a5; }
     .status-badge.expired { background: #78350f; color: #fbbf24; }
+    .status-badge.failed { background: #7c2d12; color: #fdba74; }
 
     .countdown {
       font-size: 11px;
@@ -276,12 +281,40 @@
         <div id="last-update" class="last-update"></div>
       </section>
 
+      <section class="watchlist-table-wrap card">
+        <div class="watch-summary">Failed CA (below +20% and negative after push)</div>
+        <table class="track-table">
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th class="sortable" data-sort="pushed_at">鎺ㄩ€佹椂闂?/th>
+              <th class="sortable" data-sort="entry_mcap">鎺ㄩ€佸競鍊?/th>
+              <th class="sortable" data-sort="current_mcap">褰撳墠甯傚€?/th>
+              <th>鐩堜簭</th>
+              <th>鏈€楂樺競鍊?/th>
+              <th>姹犲瓙</th>
+              <th>Holders</th>
+              <th>鑱槑閽?/th>
+              <th>宸茶拷韪?/th>
+              <th>鐘舵€?/th>
+              <th>鎿嶄綔</th>
+            </tr>
+          </thead>
+          <tbody id="failed-track-rows"></tbody>
+        </table>
+        <div id="failed-track-empty" class="empty-state" hidden>
+          No failed CA
+        </div>
+      </section>
+
     </div>
   </div>
 
   <script>
     const rowsEl = document.getElementById("track-rows");
+    const failedRowsEl = document.getElementById("failed-track-rows");
     const emptyEl = document.getElementById("track-empty");
+    const failedEmptyEl = document.getElementById("failed-track-empty");
     const summaryEl = document.getElementById("track-summary");
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
@@ -491,11 +524,21 @@
 
     function statusBadge(item) {
       const status = item.status || "tracking";
+      if (item.failure_bucket && status !== "removed") return `<span class="status-badge failed" title="${htmlEscape(item.failure_reason || '')}">Failed</span>`;
       if (status === "smart_signal") return `<span class="status-badge tracking" title="GMGN SmartDegenBuy">聪明钱</span>`;
       if (status === "market_signal") return `<span class="status-badge tracking" title="GMGN SignalType1">异动</span>`;
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
       if (status === "expired") return `<span class="status-badge expired">已过期</span>`;
       return `<span class="status-badge tracking">追踪中</span>`;
+    }
+
+    function isActiveStatus(item) {
+      const status = item && item.status;
+      return status === "tracking" || status === "smart_signal" || status === "market_signal";
+    }
+
+    function isFailedItem(item) {
+      return !!(item && (item.failure_bucket || !isActiveStatus(item)));
     }
 
     function smartSignalText(item) {
@@ -662,6 +705,21 @@
           </tr>
         `;
       }).join("");
+      const failedByAddress = new Set(items.filter(isFailedItem).map(item => item.address));
+      failedRowsEl.innerHTML = "";
+      Array.from(rowsEl.querySelectorAll("tr[data-ca]")).forEach(row => {
+        if (failedByAddress.has(row.dataset.ca)) {
+          row.classList.add("failed-ca");
+          failedRowsEl.appendChild(row);
+        }
+      });
+      emptyEl.hidden = rowsEl.children.length > 0;
+      failedEmptyEl.hidden = failedRowsEl.children.length > 0;
+      summaryEl.textContent = "Normal: " + rowsEl.children.length
+        + " | Failed: " + failedRowsEl.children.length
+        + " | Total: " + (rowsEl.children.length + failedRowsEl.children.length)
+        + " CA | " + formatWindow(trackTtlSec)
+        + " | auto refresh every 30s";
     }
 
     function mergeItems(newItems) {

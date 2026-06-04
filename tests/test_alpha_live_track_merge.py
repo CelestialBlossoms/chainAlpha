@@ -55,6 +55,87 @@ class AlphaLiveTrackMergeTests(unittest.TestCase):
         self.assertAlmostEqual(merged[0]["peak_pnl_pct"], 105.6717, places=3)
         self.assertAlmostEqual(merged[0]["pnl_pct"], 5.3506, places=3)
 
+    def test_alpha_live_track_marks_negative_unrecovered_signal_failed(self) -> None:
+        original_load_smart = dashboard_app._load_smart_money_signal_items
+        original_load_market = dashboard_app._load_market_signal_items
+        original_deleted = dashboard_app._alpha_deleted_today_addresses
+        original_health = dashboard_app._smart_signal_health_checked_item
+        original_forget = dashboard_app._alpha_deleted_today_forget
+        original_time = dashboard_app.time.time
+        try:
+            dashboard_app._load_smart_money_signal_items = lambda _chain="sol": [
+                {
+                    "address": "FAIL111",
+                    "smart_signal": True,
+                    "status": "smart_signal",
+                    "pushed_at": 1_000,
+                    "entry_mcap": 100_000,
+                    "current_mcap": 70_000,
+                    "peak_mcap": 100_000,
+                    "peak_mcap_at": 1_000,
+                }
+            ]
+            dashboard_app._load_market_signal_items = lambda _chain="sol": []
+            dashboard_app._alpha_deleted_today_addresses = lambda: set()
+            dashboard_app._smart_signal_health_checked_item = lambda item: item
+            dashboard_app._alpha_deleted_today_forget = lambda _address: None
+            dashboard_app.time.time = lambda: 1_120
+
+            merged = dashboard_app._merge_live_track_smart_signals([])
+        finally:
+            dashboard_app._load_smart_money_signal_items = original_load_smart
+            dashboard_app._load_market_signal_items = original_load_market
+            dashboard_app._alpha_deleted_today_addresses = original_deleted
+            dashboard_app._smart_signal_health_checked_item = original_health
+            dashboard_app._alpha_deleted_today_forget = original_forget
+            dashboard_app.time.time = original_time
+
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0]["failure_bucket"])
+        self.assertAlmostEqual(merged[0]["peak_pnl_pct"], 0.0)
+        self.assertAlmostEqual(merged[0]["pnl_pct"], -30.0)
+
+    def test_alpha_live_track_recovered_signal_returns_to_normal_bucket(self) -> None:
+        original_load_smart = dashboard_app._load_smart_money_signal_items
+        original_load_market = dashboard_app._load_market_signal_items
+        original_deleted = dashboard_app._alpha_deleted_today_addresses
+        original_health = dashboard_app._smart_signal_health_checked_item
+        original_forget = dashboard_app._alpha_deleted_today_forget
+        original_time = dashboard_app.time.time
+        forgotten: list[str] = []
+        try:
+            dashboard_app._load_smart_money_signal_items = lambda _chain="sol": [
+                {
+                    "address": "RECOVER111",
+                    "smart_signal": True,
+                    "status": "smart_signal",
+                    "pushed_at": 1_000,
+                    "entry_mcap": 100_000,
+                    "current_mcap": 121_000,
+                    "peak_mcap": 121_000,
+                    "peak_mcap_at": 1_100,
+                }
+            ]
+            dashboard_app._load_market_signal_items = lambda _chain="sol": []
+            dashboard_app._alpha_deleted_today_addresses = lambda: {"RECOVER111"}
+            dashboard_app._smart_signal_health_checked_item = lambda item: item
+            dashboard_app._alpha_deleted_today_forget = lambda address: forgotten.append(address)
+            dashboard_app.time.time = lambda: 1_120
+
+            merged = dashboard_app._merge_live_track_smart_signals([])
+        finally:
+            dashboard_app._load_smart_money_signal_items = original_load_smart
+            dashboard_app._load_market_signal_items = original_load_market
+            dashboard_app._alpha_deleted_today_addresses = original_deleted
+            dashboard_app._smart_signal_health_checked_item = original_health
+            dashboard_app._alpha_deleted_today_forget = original_forget
+            dashboard_app.time.time = original_time
+
+        self.assertEqual(len(merged), 1)
+        self.assertFalse(merged[0]["failure_bucket"])
+        self.assertEqual(forgotten, ["RECOVER111"])
+        self.assertAlmostEqual(merged[0]["peak_pnl_pct"], 21.0)
+
     def test_alpha_deleted_today_archive_round_trip(self) -> None:
         class FakeRedis:
             def __init__(self) -> None:
