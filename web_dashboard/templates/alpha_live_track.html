@@ -282,28 +282,28 @@
       </section>
 
       <section class="watchlist-table-wrap card">
-        <div class="watch-summary">Failed CA (below +20% and negative after push)</div>
+        <div class="watch-summary">失败 CA（未到 +20% 且推送后转负）</div>
         <table class="track-table">
           <thead>
             <tr>
               <th>Token</th>
-              <th class="sortable" data-sort="pushed_at">鎺ㄩ€佹椂闂?/th>
-              <th class="sortable" data-sort="entry_mcap">鎺ㄩ€佸競鍊?/th>
-              <th class="sortable" data-sort="current_mcap">褰撳墠甯傚€?/th>
-              <th>鐩堜簭</th>
-              <th>鏈€楂樺競鍊?/th>
-              <th>姹犲瓙</th>
+              <th class="sortable" data-sort="pushed_at">推送时间</th>
+              <th class="sortable" data-sort="entry_mcap">推送市值</th>
+              <th class="sortable" data-sort="current_mcap">当前市值</th>
+              <th>盈亏</th>
+              <th>最高市值</th>
+              <th>池子</th>
               <th>Holders</th>
-              <th>鑱槑閽?/th>
-              <th>宸茶拷韪?/th>
-              <th>鐘舵€?/th>
-              <th>鎿嶄綔</th>
+              <th>聪明钱</th>
+              <th>已追踪</th>
+              <th>状态</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="failed-track-rows"></tbody>
         </table>
         <div id="failed-track-empty" class="empty-state" hidden>
-          No failed CA
+          暂无失败 CA
         </div>
       </section>
 
@@ -524,7 +524,7 @@
 
     function statusBadge(item) {
       const status = item.status || "tracking";
-      if (item.failure_bucket && status !== "removed") return `<span class="status-badge failed" title="${htmlEscape(item.failure_reason || '')}">Failed</span>`;
+      if (item.failure_bucket && status !== "removed") return `<span class="status-badge failed" title="${htmlEscape(item.failure_reason || '')}">失败</span>`;
       if (status === "smart_signal") return `<span class="status-badge tracking" title="GMGN SmartDegenBuy">聪明钱</span>`;
       if (status === "market_signal") return `<span class="status-badge tracking" title="GMGN SignalType1">异动</span>`;
       if (status === "removed") return `<span class="status-badge removed" title="${htmlEscape(item.remove_reason || '')}">已移除</span>`;
@@ -715,11 +715,11 @@
       });
       emptyEl.hidden = rowsEl.children.length > 0;
       failedEmptyEl.hidden = failedRowsEl.children.length > 0;
-      summaryEl.textContent = "Normal: " + rowsEl.children.length
-        + " | Failed: " + failedRowsEl.children.length
-        + " | Total: " + (rowsEl.children.length + failedRowsEl.children.length)
-        + " CA | " + formatWindow(trackTtlSec)
-        + " | auto refresh every 30s";
+      summaryEl.textContent = "正常: " + rowsEl.children.length
+        + " | 失败: " + failedRowsEl.children.length
+        + " | 共 " + (rowsEl.children.length + failedRowsEl.children.length)
+        + " 个CA | " + formatWindow(trackTtlSec)
+        + " | 每30秒自动刷新";
     }
 
     function mergeItems(newItems) {
