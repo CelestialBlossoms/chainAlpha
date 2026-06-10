@@ -1,11 +1,79 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from web_dashboard import app as dashboard_app
 
 
 class AlphaLiveTrackMergeTests(unittest.TestCase):
+    def test_dashboard_loaders_keep_failed_signal_candidates(self) -> None:
+        class FakeRedis:
+            def __init__(self) -> None:
+                self.values: dict[str, str] = {}
+
+            def get(self, key: str) -> str | None:
+                return self.values.get(key)
+
+        fake = FakeRedis()
+        fake.values[dashboard_app._smart_signal_redis_key("sol")] = json.dumps(
+            {
+                "items": [
+                    {
+                        "address": "LOWSMART",
+                        "status": "smart_signal",
+                        "smart_signal": True,
+                        "pushed_at": 1_000,
+                        "smart_signal_trigger_at": 1_000,
+                        "smart_signal_trigger_mcap": 100_000,
+                        "entry_mcap": 100_000,
+                        "current_mcap": 7_000,
+                        "peak_mcap": 100_000,
+                    }
+                ]
+            }
+        )
+        fake.values[dashboard_app._market_signal_redis_key("sol")] = json.dumps(
+            {
+                "items": [
+                    {
+                        "address": "DRAWDOWN",
+                        "status": "market_signal",
+                        "market_signal": True,
+                        "pushed_at": 1_000,
+                        "market_signal_trigger_at": 1_000,
+                        "market_signal_trigger_mcap": 100_000,
+                        "entry_mcap": 100_000,
+                        "current_mcap": 20_000,
+                        "peak_mcap": 100_000,
+                    }
+                ]
+            }
+        )
+
+        original_redis = dashboard_app.get_redis_client
+        original_smart_min = dashboard_app.SMART_SIGNAL_MCAP_MIN
+        original_market_drawdown = dashboard_app.MARKET_SIGNAL_MAX_DRAWDOWN_PCT
+        original_time = dashboard_app.time.time
+        try:
+            dashboard_app.get_redis_client = lambda: fake
+            dashboard_app.SMART_SIGNAL_MCAP_MIN = 10_000
+            dashboard_app.MARKET_SIGNAL_MAX_DRAWDOWN_PCT = 50
+            dashboard_app.time.time = lambda: 1_120
+
+            smart_items = dashboard_app._load_smart_money_signal_items("sol")
+            market_items = dashboard_app._load_market_signal_items("sol")
+        finally:
+            dashboard_app.get_redis_client = original_redis
+            dashboard_app.SMART_SIGNAL_MCAP_MIN = original_smart_min
+            dashboard_app.MARKET_SIGNAL_MAX_DRAWDOWN_PCT = original_market_drawdown
+            dashboard_app.time.time = original_time
+
+        self.assertEqual([item["address"] for item in smart_items], ["LOWSMART"])
+        self.assertEqual([item["address"] for item in market_items], ["DRAWDOWN"])
+        self.assertAlmostEqual(smart_items[0]["pnl_pct"], -93.0)
+        self.assertAlmostEqual(market_items[0]["pnl_pct"], -80.0)
+
     def test_merge_recomputes_pnl_after_smart_signal_overlay(self) -> None:
         original_load_smart = dashboard_app._load_smart_money_signal_items
         original_load_market = dashboard_app._load_market_signal_items

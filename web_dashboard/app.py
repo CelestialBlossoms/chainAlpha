@@ -2389,8 +2389,6 @@ def _load_smart_money_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
             trigger_at = _safe_int(item.get("smart_signal_trigger_at") or item.get("pushed_at")) or now_ts
             trigger_mcap = _safe_float(item.get("smart_signal_trigger_mcap") or item.get("entry_mcap"))
             current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
-            if SMART_SIGNAL_MCAP_MIN > 0 and current_mcap < SMART_SIGNAL_MCAP_MIN:
-                continue
             entry_mcap = _safe_float(item.get("entry_mcap")) or trigger_mcap
             peak_mcap = max(_safe_float(item.get("peak_mcap")), trigger_mcap)
             pnl_pct = (current_mcap - entry_mcap) / entry_mcap * 100 if entry_mcap > 0 else 0.0
@@ -2470,9 +2468,6 @@ def _load_market_signal_items(chain: str = "sol") -> list[dict[str, Any]]:
             trigger_mcap = _safe_float(item.get("market_signal_trigger_mcap") or item.get("entry_mcap"))
             current_mcap = _safe_float(item.get("current_mcap")) or trigger_mcap
             if trigger_mcap <= 0:
-                continue
-            drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
-            if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
                 continue
             entry_mcap = _safe_float(item.get("entry_mcap")) or trigger_mcap
             peak_mcap = max(_safe_float(item.get("peak_mcap")), trigger_mcap)

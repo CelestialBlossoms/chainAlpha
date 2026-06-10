@@ -111,6 +111,23 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
         self.assertEqual(smart["peak_mcap"], 100_000)
         self.assertEqual(market["peak_mcap"], 100_000)
 
+    def test_signal_normalization_keeps_failed_candidates_for_frontend(self) -> None:
+        raw = {
+            "token_address": "TokenLow",
+            "trigger_at": 100,
+            "trigger_mc": 100_000,
+            "market_cap": 7_000,
+            "data": {"address": "TokenLow", "chain": "sol", "symbol": "LOW"},
+        }
+
+        smart = normalize_smart_signal_item(raw, "sol", enrich_narrative=False)
+        market = normalize_market_signal_item(raw, "sol", enrich_narrative=False)
+
+        self.assertIsNotNone(smart)
+        self.assertIsNotNone(market)
+        self.assertEqual(smart["current_mcap"], 7_000)
+        self.assertAlmostEqual(market["pnl_pct"], -93.0)
+
     def test_post_push_peak_does_not_use_dynamic_current_as_peak_when_kline_exists(self) -> None:
         candles = [
             {"ts": 0, "open": 0.10, "high": 0.12, "low": 0.09, "close": 0.11},
@@ -158,6 +175,77 @@ class DeepAlphaSmartSellTests(unittest.TestCase):
         self.assertEqual(merged["peak_mcap_at"], 1_300)
         self.assertAlmostEqual(merged["pnl_pct"], -18.2727, places=3)
         self.assertAlmostEqual(merged["peak_pnl_pct"], 59.0909, places=3)
+
+    def test_sync_archives_removed_live_track_signal(self) -> None:
+        from deep_alpha import deep_alpha_pro as dap
+
+        class FakeRedis:
+            def __init__(self):
+                self.values = {}
+                self.sets = {dap.live_track_index_key(): {"Gone111"}}
+
+            def get(self, key):
+                return self.values.get(key)
+
+            def setex(self, key, _ttl, value):
+                self.values[key] = value
+
+            def sadd(self, key, value):
+                self.sets.setdefault(key, set()).add(value)
+
+            def smembers(self, key):
+                return self.sets.get(key, set())
+
+            def srem(self, key, value):
+                self.sets.get(key, set()).discard(value)
+
+            def delete(self, *keys):
+                deleted = 0
+                for key in keys:
+                    if key in self.values:
+                        deleted += 1
+                        del self.values[key]
+                return deleted
+
+            def expire(self, _key, _ttl):
+                return None
+
+            def scan_iter(self, match=None, count=None):
+                return iter(())
+
+        fake_redis = FakeRedis()
+        fake_redis.values[dap.live_track_redis_key("Gone111")] = __import__("json").dumps(
+            {
+                "address": "Gone111",
+                "source": "smart_money_signal",
+                "status": "smart_signal",
+                "smart_signal": True,
+                "pushed_at": 1_000,
+                "entry_mcap": 100_000,
+                "current_mcap": 60_000,
+                "peak_mcap": 100_000,
+                "last_updated": 1_120,
+            }
+        )
+
+        original_get_redis = dap.get_redis_client
+        original_enabled = dap.SMART_ONLY_ENABLED
+        original_time = dap.time.time
+        try:
+            dap.get_redis_client = lambda: fake_redis
+            dap.SMART_ONLY_ENABLED = True
+            dap.time.time = lambda: 1_200
+
+            dap.sync_signals_to_live_track("sol", [], [])
+        finally:
+            dap.get_redis_client = original_get_redis
+            dap.SMART_ONLY_ENABLED = original_enabled
+            dap.time.time = original_time
+
+        archived = fake_redis.values[dap.live_track_deleted_today_key("Gone111")]
+        self.assertIn("Gone111", fake_redis.sets[dap.live_track_deleted_today_index_key()])
+        self.assertIn('"removed_archive": true', archived)
+        self.assertNotIn("Gone111", fake_redis.sets[dap.live_track_index_key()])
 
     def test_fresh_signal_tg_alert_sends_once_and_writes_dedup(self) -> None:
         from deep_alpha import deep_alpha_pro as dap

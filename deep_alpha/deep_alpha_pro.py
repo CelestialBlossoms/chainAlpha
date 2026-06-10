@@ -1024,8 +1024,6 @@ def normalize_smart_signal_item(item, chain, enrich_narrative=True):
     trigger_at = int(safe_float(item.get("trigger_at")) or safe_float(data.get("trigger_at")) or time.time())
     trigger_mcap = safe_float(item.get("trigger_mc")) or safe_float(data.get("market_cap")) or safe_float(item.get("market_cap"))
     current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
-    if SMART_SIGNAL_MCAP_MIN > 0 and current_mcap < SMART_SIGNAL_MCAP_MIN:
-        return None
     smart_buy_count = int(safe_float(data.get("count")) or safe_float(data.get("trigger_count")))
     smart_buy_total = safe_float(data.get("total_amount"))
     symbol = data.get("symbol") or data.get("name") or "UNKNOWN"
@@ -1153,9 +1151,6 @@ def normalize_market_signal_item(item, chain, enrich_narrative=True):
     trigger_mcap = safe_float(item.get("trigger_mc")) or safe_float(data.get("market_cap")) or safe_float(item.get("market_cap"))
     current_mcap = safe_float(item.get("market_cap")) or safe_float(data.get("market_cap")) or trigger_mcap
     if trigger_mcap <= 0:
-        return None
-    drawdown_pct = (trigger_mcap - current_mcap) / trigger_mcap * 100
-    if MARKET_SIGNAL_MAX_DRAWDOWN_PCT >= 0 and drawdown_pct > MARKET_SIGNAL_MAX_DRAWDOWN_PCT:
         return None
     peak_mcap = max(trigger_mcap, current_mcap)
     pnl_pct = (current_mcap - trigger_mcap) / trigger_mcap * 100 if trigger_mcap > 0 else 0.0
@@ -1384,7 +1379,48 @@ def seconds_until_midnight():
 
 
 def save_live_track_deleted_today(address, track):
-    return
+    address = str(address or "").strip()
+    if not address or not isinstance(track, dict):
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        now_ts = int(time.time())
+        pushed_at = int(
+            safe_float(
+                track.get("pushed_at")
+                or track.get("smart_signal_trigger_at")
+                or track.get("market_signal_trigger_at")
+            )
+        )
+        removed_at = int(safe_float(track.get("removed_at") or track.get("last_updated")) or now_ts)
+        archived = {
+            **track,
+            "address": address,
+            "status": "removed",
+            "source": track.get("source") or (
+                "smart_money_signal"
+                if track.get("smart_signal")
+                else "market_signal"
+                if track.get("market_signal")
+                else "deep_alpha_live_track"
+            ),
+            "removed_archive": True,
+            "removed_at": removed_at,
+            "last_updated": removed_at,
+            "removed_after_sec": max(0, removed_at - pushed_at) if pushed_at > 0 else 0,
+        }
+        ttl = max(1, seconds_until_midnight())
+        client.setex(
+            live_track_deleted_today_key(address),
+            ttl,
+            json.dumps(archived, ensure_ascii=False),
+        )
+        client.sadd(live_track_deleted_today_index_key(), address)
+        client.expire(live_track_deleted_today_index_key(), ttl)
+    except Exception as exc:
+        print(f"  [LiveTrack] deleted archive write failed {address[:8]}: {exc}")
 
 
 def load_live_track(address):
@@ -1787,6 +1823,11 @@ def sync_signals_to_live_track(chain, smart_signals, market_signals=None):
             address = _redis_text(raw_addr).strip()
             if not address or address in keep_addresses:
                 continue
+            existing = load_live_track(address)
+            if existing:
+                existing["remove_reason"] = existing.get("remove_reason") or "not present in current smart/market signal set"
+                existing["last_updated"] = int(time.time())
+                save_live_track_deleted_today(address, existing)
             client.delete(live_track_redis_key(address))
             client.srem(index_key, address)
             removed_live += 1
