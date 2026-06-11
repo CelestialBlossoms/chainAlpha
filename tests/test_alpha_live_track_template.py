@@ -15,3 +15,10 @@ def test_alpha_live_track_renders_token_name_and_peak_elapsed():
     assert "function isFailedItem(item)" in html
     assert "failedRowsEl.appendChild(row);" in html
     assert "htmlEscape(peakElapsedText(item))" in html
+    assert 'id="outcome-stats"' in html
+    assert "function computeOutcomeStats(list, now)" in html
+    assert "const OUTCOME_WINDOW_SEC = 24 * 3600;" in html
+    assert "const NORMAL_TARGET_GAIN_PCT = 50;" in html
+    assert "const NORMAL_TARGET_MIN_PEAK_DELAY_SEC = 10 * 60;" in html
+    assert "renderOutcomeStats(now);" in html
+    assert "正常标的" in html

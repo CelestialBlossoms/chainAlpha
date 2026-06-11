@@ -216,6 +216,42 @@
     .watch-summary {
       color: #111827;
     }
+    .outcome-stats {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .outcome-stat {
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #ffffff;
+    }
+    .outcome-stat span {
+      display: block;
+      color: #111827;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .outcome-stat b {
+      color: #111827;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+    .outcome-stat small {
+      display: block;
+      color: #111827;
+      font-size: 11px;
+      margin-top: 4px;
+      white-space: nowrap;
+    }
+    @media (max-width: 900px) {
+      .outcome-stats { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .outcome-stats { grid-template-columns: 1fr; }
+    }
 
     /* New-CA flash animation */
     @keyframes new-ca-flash {
@@ -251,6 +287,7 @@
 
       <section class="controls push-controls">
         <div id="track-summary" class="watch-summary">加载中...</div>
+        <div id="outcome-stats" class="outcome-stats"></div>
       </section>
 
       <section class="watchlist-table-wrap card">
@@ -316,6 +353,7 @@
     const emptyEl = document.getElementById("track-empty");
     const failedEmptyEl = document.getElementById("failed-track-empty");
     const summaryEl = document.getElementById("track-summary");
+    const outcomeStatsEl = document.getElementById("outcome-stats");
     const liveDot = document.getElementById("live-dot");
     const liveLabel = document.getElementById("live-label");
     const lastUpdateEl = document.getElementById("last-update");
@@ -325,6 +363,9 @@
     let trackTtlSec = {{ alpha_live_track_ttl_sec | default(86400) | int }};
     let sortState = { key: "pushed_at", dir: "desc" };
     const SMART_WALLET_VISIBLE_LIMIT = 10;
+    const OUTCOME_WINDOW_SEC = 24 * 3600;
+    const NORMAL_TARGET_GAIN_PCT = 50;
+    const NORMAL_TARGET_MIN_PEAK_DELAY_SEC = 10 * 60;
 
     // --- Notification sound ---
     const notifAudio = new Audio("/static/dragon-studio-notification-ping-372479.mp3");
@@ -499,6 +540,64 @@
       return `${m}m\u7a97\u53e3`;
     }
 
+    function peakDelaySec(item) {
+      const pushedAt = safeNum(item && item.pushed_at);
+      const peakAt = safeNum(item && item.peak_mcap_at);
+      if (pushedAt <= 0 || peakAt <= 0) return 0;
+      return Math.max(0, peakAt - pushedAt);
+    }
+
+    function isRecent24hItem(item, now) {
+      const pushedAt = safeNum(item && item.pushed_at);
+      return pushedAt > 0 && now - pushedAt <= OUTCOME_WINDOW_SEC;
+    }
+
+    function computeOutcomeStats(list, now) {
+      const recent = (list || []).filter(item => isRecent24hItem(item, now));
+      const failedOrLoss = recent.filter(item => isFailedItem(item) || safeNum(item.pnl_pct) < 0);
+      const profit50 = recent.filter(item => safeNum(item.peak_pnl_pct) >= NORMAL_TARGET_GAIN_PCT);
+      const normalTargets = profit50.filter(item => peakDelaySec(item) >= NORMAL_TARGET_MIN_PEAK_DELAY_SEC);
+      const pushPeakTargets = profit50.filter(item => peakDelaySec(item) < NORMAL_TARGET_MIN_PEAK_DELAY_SEC);
+      return {
+        total: recent.length,
+        failedOrLoss: failedOrLoss.length,
+        profit50: profit50.length,
+        normalTargets: normalTargets.length,
+        pushPeakTargets: pushPeakTargets.length,
+      };
+    }
+
+    function renderOutcomeStats(now) {
+      const stats = computeOutcomeStats(items, now);
+      outcomeStatsEl.innerHTML = `
+        <div class="outcome-stat">
+          <span>近24h推送</span>
+          <b>${stats.total}</b>
+          <small>smart/异动总数</small>
+        </div>
+        <div class="outcome-stat">
+          <span>失败/亏损</span>
+          <b>${stats.failedOrLoss}</b>
+          <small>失败桶或当前为负</small>
+        </div>
+        <div class="outcome-stat">
+          <span>冲高 +50%</span>
+          <b>${stats.profit50}</b>
+          <small>按最高涨幅统计</small>
+        </div>
+        <div class="outcome-stat">
+          <span>正常标的</span>
+          <b>${stats.normalTargets}</b>
+          <small>+50% 且见峰 >=10m</small>
+        </div>
+        <div class="outcome-stat">
+          <span>推送即峰</span>
+          <b>${stats.pushPeakTargets}</b>
+          <small>+50% 但 10m 内见峰</small>
+        </div>
+      `;
+    }
+
     function sortValue(item, key) {
       if (key === "entry_mcap") return safeNum(item.entry_mcap);
       if (key === "current_mcap") return safeNum(item.current_mcap);
@@ -643,6 +742,7 @@
       const removed = sortTrackItems(items.filter(i => i.status !== "tracking" && i.status !== "smart_signal" && i.status !== "market_signal"));
       const sorted = [...active, ...removed];
       const now = Math.floor(Date.now() / 1000);
+      renderOutcomeStats(now);
 
       emptyEl.hidden = sorted.length > 0;
 
